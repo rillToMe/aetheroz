@@ -4,6 +4,10 @@
 - Boot via UEFI 64-bit dengan Limine 10.x.
 - Kernel ELF 64-bit, freestanding.
 - Framebuffer Limine digunakan untuk menggambar teks "OK".
+- PMM bitmap + paging dasar sudah aktif.
+- Heap bump allocator (kmalloc) sudah aktif.
+- VFS tree skeleton (root/child/lookup + resolve path absolut) sudah ada.
+- /dev/null sudah ada (read EOF, write discard).
 
 ## Struktur Penting
 - kernel/kernel.c: entry `kernel_main`, request framebuffer Limine, draw text.
@@ -34,3 +38,29 @@ TIMEOUT: 0
 
 ## Output
 - Kernel menggambar teks "OK" merah di framebuffer pada koordinat (100, 100).
+- Serial menampilkan status memmap dan PMM (T/P/B/F/U/A).
+- T= total usable bytes (aligned).
+- P= total pages.
+- B= ukuran bitmap.
+- F= free pages.
+- U= used pages.
+- A= hasil pmm_alloc_page().
+- Serial menampilkan H=0x... untuk test heap, R untuk test VFS resolve/read.
+- Serial menampilkan N=0x0 dan W=0x10 untuk test /dev/null.
+
+## Roadmap
+- [x] Bootloader
+- [x] Physical Memory Manager
+- [x] Paging dasar (identity + HHDM + kernel map)
+- [x] Kernel Heap (bump allocator)
+- [x] VFS tree skeleton (root + lookup + resolve)
+- [x] /dev/null (read EOF, write discard)
+- [ ] Virtual Memory Manager (map/unmap)
+- [ ] Interrupt + IDT
+- [ ] Timer
+- [ ] Scheduler
+- [ ] Syscall interface
+- [ ] Device abstraction
+
+
+ 

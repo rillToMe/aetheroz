@@ -15,7 +15,19 @@ ESP=esp.img
 LIMINE=/e/Project/limine
 FIRMWARE=E:/Tools/msys2/qemu/share/edk2-x86_64-code.fd
 
-SRC=kernel/kernel.c kernel/printk.c drivers/vga/vga.c
+SRC=kernel/kernel.c \
+kernel/boot/limine.c \
+kernel/arch/x86_64/serial.c \
+kernel/arch/x86_64/paging.c \
+kernel/memory/memmap.c \
+kernel/memory/pmm.c \
+kernel/memory/heap.c \
+kernel/fs/vfs.c \
+kernel/fs/tmpfs.c \
+kernel/video/framebuffer.c \
+kernel/lib/util.c \
+kernel/printk.c \
+drivers/vga/vga.c
 OBJ=$(SRC:%.c=$(BUILD)/%.o)
 
 all: run
