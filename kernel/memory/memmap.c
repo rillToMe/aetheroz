@@ -1,4 +1,3 @@
-#include <kernel/arch/serial.h>
 #include <kernel/lib/util.h>
 #include <kernel/memory/memmap.h>
 
@@ -12,9 +11,7 @@ void memmap_init(struct limine_memmap_response *memmap) {
 
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
-        serial_write('[');
         if (entry->type == LIMINE_MEMMAP_USABLE) {
-            serial_write('U');
             uint64_t base = align_up(entry->base);
             uint64_t end = align_down(entry->base + entry->length);
             if (end > base) {
@@ -26,18 +23,8 @@ void memmap_init(struct limine_memmap_response *memmap) {
                     usable_region_count++;
                 }
             }
-        } else {
-            serial_write('X');
         }
-        serial_write(']');
     }
-
-    serial_write(' ');
-    serial_write('T');
-    serial_write('=');
-    serial_write('0');
-    serial_write('x');
-    serial_write_hex64(total_usable);
 }
 
 uint64_t memmap_total_usable(void) {

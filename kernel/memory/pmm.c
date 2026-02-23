@@ -1,10 +1,10 @@
-#include <kernel/arch/serial.h>
+#include <kernel/arch/paging.h>
 #include <kernel/lib/util.h>
 #include <kernel/memory/pmm.h>
 
 static uint8_t *pmm_bitmap = 0;
-static uint64_t pmm_total_pages = 0;
-static uint64_t pmm_bitmap_size = 0;
+static uint64_t pmm_total_pages_count = 0;
+static uint64_t pmm_bitmap_size_bytes = 0;
 static uint64_t pmm_last_alloc = 0;
 static uint64_t pmm_free_pages_count = 0;
 
@@ -45,13 +45,13 @@ static void pmm_mark_range_free(uint64_t base, uint64_t length) {
 }
 
 void *pmm_alloc_pages(uint64_t pages) {
-    if (!pmm_bitmap || pmm_total_pages == 0 || pages == 0 || pages > pmm_total_pages) {
+    if (!pmm_bitmap || pmm_total_pages_count == 0 || pages == 0 || pages > pmm_total_pages_count) {
         return 0;
     }
     uint64_t start = pmm_last_alloc;
     for (int pass = 0; pass < 2; pass++) {
         uint64_t begin = pass == 0 ? start : 0;
-        uint64_t end = pass == 0 ? pmm_total_pages : start;
+        uint64_t end = pass == 0 ? pmm_total_pages_count : start;
         uint64_t run = 0;
         uint64_t run_start = 0;
         for (uint64_t i = begin; i < end; i++) {
@@ -64,7 +64,7 @@ void *pmm_alloc_pages(uint64_t pages) {
                     for (uint64_t j = 0; j < pages; j++) {
                         pmm_mark_used(run_start + j);
                     }
-                    pmm_last_alloc = (run_start + pages) % pmm_total_pages;
+                    pmm_last_alloc = (run_start + pages) % pmm_total_pages_count;
                     return (void *)(uintptr_t)(run_start * 0x1000);
                 }
             } else {
@@ -76,9 +76,16 @@ void *pmm_alloc_pages(uint64_t pages) {
 }
 
 void pmm_init(uint64_t total_usable, struct usable_region *regions, uint64_t region_count) {
-    pmm_total_pages = total_usable / 0x1000;
-    pmm_bitmap_size = (pmm_total_pages + 7) / 8;
-    uint64_t bitmap_bytes = align_up(pmm_bitmap_size);
+    uint64_t max_end = 0;
+    for (uint64_t i = 0; i < region_count; i++) {
+        uint64_t end = regions[i].base + regions[i].length;
+        if (end > max_end) {
+            max_end = end;
+        }
+    }
+    pmm_total_pages_count = align_up(max_end) / 0x1000;
+    pmm_bitmap_size_bytes = (pmm_total_pages_count + 7) / 8;
+    uint64_t bitmap_bytes = align_up(pmm_bitmap_size_bytes);
 
     uint64_t bitmap_phys = 0;
     for (uint64_t i = 0; i < region_count; i++) {
@@ -96,8 +103,8 @@ void pmm_init(uint64_t total_usable, struct usable_region *regions, uint64_t reg
         }
     }
 
-    pmm_bitmap = (uint8_t *)(uintptr_t)bitmap_phys;
-    mem_set(pmm_bitmap, 0xFF, pmm_bitmap_size);
+    pmm_bitmap = (uint8_t *)(uintptr_t)hhdm_phys_to_virt(bitmap_phys);
+    mem_set(pmm_bitmap, 0xFF, pmm_bitmap_size_bytes);
     pmm_free_pages_count = 0;
 
     for (uint64_t i = 0; i < region_count; i++) {
@@ -108,31 +115,6 @@ void pmm_init(uint64_t total_usable, struct usable_region *regions, uint64_t reg
     }
 
     pmm_mark_range_used(bitmap_phys, bitmap_bytes);
-
-    serial_write(' ');
-    serial_write('P');
-    serial_write('=');
-    serial_write_hex64(pmm_total_pages);
-    serial_write(' ');
-    serial_write('B');
-    serial_write('=');
-    serial_write_hex64(pmm_bitmap_size);
-    serial_write(' ');
-    serial_write('F');
-    serial_write('=');
-    serial_write_hex64(pmm_free_pages_count);
-    serial_write(' ');
-    serial_write('U');
-    serial_write('=');
-    serial_write_hex64(pmm_total_pages - pmm_free_pages_count);
-
-    void *probe = pmm_alloc_page();
-    serial_write(' ');
-    serial_write('A');
-    serial_write('=');
-    serial_write('0');
-    serial_write('x');
-    serial_write_hex64((uint64_t)(uintptr_t)probe);
 }
 
 void *pmm_alloc_page(void) {
@@ -144,7 +126,7 @@ void pmm_free_page(void *addr) {
         return;
     }
     uint64_t page_index = (uint64_t)addr / 0x1000;
-    if (page_index < pmm_total_pages) {
+    if (page_index < pmm_total_pages_count) {
         pmm_mark_free(page_index);
         if (page_index < pmm_last_alloc) {
             pmm_last_alloc = page_index;
@@ -152,6 +134,26 @@ void pmm_free_page(void *addr) {
     }
 }
 
+void pmm_reserve_range(uint64_t base, uint64_t length) {
+    if (!pmm_bitmap || length == 0) {
+        return;
+    }
+    uint64_t start = align_down(base);
+    uint64_t end = align_up(base + length);
+    if (end <= start) {
+        return;
+    }
+    pmm_mark_range_used(start, end - start);
+}
+
 uint64_t pmm_free_pages(void) {
     return pmm_free_pages_count;
+}
+
+uint64_t pmm_total_pages(void) {
+    return pmm_total_pages_count;
+}
+
+uint64_t pmm_bitmap_size(void) {
+    return pmm_bitmap_size_bytes;
 }
