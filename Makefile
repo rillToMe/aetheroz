@@ -1,87 +1,51 @@
-CC=clang
-LD=ld.lld
+# ==========================================
+# Kyuzen OS Build System
+# ==========================================
 
-CFLAGS=--target=x86_64-elf -m64 -I include \
--ffreestanding -fno-builtin \
--fno-stack-protector \
--fno-pic -fno-pie -mno-red-zone \
--fno-asynchronous-unwind-tables \
--fno-unwind-tables
+# Tools
+CC = clang
+AS = nasm
+LD = ld.lld
+QEMU = qemu-system-x86_64.exe
 
-LDFLAGS=-m elf_x86_64 -T linker.ld
+# Direktori sumber
+SRC_DIRS = arch/x86 drivers kernel fs
+INCLUDE_DIR = include
 
-BUILD=build
-ESP=esp.img
-LIMINE=/e/Project/limine
-FIRMWARE=E:/Tools/msys2/qemu/share/edk2-x86_64-code.fd
+# Flags (-I$(INCLUDE_DIR) penting agar #include "io.h" tetap jalan)
+CFLAGS = --target=i686-pc-none-elf -m32 -ffreestanding -O0 -Wall -Wextra -I$(INCLUDE_DIR)
+ASFLAGS = -f elf32
+LDFLAGS = -flavor gnu -T linker.ld -m elf_i386 --build-id=none -nostdlib
 
-SRC=kernel/kernel.c \
-kernel/boot/limine.c \
-kernel/arch/x86_64/serial.c \
-kernel/arch/x86_64/gdt.c \
-kernel/arch/x86_64/idt.c \
-kernel/arch/x86_64/pic.c \
-kernel/arch/x86_64/paging.c \
-kernel/arch/x86_64/timer.c \
-kernel/arch/x86_64/syscall.c \
-kernel/memory/memmap.c \
-kernel/memory/pmm.c \
-kernel/memory/heap.c \
-kernel/memory/vmm.c \
-kernel/sched/task.c \
-kernel/sched/wait_queue.c \
-kernel/sched/sched.c \
-kernel/sys/syscall.c \
-kernel/fs/vfs.c \
-kernel/fs/fd.c \
-kernel/fs/tmpfs.c \
-kernel/video/framebuffer.c \
-kernel/lib/util.c \
-kernel/printk.c \
-drivers/vga/vga.c
-ASMSRC=kernel/sched/context.S \
-kernel/arch/x86_64/gdt_load.S \
-kernel/arch/x86_64/isr32.S \
-kernel/arch/x86_64/isr80.S \
-kernel/arch/x86_64/isr13.S \
-kernel/arch/x86_64/isr14.S \
-kernel/arch/x86_64/syscall_entry.S \
-kernel/arch/x86_64/user.S
-OBJ=$(SRC:%.c=$(BUILD)/%.o) $(ASMSRC:%.S=$(BUILD)/%.o)
+# Cari semua file .c dan .asm di dalam SRC_DIRS
+C_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
+ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 
-all: run
+# Ubah ekstensi sumber menjadi target object (.o)
+OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
 
-$(BUILD)/%.o: %.c
-	@mkdir -p $(dir $@)
+# File output
+TARGET = myos.bin
+
+# Default target
+all: $(TARGET)
+
+# Tahap 3: Link Semuanya
+$(TARGET): $(OBJS)
+	$(LD) $(LDFLAGS) $(OBJS) -o $(TARGET)
+
+# Tahap 2: Compile C
+%.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/%.o: %.S
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+# Tahap 1: Compile Assembly
+%.o: %.asm
+	$(AS) $(ASFLAGS) $< -o $@
 
+# Tahap 4: Boot up QEMU
+run: $(TARGET)
+	$(QEMU) -kernel $(TARGET)
 
-kernel: $(OBJ)
-	$(LD) $(LDFLAGS) -o $(BUILD)/kernel.elf $(OBJ)
-
-esp: kernel
-	rm -f $(ESP)
-	dd if=/dev/zero of=$(ESP) bs=1M count=64
-	mformat -F -i $(ESP) ::
-	mmd -i $(ESP) ::/EFI
-	mmd -i $(ESP) ::/EFI/BOOT
-	mcopy -i $(ESP) $(LIMINE)/BOOTX64.EFI ::/EFI/BOOT/
-	mcopy -i $(ESP) $(BUILD)/kernel.elf ::/
-	mcopy -i $(ESP) iso/boot/limine.conf ::/EFI/BOOT/
-
-run: esp
-	qemu-system-x86_64 \
-	-drive if=pflash,format=raw,readonly=on,file=$(FIRMWARE) \
-	-drive format=raw,file=$(ESP) \
-	-m 512M \
-	-serial stdio \
-	-no-reboot \
-	-no-shutdown
-
+# Bersihkan file hasil build
 clean:
-	rm -rf $(BUILD)
-	rm -f $(ESP)
+	rm -f $(OBJS) $(TARGET)
