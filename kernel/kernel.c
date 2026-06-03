@@ -72,9 +72,9 @@ void kernel_main(void) {
     pic_remap();
     __asm__ volatile("sti");
     
-    uint32_t* alamat_terlarang = (uint32_t*)0x10000000;
-    *alamat_terlarang = 0xDEADBEEF; // CPU akan panik saat membaca baris ini!
-    
+    // uint32_t* alamat_terlarang = (uint32_t*)0x10000000;
+    // *alamat_terlarang = 0xDEADBEEF; //  Test kernel panic BOSD
+
     // --- BASIC SHELL LOOP ---
     uint8_t key_buffer[1];
     uint32_t current_line_length = 0; // Pelacak jumlah huruf yang sedang diketik user
