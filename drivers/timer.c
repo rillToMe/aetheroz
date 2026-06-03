@@ -57,3 +57,8 @@ void timer_handler() {
     // 4. PREEMPTIVE MULTITASKING: Rampas CPU!
     yield();
 }
+
+uint32_t get_uptime(void) {
+    // Ingat, 100 ticks = 1 detik
+    return timer_ticks / 100;
+}

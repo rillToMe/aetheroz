@@ -12,4 +12,6 @@ void pmm_init(void);
 void* pmm_alloc_page(void);
 void pmm_free_page(void* ptr);
 
+uint32_t pmm_get_used_ram(void);
+uint32_t pmm_get_total_ram(void);
 #endif

@@ -83,11 +83,10 @@ void kfs_list_files(void) {
 }
 
 // LOGIKA SAKTI: Memecah string panjang menjadi rantai sektor
-int kfs_create_file(char* filename, char* data) {
+int kfs_create_file(char* filename, char* data, uint32_t size) {
     if (current_fs.file_count >= 21) { kprint("Error: Limit Daftar Isi Penuh!\n"); return 0; }
     
-    uint32_t total_size = slen(data);
-    // Hitung butuh berapa blok 512 byte
+    uint32_t total_size = size; // BUKAN slen(data) lagi!
     uint32_t sectors_needed = (total_size == 0) ? 1 : ((total_size + 511) / 512);
     
     uint16_t start_sector = 0;

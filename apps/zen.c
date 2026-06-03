@@ -1,111 +1,113 @@
 #include "zen.h"
-#include "fs.h"
-#include "tty.h"
-#include "kyuzenfs.h"
-#include "heap.h"
-#include "string.h"
-#include "task.h"
+#include <stdint.h>  // TAMBAHKAN BARIS INI!
 
-extern fs_node_t tty_node;
-extern uint32_t keyboard_read(uint8_t *buffer, uint32_t size);
-extern uint32_t string_length(const char* str);
+// 1. Impor Standard Library User Space
+extern void print(char* text);
+extern void clear_screen();
+extern uint32_t read_keyboard(char* buffer, uint32_t size);
+extern void sys_yield();
+extern void fs_delete(char* filename);
+
+// 2. Impor Syscall Memori & FS yang baru kita buat di kernel.c
+extern void* sys_alloc(uint32_t size);
+extern void sys_free(void* ptr);
+extern void* sys_realloc(void* ptr, uint32_t old_size, uint32_t new_size);
+extern int sys_file_exists(char* filename);
+extern uint32_t sys_file_size(char* filename);
+extern int sys_read_file_to_buffer(char* filename, char* buffer);
+extern int sys_create_file(char* filename, char* data, uint32_t size);
+
+// Fungsi utilitas lokal (Aman di Ring 3)
+static uint32_t zen_strlen(const char* str) {
+    uint32_t len = 0;
+    while (str[len]) len++;
+    return len;
+}
+
+static void zen_memset(void* s, int c, uint32_t n) {
+    uint8_t* p = (uint8_t*)s;
+    for (uint32_t i = 0; i < n; i++) p[i] = (uint8_t)c;
+}
 
 void zen_main(char* filename) {
-    tty_clear();
-    char* header = "--- ZEN EDITOR (Tekan ESC untuk Simpan & Keluar) ---\n";
-    write_fs(&tty_node, 0, string_length(header), (uint8_t*)header);
+    clear_screen();
+    print("--- ZEN EDITOR (Tekan ESC untuk Simpan & Keluar) ---\n");
 
-    // 1. Kapasitas awal HANYA 32 Byte! Super irit.
     uint32_t current_capacity = 32; 
     
-    // Tapi, kalau filenya sudah ada di disk dan ukurannya besar, kita sesuaikan kapasitas awalnya
-    if (kfs_exists(filename)) {
-        uint32_t existing_size = kfs_get_file_size(filename);
+    if (sys_file_exists(filename)) {
+        uint32_t existing_size = sys_file_size(filename);
         if (existing_size >= current_capacity) {
-            current_capacity = existing_size + 32; // Kasih ruang napas ekstra
+            current_capacity = existing_size + 32; 
         }
     }
 
-    // 2. Sewa memori dinamis
-    char* text_buffer = (char*)kmalloc(current_capacity);
-    if (text_buffer == NULL) return; // Proteksi BSoD
-    memset(text_buffer, 0, current_capacity);
+    // Gunakan sys_alloc (lewat Syscall 11) bukan kmalloc langsung!
+    char* text_buffer = (char*)sys_alloc(current_capacity);
+    if (text_buffer == 0) return; 
+    zen_memset(text_buffer, 0, current_capacity);
     
     uint32_t cursor = 0;
 
-    // 3. Load file lama jika ada
-    if (kfs_exists(filename)) {
-        kfs_read_to_buffer(filename, text_buffer);
-        cursor = string_length(text_buffer);
-        write_fs(&tty_node, 0, cursor, (uint8_t*)text_buffer);
+    if (sys_file_exists(filename)) {
+        sys_read_file_to_buffer(filename, text_buffer);
+        cursor = zen_strlen(text_buffer);
+        print(text_buffer);
     }
 
-    // 4. EDITOR LOOP DINAMIS
     uint8_t key[1];
     while(1) {
-        if (keyboard_read(key, 1) > 0) {
+        if (read_keyboard(key, 1) > 0) {
             char c = key[0];
 
             if (c == 27) break; // Keluar (ESC)
 
-            // Logika Backspace
             if (c == '\b') {
                 if (cursor > 0) {
                     cursor--;
                     text_buffer[cursor] = '\0';
-                    write_fs(&tty_node, 0, 1, (uint8_t*)"\b"); 
+                    print("\b"); 
                 }
-                continue; // Lanjut ke putaran berikutnya
+                continue; 
             }
 
-            // ==========================================
-            // LOGIKA ELASTISITAS MEMORI (AUTO-RESIZE)
-            // ==========================================
             if (cursor >= current_capacity - 1) { 
                 uint32_t new_capacity = current_capacity * 2; 
-                char* new_buffer = (char*)krealloc(text_buffer, current_capacity, new_capacity);
+                char* new_buffer = (char*)sys_realloc(text_buffer, current_capacity, new_capacity);
                 
-                if (new_buffer == NULL) {
-                    char* err = "\n[FATAL] RAM Habis, auto-expand gagal!\n";
-                    write_fs(&tty_node, 0, string_length(err), (uint8_t*)err);
-                    
-                    // Jeda sejenak agar user bisa membaca pesan error-nya!
+                if (new_buffer == 0) {
+                    print("\n[FATAL] RAM Habis, auto-expand gagal!\n");
                     for (volatile int w = 0; w < 90000000; w++); 
-                    
                     break; 
                 }
                 
                 text_buffer = new_buffer;       
                 current_capacity = new_capacity; 
-
-                // Pesan debug ini harusnya sekarang bisa muncul dengan mulus!
-                char* debug_msg = "\n[SYSTEM: Memori Zen kurang! Auto-Expand dipicu...]\n";
-                write_fs(&tty_node, 0, string_length(debug_msg), (uint8_t*)debug_msg);
+                print("\n[SYSTEM: Memori Zen kurang! Auto-Expand dipicu...]\n");
             }
             
-            // Cetak Huruf / Enter ke memori dan layar
             if (c == '\n') {
                 text_buffer[cursor] = '\n';
                 cursor++;
-                write_fs(&tty_node, 0, 1, (uint8_t*)"\n");
+                print("\n");
             } else {
                 text_buffer[cursor] = c;
                 cursor++;
-                write_fs(&tty_node, 0, 1, (uint8_t*)&c);
+                
+                // Trik mencetak 1 huruf di Ring 3 (diubah jadi array string)
+                char str_char[2] = {c, '\0'};
+                print(str_char); 
             }
         }
-        __asm__ volatile("hlt");
+        sys_yield(); // Berikan giliran CPU ke Shell/Timer!
     }
 
-    // 5. PROSES PENYIMPANAN
-    tty_clear();
-    char* msg_save = "Menyimpan file ke Hard Disk...\n";
-    write_fs(&tty_node, 0, string_length(msg_save), (uint8_t*)msg_save);
+    clear_screen();
+    print("Menyimpan file ke Hard Disk...\n");
 
-    if (kfs_exists(filename)) { kfs_delete_file(filename); }
-    kfs_create_file(filename, text_buffer);
+    if (sys_file_exists(filename)) { fs_delete(filename); }
+    sys_create_file(filename, text_buffer, zen_strlen(text_buffer));
 
-    kfree(text_buffer); // Bersihkan memori dinamisnya
-    
-    tty_clear();
+    sys_free(text_buffer); // Kembalikan RAM ke Kernel
+    clear_screen();
 }

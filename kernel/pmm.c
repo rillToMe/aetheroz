@@ -52,3 +52,18 @@ void pmm_free_page(void* ptr) {
     uint32_t bit = addr / PAGE_SIZE;
     bitmap_clear(bit); // Tandai sebagai kosong lagi
 }
+
+// Hitung berapa banyak blok RAM (Page) yang bernilai 1 di Bitmap
+uint32_t pmm_get_used_ram(void) {
+    uint32_t used_pages = 0;
+    for (uint32_t i = 0; i < PMM_BITMAP_SIZE * 8; i++) {
+        if (bitmap_test(i)) {
+            used_pages++;
+        }
+    }
+    return used_pages * PAGE_SIZE; // Kembalikan dalam satuan Byte
+}
+
+uint32_t pmm_get_total_ram(void) {
+    return MAX_MEM_SIZE; 
+}

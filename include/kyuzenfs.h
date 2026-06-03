@@ -25,7 +25,7 @@ typedef struct {
 void kfs_init(void);
 void kfs_format(void);
 void kfs_list_files(void);
-int kfs_create_file(char* filename, char* data);
+int kfs_create_file(char* filename, char* data, uint32_t size);
 void kfs_read_file(char* filename);
 void kfs_delete_file(char* filename); // Fitur Baru: Hapus File!
 
