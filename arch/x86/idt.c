@@ -1,6 +1,8 @@
 #include <stdint.h>
 
 extern void keyboard_isr_stub();
+extern void timer_isr_stub();
+extern void isr14_stub();
 
 // Struktur 1 entry IDT (Gerbang Interupsi)
 struct idt_entry {
@@ -42,6 +44,10 @@ void init_idt() {
         idt_set_gate(i, 0, 0, 0);
     }
 
+    idt_set_gate(14, (uint32_t)isr14_stub, 0x08, 0x8E);
+
+    // Pintu 32 untuk Timer, Pintu 33 untuk Keyboard
+    idt_set_gate(32, (uint32_t)timer_isr_stub, 0x08, 0x8E); 
     idt_set_gate(33, (uint32_t)keyboard_isr_stub, 0x08, 0x8E);
     
     // Load tabel IDT ke CPU
