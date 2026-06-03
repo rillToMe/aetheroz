@@ -26,6 +26,9 @@ extern uint32_t get_uptime(void);
 extern uint32_t pmm_get_total_ram(void);
 extern uint32_t pmm_get_used_ram(void);
 
+// times
+extern void read_rtc(uint32_t* time_buf);
+
 typedef struct {
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 } registers_t;
@@ -62,6 +65,11 @@ uint32_t syscall_handler(registers_t *r) {
     else if (r->eax == 18) { return get_uptime(); }
     else if (r->eax == 19) { return pmm_get_total_ram(); }
     else if (r->eax == 20) { return pmm_get_used_ram(); }
+    else if (r->eax == 21) {
+        // R->EBX adalah pointer array kosong dari User Space
+        read_rtc((uint32_t*)r->ebx);
+        return 0;
+    }
 
     return (uint32_t)-1;
 }

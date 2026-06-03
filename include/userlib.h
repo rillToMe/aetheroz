@@ -27,6 +27,9 @@ uint32_t sys_used_ram(void);
 
 void print_num(uint32_t num);
 extern int strcmp(const char *s1, const char *s2);
- 
+
 void get_cpu_string(char* buffer);
+
+
+void sys_get_time(uint32_t* time_array);
 #endif

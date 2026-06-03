@@ -49,7 +49,7 @@ void zen_main(char* filename) {
         print(text_buffer);
     }
 
-    uint8_t key[1];
+    char key[1];
     while(1) {
         if (read_keyboard(key, 1) > 0) {
             char c = key[0];

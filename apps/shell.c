@@ -65,7 +65,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- - jam    : Lihat waktu sekarang\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "echo") == 0) {
@@ -105,7 +105,24 @@ void user_shell() {
                             } else { print("Error: File tidak ditemukan.\n"); }
                         } else { print("Penggunaan: run [nama_file.bin]\n"); }
                     }
-                    else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); }
+                    else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
+                    }
+                    else if (strcmp(command, "jam") == 0) {
+                        uint32_t waktu[6];
+                        sys_get_time(waktu);
+
+                        print("Waktu Dunia Nyata (WIB) : ");
+                        
+                        // Format Tanggal: YYYY-MM-DD
+                        print_num(waktu[0]); print("-");
+                        if(waktu[1] < 10) print("0"); print_num(waktu[1]); print("-");
+                        if(waktu[2] < 10) print("0"); print_num(waktu[2]); print(" ");
+                        
+                        // Format Jam: HH:MM:SS
+                        if(waktu[3] < 10) print("0"); print_num(waktu[3]); print(":");
+                        if(waktu[4] < 10) print("0"); print_num(waktu[4]); print(":");
+                        if(waktu[5] < 10) print("0"); print_num(waktu[5]); print("\n");
+                    }
                     else { print("Perintah tidak dikenali.\n"); }
                 }
                 cmd_index = 0;

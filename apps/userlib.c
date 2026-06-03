@@ -85,3 +85,7 @@ void get_cpu_string(char* buffer) {
         buffer[4] = 'o'; buffer[5] = 'w'; buffer[6] = 'n'; buffer[7] = '\0';
     }
 }
+
+void sys_get_time(uint32_t* time_array) {
+    __asm__ volatile("int $0x80" : : "a"(21), "b"(time_array));
+}
