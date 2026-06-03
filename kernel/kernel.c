@@ -9,11 +9,13 @@
 #include "kyuzenfs.h"
 #include "zen.h"
 #include "task.h"
+#include "timer.h"
 
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
 extern fs_node_t tty_node;
+extern void set_kernel_stack(uint32_t stack);
 
 // Fungsi kecil pengganti strlen() bawaan C
 uint32_t string_length(const char* str) {
@@ -52,6 +54,61 @@ void background_task() {
         // Oper kembali CPU ke Shell!
         yield(); 
     }
+}
+
+// --- PROGRAM RING 3 (USER SPACE) ---
+void my_first_app() {
+    char* msg = "\n[USER SPACE] Berhasil! Saya berjalan tanpa hak akses Kernel!\n";
+    
+    // Panggil Syscall 1 (Print)
+    __asm__ volatile(
+        "mov $1, %%eax \n"
+        "mov %0, %%ebx \n"
+        "int $0x80     \n"
+        : : "r"(msg) : "%eax", "%ebx"
+    );
+    
+    // Aplikasi User Space belum punya Syscall "Exit" (Tutup Program).
+    // Jadi untuk sementara, kita kurung dia di loop tak terhingga.
+    while(1) {
+        // Jangan taruh hlt di sini! Ring 3 dilarang memakai instruksi hlt.
+    }
+}
+
+// --- LOGIKA LOMPATAN RING 3 ---
+void switch_to_user_mode(void (*user_func)()) {
+    
+    // 1. Stack untuk aplikasi
+    uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
+
+    // 2. STACK UNTUK KERNEL (PARASUT)!
+    // Jika aplikasi memanggil int 0x80, CPU akan lompat ke stack ini!
+    uint32_t kernel_landing_stack = (uint32_t)kmalloc(4096) + 4096;
+    set_kernel_stack(kernel_landing_stack);
+
+    // 3. Lakukan tipuan iret
+    __asm__ volatile(
+        "cli \n"                 
+        "mov $0x23, %%ax \n" 
+        "mov %%ax, %%ds \n"
+        "mov %%ax, %%es \n"
+        "mov %%ax, %%fs \n"
+        "mov %%ax, %%gs \n"
+        
+        "pushl $0x23 \n"         
+        "pushl %0 \n"            
+        "pushfl \n"              
+        "popl %%eax \n"
+        "orl $0x200, %%eax \n"   
+        "pushl %%eax \n"         
+        "pushl $0x1B \n"         
+        "pushl %1 \n"            
+        
+        "iret \n"                
+        :
+        : "r"(user_stack), "r"(user_func)
+        : "%eax"
+    );
 }
 
 void kernel_main(void) {
@@ -104,7 +161,11 @@ void kernel_main(void) {
     kfs_init();
 
     tasking_init();
+    init_timer(100);
     create_task(background_task);
+
+    switch_to_user_mode(my_first_app);
+    
 
     // --- INTERACTIVE SHELL LOOP ---
     char* prompt = "kyuzen> ";
@@ -238,6 +299,6 @@ void kernel_main(void) {
             }
         }
         
-        yield();
+        __asm__ volatile("hlt");
     }
 }

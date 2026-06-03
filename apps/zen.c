@@ -94,7 +94,7 @@ void zen_main(char* filename) {
                 write_fs(&tty_node, 0, 1, (uint8_t*)&c);
             }
         }
-        yield();
+        __asm__ volatile("hlt");
     }
 
     // 5. PROSES PENYIMPANAN

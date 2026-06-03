@@ -3,6 +3,9 @@
 extern void keyboard_isr_stub();
 extern void timer_isr_stub();
 extern void isr14_stub();
+extern void isr128_stub();
+extern void isr8_stub();
+extern void isr13_stub();
 
 // Struktur 1 entry IDT (Gerbang Interupsi)
 struct idt_entry {
@@ -34,22 +37,24 @@ void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
     idt[num].flags   = flags;
 }
 
-// Fungsi utama yang dipanggil oleh kernel
 void init_idt() {
     idtp.limit = (sizeof(struct idt_entry) * 256) - 1;
     idtp.base  = (uint32_t)&idt;
 
-    // Bersihkan seluruh 256 entry agar memori tidak berisi data sampah
     for (int i = 0; i < 256; i++) {
         idt_set_gate(i, 0, 0, 0);
     }
 
     idt_set_gate(14, (uint32_t)isr14_stub, 0x08, 0x8E);
-
-    // Pintu 32 untuk Timer, Pintu 33 untuk Keyboard
     idt_set_gate(32, (uint32_t)timer_isr_stub, 0x08, 0x8E); 
     idt_set_gate(33, (uint32_t)keyboard_isr_stub, 0x08, 0x8E);
     
-    // Load tabel IDT ke CPU
+    // --- GERBANG BARU UNTUK SYSTEM CALL ---
+    // 0xEE (1110 1110 biner) -> DPL = 3. Mengizinkan aplikasi User Space memanggilnya!
+    idt_set_gate(128, (uint32_t)isr128_stub, 0x08, 0xEE); 
+    
+    idt_set_gate(8, (uint32_t)isr8_stub, 0x08, 0x8E);  
+    idt_set_gate(13, (uint32_t)isr13_stub, 0x08, 0x8E);
+
     idt_flush(&idtp);
 }

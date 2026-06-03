@@ -19,3 +19,11 @@ gdt_flush:
 
 flush_cs:
     ret
+
+global tss_flush
+
+tss_flush:
+    ; Index ke-5 di GDT x 8 byte = 40 (0x28)
+    mov ax, 0x28  
+    ltr ax          ; Load Task Register dengan segment TSS kita!
+    ret
