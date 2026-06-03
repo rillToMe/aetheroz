@@ -64,6 +64,13 @@ uint32_t pmm_get_used_ram(void) {
     return used_pages * PAGE_SIZE; // Kembalikan dalam satuan Byte
 }
 
+uint32_t real_total_ram = 256 * 1024 * 1024; // Default 256 MB
+
+void pmm_set_total_ram(uint32_t size) {
+    real_total_ram = size;
+}
+
+// Timpa pmm_get_total_ram yang sebelumnya dengan ini:
 uint32_t pmm_get_total_ram(void) {
-    return MAX_MEM_SIZE; 
+    return real_total_ram;
 }

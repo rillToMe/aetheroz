@@ -44,7 +44,7 @@ $(TARGET): $(OBJS)
 
 # Tahap 4: Boot up QEMU
 run: $(TARGET)
-	$(QEMU) -kernel $(TARGET) -drive file=disk.img,format=raw,index=0,media=disk
+	$(QEMU) -cpu max -kernel $(TARGET) -drive file=disk.img,format=raw,index=0,media=disk
 
 # Bersihkan file hasil build
 clean:

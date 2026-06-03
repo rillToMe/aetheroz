@@ -1,0 +1,25 @@
+# Object files
+*.o
+*.obj
+
+# Binaries
+*.elf
+*.bin
+*.img
+*.iso
+
+# Dependency tracking
+*.d
+
+# Editor and IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build directories
+build/
+bin/
+out/

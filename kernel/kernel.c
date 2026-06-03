@@ -10,12 +10,14 @@
 #include "task.h"
 #include "timer.h"
 #include "shell.h" // Import Shell kita
+#include "multiboot.h"
 
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
 extern fs_node_t tty_node;
 extern void set_kernel_stack(uint32_t stack);
+extern void pmm_set_total_ram(uint32_t size);
 
 uint32_t string_length(const char* str) {
     uint32_t len = 0;
@@ -58,8 +60,15 @@ void switch_to_user_mode(void (*user_func)()) {
     );
 }
 
-void kernel_main(void) {
+void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
     fs_node_t* tty0 = init_tty();
+
+    // Tangkap data RAM asli dari QEMU/Bootloader
+    if (magic == 0x2BADB002) {
+        uint32_t total_ram = (mbi->mem_upper * 1024) + (1024 * 1024);
+        pmm_set_total_ram(total_ram);
+    }
+
     init_gdt(); init_idt(); pmm_init(); init_paging(); init_heap();
 
     char* msg1 = "========================================\n";

@@ -24,6 +24,11 @@ _start:
     ; Setup stack pointer ke top of stack
     mov esp, stack_top
 
+    ; --- TAMBAHKAN DUA BARIS INI ---
+    ; Dorong argumen ke stack agar bisa dibaca oleh fungsi C (kernel_main)
+    push ebx  ; Argumen 2: Pointer ke Laporan Multiboot
+    push eax  ; Argumen 1: Magic Number (0x2BADB002)
+    
     ; Pindah ke kode C kita!
     call kernel_main
 

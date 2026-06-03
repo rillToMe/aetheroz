@@ -4,11 +4,20 @@
 #include <stddef.h>
 
 void kyuzen_fetch() {
+    // Siapkan memori kosong untuk menampung nama CPU
+    char cpu_name[49];
+    get_cpu_string(cpu_name);
+
     print("\n");
     print("       /\\        OS   : Kyuzen OS (Ring 3)\n");
     print("      /  \\       Arch : x86 32-bit (Protected Mode)\n");
-    print("     /____\\      CPU  : Intel Core i5-12450HX (Simulated)\n");
-    print("    /      \\     GPU  : NVIDIA GeForce RTX 3060 (Simulated)\n");
+    
+    // Cetak nama CPU aslinya ke layar!
+    print("     /____\\      CPU  : "); 
+    print(cpu_name); 
+    print("\n");
+    
+    print("    /      \\     GPU  : VGA Compatible (Text Mode)\n");
     print("   /        \\    Shell: kyuzen-shell\n");
     
     uint32_t used_mb = sys_used_ram() / 1024 / 1024;
