@@ -1,12 +1,6 @@
 #include "zen.h"
 #include <stdint.h>  // TAMBAHKAN BARIS INI!
-
-// 1. Impor Standard Library User Space
-extern void print(char* text);
-extern void clear_screen();
-extern uint32_t read_keyboard(char* buffer, uint32_t size);
-extern void sys_yield();
-extern void fs_delete(char* filename);
+#include "userlib.h"
 
 // 2. Impor Syscall Memori & FS yang baru kita buat di kernel.c
 extern void* sys_alloc(uint32_t size);
