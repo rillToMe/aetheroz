@@ -1,69 +1,103 @@
 #include "heap.h"
-#include "pmm.h"
+#include "string.h"
 
-// Metadata untuk setiap potongan memori
-typedef struct heap_block {
-    size_t size;            // Ukuran potongan ini
-    uint8_t is_free;        // 1 = Bebas, 0 = Terpakai
-    struct heap_block* next; // Pointer ke potongan memori berikutnya
-} heap_block_t;
+// KITA SIAPKAN KOLAM MEMORI 1 MEGABYTE! (1024 * 1024 Bytes)
+#define HEAP_SIZE (1024 * 1024)
+uint8_t heap_memory[HEAP_SIZE]; 
 
-// Kepala dari Linked List memori kita
-static heap_block_t* heap_head = NULL;
+heap_block_t* heap_head = NULL; // Kepala rantai memori
 
+// 1. Inisialisasi: Sulap array kosong menjadi satu blok raksasa yang bebas
 void init_heap(void) {
-    // Sewa 1 Page (4KB) dari PMM sebagai modal awal Heap kita
-    heap_head = (heap_block_t*)pmm_alloc_page();
-    
-    // Potongan pertama ini ukurannya 4KB dikurangi ukuran metadatanya sendiri
-    heap_head->size = PAGE_SIZE - sizeof(heap_block_t);
+    heap_head = (heap_block_t*)heap_memory;
+    heap_head->size = HEAP_SIZE - sizeof(heap_block_t); // Sisa ruang setelah dikurangi label metadata
     heap_head->is_free = 1;
     heap_head->next = NULL;
 }
 
-// Fungsi pembungkus sakti kita!
-void* kmalloc(size_t size) {
+// 2. Kmalloc: Cari blok kosong, potong, dan berikan ke aplikasi
+void* kmalloc(uint32_t size) {
+    if (size == 0) return NULL;
+
     heap_block_t* current = heap_head;
     
+    // Susuri rantai memori mencari yang pas
     while (current != NULL) {
-        // Cari blok yang statusnya BEBAS dan ukurannya CUKUP
         if (current->is_free && current->size >= size) {
             
-            // Kalau blok ini kebesaran, kita "belah" jadi dua (Split)
-            // Syarat split: sisa ukurannya harus muat untuk nampung metadata baru + minimal 4 byte data
-            if (current->size > size + sizeof(heap_block_t) + 4) {
-                // Hitung alamat untuk blok baru (berada tepat setelah blok yg diminta user)
+            // Jika kotaknya kebesaran, kita POTONG dan sisanya jadikan kotak kosong baru! (Splitting)
+            if (current->size > size + sizeof(heap_block_t) + 1) {
                 heap_block_t* new_block = (heap_block_t*)((uint8_t*)current + sizeof(heap_block_t) + size);
-                
-                new_block->size = current->size - size - sizeof(heap_block_t);
                 new_block->is_free = 1;
+                new_block->size = current->size - size - sizeof(heap_block_t);
                 new_block->next = current->next;
                 
-                current->size = size;
                 current->next = new_block;
+                current->size = size;
             }
             
-            current->is_free = 0; // Tandai sedang dipakai
+            // Tandai terpakai
+            current->is_free = 0;
             
-            // Kembalikan alamat ruang kosongnya (bukan alamat metadatanya)
+            // Kembalikan alamat memori ASLI (setelah dilompati label metadatanya)
             return (void*)((uint8_t*)current + sizeof(heap_block_t));
         }
         current = current->next;
     }
     
-    // Kalau sampai sini berarti RAM Heap kita habis (Out of Memory)
-    // Nanti kita bisa bikin logika agar dia otomatis minta Page baru ke PMM.
-    return NULL; 
+    return NULL; // Memori 1 MB beneran habis!
 }
 
-// Fungsi untuk mengembalikan memori
+// 3. Kfree: Kembalikan memori dan daur ulang!
 void kfree(void* ptr) {
-    if (!ptr) return;
+    if (ptr == NULL) return;
     
-    // Mundur beberapa byte dari alamat yang dikasih user untuk menemukan metadatanya
+    // Mundur sedikit untuk membaca label metadatanya
     heap_block_t* block = (heap_block_t*)((uint8_t*)ptr - sizeof(heap_block_t));
     block->is_free = 1; // Bebaskan!
+
+    // COALESCING: Peleburan Blok
+    // Kita susuri dari awal, kalau ada dua blok KOSONG yang bersebelahan, kita HANCURKAN sekatnya!
+    heap_block_t* current = heap_head;
+    while (current != NULL) {
+        if (current->is_free && current->next != NULL && current->next->is_free) {
+            // Gabungkan ukurannya
+            current->size += current->next->size + sizeof(heap_block_t);
+            // Lompatkan rantainya (Blok yang di tengah hilang dilebur)
+            current->next = current->next->next; 
+        } else {
+            // Hanya maju jika tidak ada peleburan, agar bisa mengecek blok berikutnya lagi
+            current = current->next; 
+        }
+    }
+}
+
+void* krealloc(void* ptr, uint32_t old_size, uint32_t new_size) {
+    // Kalau minta ukuran 0, sama saja dengan menghapus memori
+    if (new_size == 0) { 
+        kfree(ptr); 
+        return NULL; 
+    }
     
-    // (Di OS canggih, biasanya ada fungsi tambahan di sini untuk menggabungkan 
-    // dua blok bebas yang bersebelahan agar tidak terjadi fragmentasi/remukan memori).
+    // Kalau pointer sebelumnya kosong, sama saja dengan kmalloc baru
+    if (ptr == NULL) {
+        return kmalloc(new_size);
+    }
+
+    // 1. Sewa "rumah" baru yang lebih besar
+    void* new_ptr = kmalloc(new_size);
+    if (new_ptr == NULL) {
+        return NULL; // Gagal, RAM beneran habis
+    }
+
+    // Bersihkan rumah baru agar terhindar dari sampah memori
+    memset(new_ptr, 0, new_size);
+
+    // 2. Pindahkan data dari "rumah" lama ke "rumah" baru
+    memcpy(new_ptr, ptr, old_size);
+
+    // 3. Jual/Bebaskan "rumah" lama agar bisa didaur ulang OS
+    kfree(ptr);
+
+    return new_ptr;
 }

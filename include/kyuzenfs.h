@@ -6,6 +6,7 @@
 #define FAT_FREE 0x0000 // Tanda Sektor Kosong
 #define FAT_EOF  0xFFFF // Tanda Akhir File (End of File)
 
+
 // 1 Entri File = 24 Byte
 typedef struct {
     char filename[16];          // Nama file (maksimal 15 huruf + null)
@@ -30,4 +31,7 @@ void kfs_delete_file(char* filename); // Fitur Baru: Hapus File!
 
 int kfs_exists(char* filename);
 int kfs_read_to_buffer(char* filename, char* out_buffer);
+
+
+uint32_t kfs_get_file_size(char* filename);
 #endif

@@ -208,24 +208,43 @@ int kfs_exists(char* filename) {
     return 0;
 }
 
-// Menyalin isi file secara diam-diam ke buffer RAM (tanpa diprint ke layar)
+// Menyalin isi file secara presisi agar tidak menghancurkan Heap!
 int kfs_read_to_buffer(char* filename, char* out_buffer) {
     for(uint32_t i = 0; i < current_fs.file_count; i++) {
         if (strcmp(current_fs.files[i].filename, filename) == 0) {
             uint16_t curr = current_fs.files[i].start_sector;
+            uint32_t file_size = current_fs.files[i].size_bytes; // Ambil ukuran asli file
             uint32_t offset = 0;
+            uint32_t remaining = file_size;
+            
             uint8_t* temp = (uint8_t*)kmalloc(512);
             
-            while(curr != FAT_EOF && curr != FAT_FREE) {
+            // Looping selama masih ada sisa byte yang harus dibaca
+            while(curr != FAT_EOF && curr != FAT_FREE && remaining > 0) {
                 memset(temp, 0, 512);
                 ata_read_sector(curr, temp);
-                memcpy(out_buffer + offset, (char*)temp, 512);
-                offset += 512;
+                
+                // Hitung berapa byte yang boleh di-copy (Max 512, atau seadanya sisa)
+                uint32_t chunk_size = (remaining > 512) ? 512 : remaining;
+                memcpy(out_buffer + offset, (char*)temp, chunk_size);
+                
+                offset += chunk_size;
+                remaining -= chunk_size;
                 curr = fat_table[curr];
             }
             kfree(temp);
-            return 1; // Sukses
+            return 1;
         }
     }
-    return 0; // Gagal (File tidak ada)
+    return 0; // File tidak ditemukan
+}
+
+// Ambil ukuran file asli dari Daftar Isi
+uint32_t kfs_get_file_size(char* filename) {
+    for(uint32_t i = 0; i < current_fs.file_count; i++) {
+        if (strcmp(current_fs.files[i].filename, filename) == 0) {
+            return current_fs.files[i].size_bytes;
+        }
+    }
+    return 0; // File tidak ditemukan
 }

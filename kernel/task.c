@@ -19,14 +19,18 @@ void tasking_init() {
 void create_task(void (*func)()) {
     if (task_count >= MAX_TASKS) return;
 
-    // Sewa RAM 4KB khusus untuk stack memori program ini
+    // Sewa RAM 1KB (1024) saja, cukup untuk stack sederhana!
     uint32_t* stack = (uint32_t*)kmalloc(4096);
+    
+    // SATPAM ANTI-BSOD: Kalau memori habis, batalkan pembuatan task!
+    if (stack == NULL) return; 
+
     uint32_t* top_of_stack = (uint32_t*)((uint32_t)stack + 4096);
 
     // Manipulasi stack agar menyerupai perilaku CPU setelah interupsi
     *(--top_of_stack) = (uint32_t)func; // EIP (Titik mulai fungsi)
 
-    // Simulasikan instruksi 'pusha' (8 register general purpose diset 0)
+    // Simulasikan instruksi 'pusha'
     for (int i = 0; i < 8; i++) {
         *(--top_of_stack) = 0;
     }
