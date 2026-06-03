@@ -1,13 +1,15 @@
 #include "io.h"
 #include <stdint.h>
 
-// Ukuran memori penyangga keyboard
 #define KBD_BUFFER_SIZE 256
 volatile uint8_t kbd_buffer[KBD_BUFFER_SIZE];
-volatile uint32_t kbd_head = 0; // Penunjuk lokasi tulis
-volatile uint32_t kbd_tail = 0; // Penunjuk lokasi baca
+volatile uint32_t kbd_head = 0;
+volatile uint32_t kbd_tail = 0;
 
-// Peta Scancode ke ASCII (Layout US QWERTY)
+// Variabel pelacak status tombol modifier
+static uint8_t shift_pressed = 0;
+
+// Tabel Scancode Normal (Tanpa Shift)
 const unsigned char kbdus[128] = {
     0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
   '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -17,29 +19,49 @@ const unsigned char kbdus[128] = {
     0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
+// Tabel Scancode Kapital & Simbol (Dengan Shift)
+const unsigned char kbdus_shift[128] = {
+    0,  27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
+  '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+    0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
+  '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '-',
+    0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
 void pic_remap() {
     outb(0x20, 0x11); outb(0xA0, 0x11);
     outb(0x21, 0x20); outb(0xA1, 0x28);
     outb(0x21, 0x04); outb(0xA1, 0x02);
     outb(0x21, 0x01); outb(0xA1, 0x01);
-    
-    // 0xFC = 11111100 dalam biner. 
-    // Bit 0 (Timer) = 0 (Aktif)
-    // Bit 1 (Keyboard) = 0 (Aktif)
-    // Sisanya 1 (Diblokir)
-    outb(0x21, 0xFC);  
-    outb(0xA1, 0xFF); 
+    outb(0x21, 0xFC); outb(0xA1, 0xFF); 
 }
-// Interupsi: Menyimpan ketikan ke dalam Buffer
+
 void keyboard_handler() {
     uint8_t status = inb(0x64);
     if (status & 0x01) {
         uint8_t scancode = inb(0x60);
         
-        if (!(scancode & 0x80)) { // Jika tombol ditekan (bukan dilepas)
-            uint8_t ascii = kbdus[scancode];
+        // 1. Cek apakah tombol yang ditekan adalah SHIFT Kiri (0x2A) atau SHIFT Kanan (0x36)
+        if (scancode == 0x2A || scancode == 0x36) {
+            shift_pressed = 1;
+        } 
+        // 2. Cek apakah tombol SHIFT Kiri/Kanan dilepas (Scancode + 0x80)
+        else if (scancode == 0xAA || scancode == 0xB6) {
+            shift_pressed = 0;
+        } 
+        // 3. Jika tombol biasa ditekan (bukan dilepas)
+        else if (!(scancode & 0x80)) { 
+            uint8_t ascii = 0;
+            
+            // Gunakan tabel yang sesuai dengan status Shift
+            if (shift_pressed) {
+                ascii = kbdus_shift[scancode];
+            } else {
+                ascii = kbdus[scancode];
+            }
+
             if (ascii != 0) {
-                // Masukkan huruf ke Ring Buffer
                 uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
                 if (next_head != kbd_tail) { 
                     kbd_buffer[kbd_head] = ascii;
@@ -48,13 +70,11 @@ void keyboard_handler() {
             }
         }
     }
-    outb(0x20, 0x20); // Beritahu CPU interupsi selesai
+    outb(0x20, 0x20); // End of Interrupt
 }
 
-// Fungsi abstrak yang akan dipanggil oleh VFS untuk membaca buffer
 uint32_t keyboard_read(uint8_t *buffer, uint32_t size) {
     uint32_t bytes_read = 0;
-    // Baca selama ada permintaan dan buffer tidak kosong
     while (bytes_read < size && kbd_head != kbd_tail) {
         buffer[bytes_read] = kbd_buffer[kbd_tail];
         kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;

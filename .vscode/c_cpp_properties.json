@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "MSYS2 Clang64",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/include"
+            ],
+            "defines": [],
+            "compilerPath": "E:/Tools/msys2/clang64/bin/clang.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-clang-x64",
+            "compilerArgs": [
+                "-ffreestanding"
+            ]
+        }
+    ],
+    "version": 4
+}

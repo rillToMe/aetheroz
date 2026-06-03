@@ -8,8 +8,8 @@ AS = nasm
 LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
-# Direktori sumber
-SRC_DIRS = arch/x86 drivers kernel fs
+# Direktori sumber (TAMBAHKAN 'apps' DI SINI)
+SRC_DIRS = arch/x86 drivers kernel fs apps
 INCLUDE_DIR = include
 
 # Flags (-I$(INCLUDE_DIR) penting agar #include "io.h" tetap jalan)
@@ -44,7 +44,7 @@ $(TARGET): $(OBJS)
 
 # Tahap 4: Boot up QEMU
 run: $(TARGET)
-	$(QEMU) -kernel $(TARGET)
+	$(QEMU) -kernel $(TARGET) -drive file=disk.img,format=raw,index=0,media=disk
 
 # Bersihkan file hasil build
 clean:
