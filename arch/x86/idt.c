@@ -6,6 +6,7 @@ extern void isr14_stub();
 extern void isr128_stub();
 extern void isr8_stub();
 extern void isr13_stub();
+extern void mouse_isr_stub();
 
 // Struktur 1 entry IDT (Gerbang Interupsi)
 struct idt_entry {
@@ -55,6 +56,9 @@ void init_idt() {
     
     idt_set_gate(8, (uint32_t)isr8_stub, 0x08, 0x8E);  
     idt_set_gate(13, (uint32_t)isr13_stub, 0x08, 0x8E);
+    
+    //mouse 
+    idt_set_gate(44, (uint32_t)mouse_isr_stub, 0x08, 0x8E);
 
     idt_flush(&idtp);
 }

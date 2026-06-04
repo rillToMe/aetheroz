@@ -34,12 +34,14 @@ void pic_remap() {
     outb(0x21, 0x20); outb(0xA1, 0x28);
     outb(0x21, 0x04); outb(0xA1, 0x02);
     outb(0x21, 0x01); outb(0xA1, 0x01);
-    outb(0x21, 0xFC); outb(0xA1, 0xFF); 
+    outb(0x21, 0xF8); outb(0xA1, 0xEF);
 }
 
 void keyboard_handler() {
     uint8_t status = inb(0x64);
-    if (status & 0x01) {
+    
+    // Tambahkan pelindung: JANGAN BACA jika Bit 5 (Mouse) menyala!
+    if ((status & 0x01) && !(status & 0x20)) {
         uint8_t scancode = inb(0x60);
         
         // 1. Cek apakah tombol yang ditekan adalah SHIFT Kiri (0x2A) atau SHIFT Kanan (0x36)

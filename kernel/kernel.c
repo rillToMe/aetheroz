@@ -21,6 +21,7 @@ extern void pic_remap();
 extern void init_keyboard();
 extern void switch_to_user_mode(void (*user_func)());
 extern void user_shell();
+extern void init_mouse();
 
 // --- VARIABEL GLOBAL FRAMEBUFFER ---
 uint32_t* fb_ptr = NULL;
@@ -95,6 +96,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
     init_heap();
     pic_remap(); 
     init_timer(50); 
+    init_mouse();
     // init_keyboard(); 
     // ata_init(); <--- HAPUS BARIS INI
     kfs_init();

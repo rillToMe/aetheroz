@@ -10,6 +10,10 @@ extern uint32_t fb_pitch;
 extern void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color);
 extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 
+// --- TAMBAHAN: Impor fungsi kendali Mouse ---
+extern void draw_mouse();
+extern void erase_mouse();
+
 // 2. Konstanta Terminal GUI
 #define FONT_WIDTH 8
 #define FONT_HEIGHT 16 // Tinggi diset 16 agar ada jarak kosong 8px di bawah setiap huruf
@@ -31,12 +35,16 @@ void tty_draw_cursor() {
 // -----------------------------------
 
 void tty_blink_cursor() {
-    cursor_state = !cursor_state; // Balikkan status
+    erase_mouse(); // Sembunyikan mouse agar tidak tertimpa kedipan kursor
+    
+    cursor_state = !cursor_state; 
     if (cursor_state) {
         draw_rect(terminal_column * FONT_WIDTH, (terminal_row * FONT_HEIGHT) + 14, FONT_WIDTH, 2, FG_COLOR);
     } else {
         draw_rect(terminal_column * FONT_WIDTH, (terminal_row * FONT_HEIGHT) + 14, FONT_WIDTH, 2, BG_COLOR);
     }
+    
+    draw_mouse(); // Tampilkan mouse kembali
 }
 
 void tty_erase_cursor() {
@@ -46,6 +54,8 @@ void tty_erase_cursor() {
 
 // --- FITUR SCROLLING LAYAR GUI ---
 void tty_scroll() {
+    erase_mouse(); // Sembunyikan mouse sebelum layar digulir ke atas
+    
     uint32_t copy_height = fb_height - FONT_HEIGHT;
     for (uint32_t y = 0; y < copy_height; y++) {
         for (uint32_t x = 0; x < fb_width; x++) {
@@ -54,11 +64,13 @@ void tty_scroll() {
     }
     draw_rect(0, fb_height - FONT_HEIGHT, fb_width, FONT_HEIGHT, BG_COLOR);
     terminal_row--; 
+    
+    draw_mouse(); // Tampilkan mouse kembali setelah scroll selesai
 }
 
-// --- LOGIKA CETAK HURUF PIKSEL DEMI PIKSEL ---
 void terminal_putchar(char c) {
-    tty_erase_cursor(); // Hapus kursor lama secara paksa sebelum pindah
+    erase_mouse();      // 1. Sembunyikan mouse sementara
+    tty_erase_cursor(); // 2. Hapus kursor teks lama
 
     if (c == '\n') {
         terminal_column = 0;
@@ -83,16 +95,19 @@ void terminal_putchar(char c) {
         }
     }
 
-    // Paksa kursor menyala setiap kali kita mengetik agar responsif
-    tty_draw_cursor(); 
+    tty_draw_cursor(); // 3. Gambar ulang kursor teks di posisi baru
+    draw_mouse();      // 4. Gambar ulang mouse di lapisan paling atas!
 }
 
 void tty_clear(void) {
+    erase_mouse(); // Hapus mouse yang menyimpan background lama
+    
     draw_rect(0, 0, fb_width, fb_height, BG_COLOR);
     terminal_row = 0;
     terminal_column = 0;
-    // 3. PASTIKAN KURSOR MUNCUL SAAT LAYAR DIBERSIHKAN
-    tty_draw_cursor(); 
+    
+    tty_draw_cursor();
+    draw_mouse();  // Langsung cetak mouse di atas layar yang sudah bersih
 }
 
 uint32_t tty_write(fs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buffer) {
