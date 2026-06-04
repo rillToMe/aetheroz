@@ -1,6 +1,8 @@
 #include "io.h"
 #include <stdint.h>
 
+extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
+
 #define KBD_BUFFER_SIZE 256
 volatile uint8_t kbd_buffer[KBD_BUFFER_SIZE];
 volatile uint32_t kbd_head = 0;
@@ -68,6 +70,8 @@ void keyboard_handler() {
                 if (next_head != kbd_tail) { 
                     kbd_buffer[kbd_head] = ascii;
                     kbd_head = next_head;
+
+                    push_event(1, ascii, 0, 0); // EVENT_KEY_PRESS (1) -> P1: Kode ASCII
                 }
             }
         }

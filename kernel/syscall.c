@@ -41,6 +41,29 @@ typedef struct {
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 } registers_t;
 
+// --- SISTEM ANTREAN PESAN (EVENT QUEUE) ---
+typedef struct {
+    uint32_t type; int32_t param1; int32_t param2; int32_t param3;
+} kyuzen_event_t;
+
+#define EVENT_QUEUE_SIZE 256
+kyuzen_event_t event_queue[EVENT_QUEUE_SIZE];
+uint32_t event_head = 0;
+uint32_t event_tail = 0;
+
+// Fungsi ini akan dipanggil oleh Keyboard dan Mouse dari Ring 0
+void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3) {
+    uint32_t next = (event_head + 1) % EVENT_QUEUE_SIZE;
+    if (next != event_tail) {
+        event_queue[event_head].type = type;
+        event_queue[event_head].param1 = p1;
+        event_queue[event_head].param2 = p2;
+        event_queue[event_head].param3 = p3;
+        event_head = next;
+    }
+}
+// ------------------------------------------
+
 uint32_t syscall_handler(registers_t *r) {
     if (r->eax == 1) { 
         write_fs(&tty_node, 0, string_length((char*)r->ebx), (uint8_t*)r->ebx); return 0; 
@@ -103,6 +126,17 @@ uint32_t syscall_handler(registers_t *r) {
     }
     else if (r->eax == 28) {
         return current_uid;   // sys_get_uid
+    }
+    // --- SYSCALL BARU: EVENT QUEUE UNTUK GUI ---
+    else if (r->eax == 29) {
+        kyuzen_event_t* out_event = (kyuzen_event_t*)r->ebx;
+        if (event_head != event_tail) {
+            *out_event = event_queue[event_tail];
+            event_tail = (event_tail + 1) % EVENT_QUEUE_SIZE;
+            return 1; // Ada pesan!
+        }
+        out_event->type = 0; // EVENT_NONE
+        return 0; // Kosong
     }
     return (uint32_t)-1;
 }

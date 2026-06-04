@@ -128,3 +128,9 @@ uint32_t sys_get_uid() {
     __asm__ volatile("int $0x80" : "=a"(uid) : "a"(28)); // Menggunakan 28
     return uid;
 }
+
+int sys_get_event(kyuzen_event_t* event_out) {
+    uint32_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(29), "b"(event_out)); 
+    return ret;
+}

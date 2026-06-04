@@ -3,6 +3,20 @@
 
 #include <stdint.h>
 
+// --- STRUKTUR PESAN EVENT (GUI) ---
+#define EVENT_NONE          0
+#define EVENT_KEY_PRESS     1
+#define EVENT_MOUSE_MOVE    2
+#define EVENT_MOUSE_CLICK   3
+
+typedef struct {
+    uint32_t type;    // Jenis Event (Key, Mouse, Click)
+    int32_t param1;   // Data 1 (ASCII huruf, atau X Mouse, atau Tombol Kiri/Kanan)
+    int32_t param2;   // Data 2 (Y Mouse, atau Status Ditekan/Dilepas)
+    int32_t param3;   // Tambahan
+} kyuzen_event_t;
+// ----------------------------------
+
 void print(char* text);
 void clear_screen(void);
 uint32_t read_keyboard(char* buffer, uint32_t size);
@@ -52,4 +66,5 @@ void sys_draw_string(const char* str, int x, int y, uint32_t color);
 void sys_set_uid(uint32_t uid);
 uint32_t sys_get_uid();
 
+int sys_get_event(kyuzen_event_t* event_out);
 #endif
