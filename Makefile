@@ -42,10 +42,10 @@ $(TARGET): $(OBJS)
 %.o: %.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-# Tahap Baru: Merakit Boot CD Image (ISO) menggunakan xorriso
-boot_image.iso: $(TARGET) limine.conf
+# Pastikan logo.png ada di baris pertama dan di perintah 'cp'
+boot_image.iso: $(TARGET) limine.conf logo.png
 	mkdir -p iso_root
-	cp $(TARGET) limine.conf limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
+	cp $(TARGET) limine.conf logo.png limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -o boot_image.iso iso_root/
 	./limine/limine.exe bios-install boot_image.iso
 

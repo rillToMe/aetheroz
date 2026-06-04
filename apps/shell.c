@@ -3,6 +3,8 @@
 #include "zen.h"
 #include <stddef.h>
 
+extern void draw_png_image(const char* filename, int start_x, int start_y);
+
 void kyuzen_fetch() {
     // Siapkan memori kosong untuk menampung nama CPU
     char cpu_name[49];
@@ -65,7 +67,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- - jam    : Lihat waktu sekarang\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n install_app : Instal app.bin\n- run    : Jalankan .bin\n- - jam    : Lihat waktu sekarang\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "echo") == 0) {
@@ -86,6 +88,22 @@ void user_shell() {
                         if (argument != NULL) { fs_delete(argument); } 
                         else { print("Penggunaan: hapus [nama_file]\n"); }
                     }
+                    // --- TAMBAHKAN PERINTAH VIEW DI SINI ---
+                    else if (strcmp(command, "view") == 0) {
+                        if (argument != NULL) {
+                            if (sys_file_exists(argument)) {
+                                print("Menggambar PNG ke layar...\n");
+                                // Panggil fungsi dari viewer.c, letakkan di koordinat X: 200, Y: 100
+                                draw_png_image(argument, 200, 100);
+                            } else {
+                                print("Error: File gambar tidak ditemukan!\n");
+                            }
+                        } 
+                        else { 
+                            print("Penggunaan: view [nama_file.png]\n"); 
+                        }
+                    }
+                    // ---------------------------------------
                     else if (strcmp(command, "install_app") == 0) {
                         char dummy_bin[] = {
                             0xB8, 0x01, 0x00, 0x00, 0x00, 0xBB, 0x0D, 0x00, 0x80, 0x00, 0xCD, 0x80, 0xC3,

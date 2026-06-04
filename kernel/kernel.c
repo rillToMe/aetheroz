@@ -15,6 +15,7 @@
 #include "timer.h"
 #include "shell.h"
 
+
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
@@ -157,14 +158,31 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
     pic_remap(); 
     init_timer(50); 
     init_mouse();
-    // init_keyboard(); 
-    // ata_init(); <--- HAPUS BARIS INI
+    init_keyboard();
+    // 3. AKTIFKAN LAYAR TTY (Harus sebelum FS agar kprint tidak error)
+    init_tty(); 
+
+    // 4. INISIALISASI DISK
     kfs_init();
 
-    // 3. AKTIFKAN DRIVER LAYAR GUI BARU KITA
-    init_tty(); // <--- Ubah baris ini (Hapus fs_node_t* tty0 =)
+    // 5. AUTO-INSTALL GAMBAR DARI CD KE HARD DISK
+    // Cek bit ke-3 dari flags untuk memastikan Multiboot Modules tersedia
+    if (mbi->flags & (1 << 3)) {
+        if (mbi->mods_count > 0) {
+            // Ambil array dari modul yang dimuat (logo.png)
+            uint32_t* mods = (uint32_t*)mbi->mods_addr;
+            uint32_t start_addr = mods[0]; // Alamat awal gambar di RAM
+            uint32_t end_addr   = mods[1]; // Alamat akhir gambar di RAM
+            uint32_t file_size  = end_addr - start_addr;
 
-    // 4. LOMPAT KE USER SPACE (Menjalankan kyuzen-shell!)
+            // Jika belum ada di disk.img, langsung bakar ke disk!
+            if (!kfs_exists("logo.png")) {
+                kfs_create_file("logo.png", (char*)start_addr, file_size);
+            }
+        }
+    }
+
+    // 6. LOMPAT KE USER SPACE (Menjalankan kyuzen-shell!)
     switch_to_user_mode(user_shell);
 
     // Fallback jika Ring 3 gagal
@@ -189,12 +207,17 @@ extern void set_kernel_stack(uint32_t stack);
 
 // --- KEMBALIKAN LOGIKA LOMPATAN RING 3 ---
 void switch_to_user_mode(void (*user_func)()) {
-    // Alokasikan memori 4KB untuk Stack User dan Stack pendaratan Kernel
-    uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
-    uint32_t kernel_landing_stack = (uint32_t)kmalloc(4096) + 4096;
+    // PERBESAR: Berikan 1 MB (1024 * 1024) untuk Stack Aplikasi Ring 3
+    uint32_t user_stack_size = 1024 * 1024;
+    uint32_t user_stack = (uint32_t)kmalloc(user_stack_size) + user_stack_size;
+
+    // PERBESAR: Berikan 64 KB (65536) untuk Stack Kernel saat Syscall
+    uint32_t kernel_stack_size = 65536;
+    uint32_t kernel_landing_stack = (uint32_t)kmalloc(kernel_stack_size) + kernel_stack_size;
+    
     set_kernel_stack(kernel_landing_stack);
 
-    // Assembly sakti untuk memanipulasi register dan memaksa CPU turun kasta ke Ring 3
+    // Assembly sakti untuk memanipulasi register (Sama seperti sebelumnya)
     __asm__ volatile(
         "cli \n" "mov $0x23, %%ax \n" "mov %%ax, %%ds \n" "mov %%ax, %%es \n"
         "mov %%ax, %%fs \n" "mov %%ax, %%gs \n" "pushl $0x23 \n" "pushl %0 \n"            

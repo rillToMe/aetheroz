@@ -84,3 +84,16 @@ uint32_t keyboard_read(uint8_t *buffer, uint32_t size) {
     }
     return bytes_read;
 }
+
+extern void keyboard_isr_stub(); // <-- Ubah namanya menjadi _stub!
+extern void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags); 
+
+void init_keyboard() {
+    // 1. Reset status buffer
+    kbd_head = 0;
+    kbd_tail = 0;
+    shift_pressed = 0;
+    
+    // 2. Daftarkan Keyboard_ISR ke IDT dengan nama stub yang benar
+    idt_set_gate(33, (uint32_t)keyboard_isr_stub, 0x08, 0x8E);
+}

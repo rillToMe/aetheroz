@@ -29,6 +29,8 @@ extern uint32_t pmm_get_used_ram(void);
 // times
 extern void read_rtc(uint32_t* time_buf);
 
+extern void draw_pixel(int x, int y, uint32_t color);
+
 typedef struct {
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 } registers_t;
@@ -70,6 +72,9 @@ uint32_t syscall_handler(registers_t *r) {
         read_rtc((uint32_t*)r->ebx);
         return 0;
     }
-
+    else if (r->eax == 22) {
+        draw_pixel((int)r->ebx, (int)r->ecx, (uint32_t)r->edx);
+        return 0;
+    }
     return (uint32_t)-1;
 }

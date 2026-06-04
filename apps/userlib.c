@@ -89,3 +89,7 @@ void get_cpu_string(char* buffer) {
 void sys_get_time(uint32_t* time_array) {
     __asm__ volatile("int $0x80" : : "a"(21), "b"(time_array));
 }
+
+void sys_draw_pixel(int x, int y, uint32_t color) {
+    __asm__ volatile("int $0x80" : : "a"(22), "b"(x), "c"(y), "d"(color));
+}
