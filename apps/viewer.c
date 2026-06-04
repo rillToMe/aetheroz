@@ -93,12 +93,12 @@ void draw_png_image(const char* filename, int start_x, int start_y) {
     sys_free(file_buffer);
 }
 
-// --- FUNGSI MAIN APLIKASI ---
-void main() {
-    print("Memuat gambar PNG...\n");
+// // --- FUNGSI MAIN APLIKASI ---
+// void main() {
+//     print("Memuat gambar PNG...\n");
     
-    draw_png_image("logo.png", 100, 100);
+//     draw_png_image("logo.png", 100, 100);
     
-    print("Selesai menggambar!\n");
+//     print("Selesai menggambar!\n");
     
-}
+// }

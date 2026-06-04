@@ -112,17 +112,6 @@ void user_shell() {
                         sys_create_file("app.bin", dummy_bin, 33);
                         print("Aplikasi app.bin berhasil di-install ke Hard Disk!\n");
                     }
-                    else if (strcmp(command, "run") == 0) {
-                        if (argument != NULL) {
-                            if (sys_file_exists(argument)) {
-                                print("Memuat aplikasi ke RAM 0x800000...\n");
-                                sys_read_file_to_buffer(argument, (char*)0x800000);
-                                void (*external_app)() = (void*)0x800000;
-                                external_app();
-                                print("[Aplikasi Selesai Dieksekusi]\n");
-                            } else { print("Error: File tidak ditemukan.\n"); }
-                        } else { print("Penggunaan: run [nama_file.bin]\n"); }
-                    }
                     else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
                     }
                     else if (strcmp(command, "jam") == 0) {
@@ -141,11 +130,48 @@ void user_shell() {
                         if(waktu[4] < 10) print("0"); print_num(waktu[4]); print(":");
                         if(waktu[5] < 10) print("0"); print_num(waktu[5]); print("\n");
                     }
-                    else { print("Perintah tidak dikenali.\n"); }
+                    else { 
+                        // 1. Siapkan wadah teks untuk menyisipkan ".elf"
+                        char elf_filename[32];
+                        int i = 0;
+                        
+                        // Salin nama perintah yang diketik user
+                        while (command[i] != '\0' && i < 27) {
+                            elf_filename[i] = command[i];
+                            i++;
+                        }
+                        
+                        // Tambahkan ekstensi ".elf" secara diam-diam
+                        elf_filename[i++] = '.';
+                        elf_filename[i++] = 'e';
+                        elf_filename[i++] = 'l';
+                        elf_filename[i++] = 'f';
+                        elf_filename[i] = '\0';
+
+                        // 2. Minta Kernel mencari dan memuat file tersebut
+                        uint32_t app_entry = sys_load_elf(elf_filename);
+                        
+                        if (app_entry != 0) {
+                            clear_screen();
+                            // 3. Jika ketemu, LOMPAT dan jalankan aplikasinya!
+                            void (*run_app)() = (void (*)())app_entry;
+                            run_app(); 
+                                       
+                            // Opsional: Beri jarak baris setelah aplikasi selesai
+                            print("\n"); 
+
+                        } else {
+                            // 4. Jika file memang tidak ada, tampilkan error aslinya
+                            print("Perintah tidak dikenali: ");
+                            print(command);
+                            print("\n");
+                        }
+                    }
+                    // -------------------------------------------
                 }
                 cmd_index = 0;
                 print(prompt);
-            } 
+            }
             else if (c == '\b') {
                 if (cmd_index > 0) { print("\b"); cmd_index--; }
             } 

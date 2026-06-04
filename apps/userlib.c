@@ -102,3 +102,19 @@ void sys_draw_image(int x, int y, int width, int height, uint32_t* buffer) {
         : "a"(23), "b"(x), "c"(y), "d"(width), "S"(height), "D"(buffer) 
     );
 }
+
+int sys_get_file_list(file_info_t* buffer, int max_entries) {
+    uint32_t ret; 
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(24), "b"(buffer), "c"(max_entries)); 
+    return ret;
+}
+
+uint32_t sys_load_elf(char* filename) {
+    uint32_t entry_point;
+    __asm__ volatile("int $0x80" : "=a"(entry_point) : "a"(25), "b"(filename)); 
+    return entry_point;
+}
+
+void sys_draw_string(const char* str, int x, int y, uint32_t color) {
+    __asm__ volatile("int $0x80" : : "a"(26), "b"(str), "c"(x), "d"(y), "S"(color));
+}

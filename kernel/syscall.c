@@ -20,6 +20,9 @@ extern int kfs_exists(char* filename);
 extern uint32_t kfs_get_file_size(char* filename);
 extern int kfs_read_to_buffer(char* filename, char* out_buffer);
 extern int kfs_create_file(char* filename, char* data, uint32_t size);
+extern int kfs_get_file_list(void* buffer, int max_entries);
+extern uint32_t elf_load_file(char* filename);
+extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 
 // Impor fungsi Sistem Statistik
 extern uint32_t get_uptime(void);
@@ -78,6 +81,16 @@ uint32_t syscall_handler(registers_t *r) {
     }
     else if (r->eax == 23) {
         draw_image((int)r->ebx, (int)r->ecx, (int)r->edx, (int)r->esi, (uint32_t*)r->edi);
+        return 0;
+    }
+    else if (r->eax == 24) {
+        return kfs_get_file_list((void*)r->ebx, (int)r->ecx);
+    }
+    else if (r->eax == 25) {
+        return elf_load_file((char*)r->ebx);
+    }
+    else if (r->eax == 26) {
+        draw_string((const char*)r->ebx, (int)r->ecx, (int)r->edx, (uint32_t)r->esi);
         return 0;
     }
     return (uint32_t)-1;

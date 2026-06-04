@@ -43,15 +43,17 @@ $(TARGET): $(OBJS)
 	$(AS) $(ASFLAGS) $< -o $@
 
 # Pastikan logo.png ada di baris pertama dan di perintah 'cp'
-boot_image.iso: $(TARGET) limine.conf logo.png
+boot_image.iso: $(TARGET) limine.conf logo.png fileman.elf
+	rm -rf iso_root  # <-- TAMBAHKAN BARIS INI UNTUK MEMBUNUH HANTU
 	mkdir -p iso_root
-	cp $(TARGET) limine.conf logo.png limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
-	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -o boot_image.iso iso_root/
+	# Tambahkan juga fileman.elf di dalam perintah copy ini
+	cp $(TARGET) limine.conf logo.png fileman.elf limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
+	xorriso -as mkisofs -R -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -o boot_image.iso iso_root/
 	./limine/limine.exe bios-install boot_image.iso
 
 # Tahap 4: Boot up QEMU (Sekarang pakai CD-ROM untuk Boot, dan Hard Disk untuk Data!)
 run: boot_image.iso
-	$(QEMU) -cpu max -m 256M -cdrom boot_image.iso -drive file=disk.img,format=raw,index=0,media=disk
+	qemu-system-x86_64.exe -cpu max -m 256M -boot d -drive file=disk.img,format=raw,index=0,media=disk -drive file=boot_image.iso,media=cdrom,index=2
 
 # Bersihkan file hasil build
 clean:

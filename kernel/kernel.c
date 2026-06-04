@@ -23,6 +23,7 @@ extern void init_keyboard();
 extern void switch_to_user_mode(void (*user_func)());
 extern void user_shell();
 extern void init_mouse();
+extern void kprint(const char* str);
 
 // --- VARIABEL GLOBAL FRAMEBUFFER ---
 uint32_t* fb_ptr = NULL;
@@ -33,6 +34,14 @@ uint32_t fb_pitch = 0;
 // KANVAS BAYANGAN (BACKBUFFER) DI RAM
 // 1024x768 = 786.432 Piksel. Bootloader akan otomatis mengalokasikan RAM ini!
 uint32_t backbuffer[1024 * 768]; 
+
+// Fungsi Detektif untuk mencetak angka
+void kprint_num(uint32_t num) {
+    if (num == 0) { kprint("0"); return; }
+    char buf[16]; int i = 14; buf[15] = '\0';
+    while (num > 0) { buf[i--] = (num % 10) + '0'; num /= 10; }
+    kprint(&buf[i + 1]);
+}
 
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= fb_width || y >= fb_height) return;
@@ -184,22 +193,87 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
     // 4. INISIALISASI DISK
     kfs_init();
 
-    // 5. AUTO-INSTALL GAMBAR DARI CD KE HARD DISK
-    // Cek bit ke-3 dari flags untuk memastikan Multiboot Modules tersedia
-    if (mbi->flags & (1 << 3)) {
-        if (mbi->mods_count > 0) {
-            // Ambil array dari modul yang dimuat (logo.png)
-            uint32_t* mods = (uint32_t*)mbi->mods_addr;
-            uint32_t start_addr = mods[0]; // Alamat awal gambar di RAM
-            uint32_t end_addr   = mods[1]; // Alamat akhir gambar di RAM
-            uint32_t file_size  = end_addr - start_addr;
+    // === PROBE 1: ATA ROUND-TRIP TEST ===
+    kprint("\n[ATA TEST] Menulis 0xDEADBEEF ke sector 250...\n");
+    {
+        uint8_t* test = (uint8_t*)kmalloc(512);
+        memset(test, 0, 512);
+        test[0] = 0xDE; test[1] = 0xAD; test[2] = 0xBE; test[3] = 0xEF;
+        ata_write_sector(250, test);
 
-            // Jika belum ada di disk.img, langsung bakar ke disk!
-            if (!kfs_exists("logo.png")) {
-                kfs_create_file("logo.png", (char*)start_addr, file_size);
+        memset(test, 0, 512); // Bersihkan buffer
+        ata_read_sector(250, test); // Baca balik
+
+        if (test[0] == 0xDE && test[1] == 0xAD && test[2] == 0xBE && test[3] == 0xEF) {
+            kprint("[ATA TEST] MATCH! ATA read/write berfungsi.\n");
+        } else {
+            kprint("[ATA TEST] MISMATCH! ATA GAGAL! Got: ");
+            const char* hex_digits = "0123456789ABCDEF";
+            for (int b = 0; b < 4; b++) {
+                char hx[5] = {'0', 'x', hex_digits[(test[b] >> 4) & 0xF], hex_digits[test[b] & 0xF], '\0'};
+                kprint(hx); kprint(" ");
+            }
+            kprint("\n");
+        }
+        kfree(test);
+    }
+
+    // 5. AUTO-INSTALL & RADAR DETEKTIF
+    kprint("\n--- RADAR AUTO-INSTALL ---\n");
+    if (mbi->flags & (1 << 3)) {
+        kprint("Status: Limine mengirim modul!\n");
+        kprint("Jumlah Modul: "); kprint_num(mbi->mods_count); kprint("\n");
+        
+        typedef struct { uint32_t start; uint32_t end; uint32_t string; uint32_t res; } mod_t;
+        mod_t* mods = (mod_t*)mbi->mods_addr;
+        
+        for (uint32_t i = 0; i < mbi->mods_count; i++) {
+            uint32_t size = mods[i].end - mods[i].start;
+            kprint("Modul "); kprint_num(i+1); kprint(" | Ukuran: "); kprint_num(size); kprint(" Bytes\n");
+            
+            char* raw_name = (char*)mods[i].string;
+            if (raw_name == NULL) { kprint(" -> ERROR: Nama dari Limine NULL!\n"); continue; }
+            
+            kprint(" -> Raw string: ["); kprint(raw_name); kprint("]\n");
+            
+            char clean_name[24];
+            int k = 0;
+            char* last_slash = raw_name;
+            for (int j = 0; raw_name[j] != '\0'; j++) {
+                if (raw_name[j] == '/') last_slash = &raw_name[j + 1];
+            }
+            
+            for (int j = 0; last_slash[j] != '\0' && last_slash[j] != ' ' && last_slash[j] != '\n' && k < 22; j++) {
+                clean_name[k] = last_slash[j]; k++;
+            }
+            clean_name[k] = '\0';
+            
+            kprint(" -> Ekstrak Nama: ["); kprint(clean_name); kprint("]\n");
+
+            // FAILSAFE: Jangan buat file tanpa nama!
+            if (k == 0) { kprint(" -> SKIP: Nama kosong (cek module_string di limine.conf)\n"); continue; }
+
+            if (!kfs_exists(clean_name)) {
+                int res = kfs_create_file(clean_name, (char*)mods[i].start, size);
+                if(res) kprint(" -> [SUKSES DITULIS KE DISK]\n");
+                else kprint(" -> [GAGAL DITULIS]\n");
+            } else {
+                kprint(" -> [FILE SUDAH ADA]\n");
             }
         }
+    } else {
+        kprint("ERROR: LIMINE TIDAK MENGIRIM MODUL SAMA SEKALI!\n");
     }
+    kprint("--------------------------\n");
+
+    // kprint("OS DIBEKUKAN SEMENTARA UNTUK BACA RADAR...\n");
+    
+    // // --- TAMBAHKAN BARIS INI UNTUK MENYIRAM RAM KE MONITOR ---
+    // compositor_flush(); 
+    
+    // while (1) {
+    //     __asm__ volatile("hlt"); // Menyuruh CPU tidur selamanya!
+    // }
 
     // 6. LOMPAT KE USER SPACE (Menjalankan kyuzen-shell!)
     switch_to_user_mode(user_shell);

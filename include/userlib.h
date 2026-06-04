@@ -36,4 +36,16 @@ void sys_get_time(uint32_t* time_array);
 void sys_draw_pixel(int x, int y, uint32_t color);
 
 void sys_draw_image(int x, int y, int width, int height, uint32_t* buffer);
+
+typedef struct {
+    char filename[24];
+    uint32_t size;
+    uint8_t is_folder;
+} file_info_t;
+
+int sys_get_file_list(file_info_t* buffer, int max_entries);
+
+uint32_t sys_load_elf(char* filename);
+
+void sys_draw_string(const char* str, int x, int y, uint32_t color);
 #endif
