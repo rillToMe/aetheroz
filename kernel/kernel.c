@@ -29,9 +29,69 @@ uint32_t fb_width = 0;
 uint32_t fb_height = 0;
 uint32_t fb_pitch = 0;
 
+// KANVAS BAYANGAN (BACKBUFFER) DI RAM
+// 1024x768 = 786.432 Piksel. Bootloader akan otomatis mengalokasikan RAM ini!
+uint32_t backbuffer[1024 * 768]; 
+
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= fb_width || y >= fb_height) return;
-    fb_ptr[(y * (fb_pitch / 4)) + x] = color;
+    // PENTING: Semua lukisan OS sekarang masuk ke RAM (Z-Index 0 & 1), bukan ke layar fisik!
+    backbuffer[(y * (fb_pitch / 4)) + x] = color;
+}
+
+// --- MESIN COMPOSITOR Z-INDEX ---
+extern void draw_mouse_to_frontbuffer();
+
+// --- VARIABEL MOUSE DARI DRIVER ---
+extern int32_t mouse_x;
+extern int32_t mouse_y;
+extern const uint8_t cursor_bitmap[16][12];
+
+// Memori untuk menyimpan latar belakang mouse di dalam RAM
+uint32_t mouse_bg_backbuffer[16][12];
+
+// --- MESIN COMPOSITOR Z-INDEX (ZERO FLICKER) ---
+void compositor_flush() {
+    if (fb_width == 0) return;
+
+    // 1. TEMPELKAN MOUSE KE BACKBUFFER (RAM)
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 12; x++) {
+            if (mouse_y + y >= (int32_t)fb_height || mouse_x + x >= (int32_t)fb_width) continue;
+            
+            uint32_t offset = ((mouse_y + y) * (fb_pitch / 4)) + (mouse_x + x);
+            
+            // Simpan piksel asli backbuffer
+            mouse_bg_backbuffer[y][x] = backbuffer[offset];
+            
+            // Timpa dengan warna kursor mouse
+            if (cursor_bitmap[y][x] == 1) backbuffer[offset] = 0xFFFFFF; 
+            else if (cursor_bitmap[y][x] == 2) backbuffer[offset] = 0x000000; 
+        }
+    }
+
+    // 2. TUMPAHKAN 1 LAYAR PENUH KE MONITOR SECEPAT KILAT (HARDWARE ASSEMBLY)
+    // Trik rep movsl ini menjamin kopi memori tercepat tanpa risiko crash SSE!
+    uint32_t* dest = fb_ptr;
+    uint32_t* src  = backbuffer;
+    uint32_t count = (fb_pitch / 4) * fb_height;
+    
+    __asm__ volatile (
+        "rep movsl"
+        : "+D" (dest), "+S" (src), "+c" (count)
+        :
+        : "memory"
+    );
+
+    // 3. CABUT MOUSE DARI BACKBUFFER (RAM)
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 12; x++) {
+            if (mouse_y + y >= (int32_t)fb_height || mouse_x + x >= (int32_t)fb_width) continue;
+            
+            uint32_t offset = ((mouse_y + y) * (fb_pitch / 4)) + (mouse_x + x);
+            backbuffer[offset] = mouse_bg_backbuffer[y][x];
+        }
+    }
 }
 
 void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color) {

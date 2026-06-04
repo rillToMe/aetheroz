@@ -13,6 +13,8 @@ extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 
 extern void tty_blink_cursor();
 
+extern void compositor_flush();
+
 void init_timer(uint32_t freq) {
     uint32_t divisor = 1193180 / freq;
     outb(0x43, 0x36);
@@ -57,6 +59,8 @@ void timer_handler() {
         if (timer_ticks % 25 == 0) {
             tty_blink_cursor();
         }
+        
+        compositor_flush();
     }
 
     outb(0x20, 0x20); // Lapor PIC
