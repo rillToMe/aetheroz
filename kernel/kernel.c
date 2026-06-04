@@ -21,7 +21,7 @@ extern void init_idt();
 extern void pic_remap();
 extern void init_keyboard();
 extern void switch_to_user_mode(void (*user_func)());
-extern void user_shell();
+extern void user_login();
 extern void init_mouse();
 extern void kprint(const char* str);
 
@@ -276,7 +276,7 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
     // }
 
     // 6. LOMPAT KE USER SPACE (Menjalankan kyuzen-shell!)
-    switch_to_user_mode(user_shell);
+    switch_to_user_mode(user_login);
 
     // Fallback jika Ring 3 gagal
     __asm__ volatile("cli");
