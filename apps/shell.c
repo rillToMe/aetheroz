@@ -31,19 +31,40 @@ void kyuzen_fetch() {
     print_num(sys_uptime()); print(" detik\n\n");
 }
 
-void user_shell() {
-    clear_screen();
-    print("========================================\n");
-    print("   Kyuzen OS - User Space Shell (Ring 3)\n");
-    print("========================================\n");
+void str_append(char* dest, const char* src) {
+    while (*dest) dest++;
+    while (*src) *dest++ = *src++;
+    *dest = '\0';
+}
 
+void num_to_str(uint32_t num, char* str) {
+    if (num == 0) { str[0] = '0'; str[1] = '\0'; return; }
+    int i = 0; char temp[16];
+    while (num > 0) { temp[i++] = (num % 10) + '0'; num /= 10; }
+    int j = 0;
+    while (i > 0) { str[j++] = temp[--i]; }
+    str[j] = '\0';
+}
+
+void user_shell() {
+    char cmd_buffer[256];
+    int cmd_index = 0;
+    char key_buffer[2]; // <-- TAMBAHKAN BARIS INI UNTUK MENYELAMATKAN SHELL!
+    
+    // --- PROMPT DINAMIS BERDASARKAN USER ---
     char* prompt = "kyuzen> ";
+    uint32_t uid = sys_get_uid(); // Tanya ke kernel siapa kita sekarang
+    
+    if (uid == 0) {
+        prompt = "root@kyuzen> ";
+    } else {
+        prompt = "kyuzen@kyuzen> ";
+    }
+    // ---------------------------------------
+
+    print("Selamat datang di Kyuzen OS.\n");
     print(prompt);
 
-    char key_buffer[1];
-    char cmd_buffer[256];      
-    uint32_t cmd_index = 0;    
-    
     while (1) {
         uint32_t bytes_read = read_keyboard(key_buffer, 1);
         
@@ -67,9 +88,65 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n install_app : Instal app.bin\n- run    : Jalankan .bin\n- - jam    : Lihat waktu sekarang\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduser:   : Menambahkan User baru(khusus root)\n- logout   : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n install_app : Instal app.bin\n- run    : Jalankan .bin\n- - jam    : Lihat waktu sekarang\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
+                    else if (strcmp(command, "adduser") == 0) {
+                        if (sys_get_uid() != 0) {
+                            print("Error: Hanya 'root' yang diizinkan menambahkan user!\n");
+                        } else if (argument == NULL) {
+                            print("Penggunaan: adduser [nama_user_baru]\n");
+                        } else {
+                            print("Masukkan password untuk user baru: ");
+                            char new_pass[32];
+                            int p_idx = 0; char key_c;
+                            
+                            // Blocking event loop khusus untuk ngetik password
+                            while (1) {
+                                if (read_keyboard(&key_c, 1) > 0) {
+                                    if (key_c == '\n') { new_pass[p_idx] = '\0'; print("\n"); break; }
+                                    else if (key_c == '\b') { if (p_idx > 0) { print("\b"); p_idx--; } }
+                                    else if (p_idx < 31) { new_pass[p_idx++] = key_c; print("*"); }
+                                }
+                                sys_yield();
+                            }
+
+                            // Sedot file users.sys yang lama ke RAM
+                            uint32_t fsize = sys_file_size("users.sys");
+                            char buffer[1024];
+                            sys_read_file_to_buffer("users.sys", buffer);
+                            buffer[fsize] = '\0';
+
+                            // Hitung jumlah baris ('\n') untuk otomatis menentukan UID baru
+                            int lines = 0;
+                            for(int k=0; buffer[k]!='\0'; k++) { if (buffer[k] == '\n') lines++; }
+                            uint32_t new_uid = 1000 + (lines - 1); // User pertama = 1000, kedua = 1001, dst.
+
+                            // Susun baris teks baru
+                            char uid_str[16];
+                            num_to_str(new_uid, uid_str);
+                            str_append(buffer, argument); 
+                            str_append(buffer, ":");
+                            str_append(buffer, new_pass);
+                            str_append(buffer, ":");
+                            str_append(buffer, uid_str);
+                            str_append(buffer, "\n");
+
+                            // Tulis Ulang Database!
+                            int new_len = 0;
+                            while(buffer[new_len]) new_len++;
+                            
+                            fs_delete("users.sys");
+                            sys_create_file("users.sys", buffer, new_len);
+
+                            print("Berhasil! User '"); print(argument); print("' berhasil ditambahkan.\n");
+                        }
+                    }
+                    else if (strcmp(command, "logout") == 0) {
+                        print("Keluar dari sesi...\n");
+                        // Hancurkan loop shell agar fungsi berakhir!
+                        break; 
+                    }
                     else if (strcmp(command, "echo") == 0) {
                         if (argument != NULL) { print(argument); print("\n"); } 
                         else { print("Penggunaan: echo [teks_bebas]\n"); }

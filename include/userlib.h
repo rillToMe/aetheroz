@@ -48,4 +48,8 @@ int sys_get_file_list(file_info_t* buffer, int max_entries);
 uint32_t sys_load_elf(char* filename);
 
 void sys_draw_string(const char* str, int x, int y, uint32_t color);
+
+void sys_set_uid(uint32_t uid);
+uint32_t sys_get_uid();
+
 #endif

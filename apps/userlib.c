@@ -118,3 +118,13 @@ uint32_t sys_load_elf(char* filename) {
 void sys_draw_string(const char* str, int x, int y, uint32_t color) {
     __asm__ volatile("int $0x80" : : "a"(26), "b"(str), "c"(x), "d"(y), "S"(color));
 }
+
+void sys_set_uid(uint32_t uid) {
+    __asm__ volatile("int $0x80" : : "a"(27), "b"(uid)); // Menggunakan 27
+}
+
+uint32_t sys_get_uid() {
+    uint32_t uid;
+    __asm__ volatile("int $0x80" : "=a"(uid) : "a"(28)); // Menggunakan 28
+    return uid;
+}

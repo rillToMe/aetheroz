@@ -34,6 +34,9 @@ extern void read_rtc(uint32_t* time_buf);
 
 extern void draw_pixel(int x, int y, uint32_t color);
 extern void draw_image(int x, int y, int width, int height, uint32_t* buffer);
+
+uint32_t current_uid = 0;
+
 typedef struct {
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
 } registers_t;
@@ -92,6 +95,14 @@ uint32_t syscall_handler(registers_t *r) {
     else if (r->eax == 26) {
         draw_string((const char*)r->ebx, (int)r->ecx, (int)r->edx, (uint32_t)r->esi);
         return 0;
+    }
+    // --- SYSCALL BARU: MULTI-USER IDENTITY (ANTI-TABRAKAN) ---
+    else if (r->eax == 27) {
+        current_uid = r->ebx; // sys_set_uid
+        return 0;
+    }
+    else if (r->eax == 28) {
+        return current_uid;   // sys_get_uid
     }
     return (uint32_t)-1;
 }
