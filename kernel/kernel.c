@@ -103,6 +103,25 @@ void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t heig
     }
 }
 
+// Fungsi sakti untuk merender gambar secara instan di Ring 0
+void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer) {
+    int i = 0;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t pixel = buffer[i++];
+            
+            // Ekstrak nilai Alpha (Transparansi) dari format 0xAARRGGBB
+            uint8_t alpha = (pixel >> 24) & 0xFF;
+            
+            // Hanya gambar piksel yang tidak transparan
+            if (alpha > 0) {
+                // Buang Alpha, ambil warna murninya saja (0xFFFFFF)
+                draw_pixel(start_x + x, start_y + y, pixel & 0xFFFFFF);
+            }
+        }
+    }
+}
+
 // --- MESIN PENGGAMBAR TEKS GRAFIS ---
 void draw_char(char c, uint32_t x, uint32_t y, uint32_t color) {
     if (c < 0 || c > 127) return;

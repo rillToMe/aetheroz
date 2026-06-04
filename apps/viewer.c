@@ -52,29 +52,43 @@ void draw_png_image(const char* filename, int start_x, int start_y) {
     uint8_t *img_data = stbi_load_from_memory(file_buffer, exact_size, &width, &height, &channels, 4);
 
     if (!img_data) {
-        print("Error: File rusak atau STB gagal decode!\n");
+        print("Error: File rusak atau bukan format PNG!\n");
         sys_free(file_buffer);
         return;
     }
 
-    // 4. Gambar piksel demi piksel ke layar
+    // -- BAGIAN BARU: RAKIT PIKSEL DALAM SATU WADAH --
+    
+    // Alokasikan memori penampung Array untuk seluruh piksel gambar (Width x Height x 4 Byte)
+    uint32_t* image_array = (uint32_t*) sys_alloc(width * height * sizeof(uint32_t));
+    
+    if (!image_array) {
+        print("Error: Kehabisan memori untuk array gambar!\n");
+        sys_free(img_data);
+        sys_free(file_buffer);
+        return;
+    }
+
     int index = 0;
+    int array_idx = 0;
+    
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             uint8_t r = img_data[index++];
             uint8_t g = img_data[index++];
             uint8_t b = img_data[index++];
-            uint8_t a = img_data[index++]; // Alpha channel
+            uint8_t a = img_data[index++]; 
 
-            if (a > 0) {
-                // Susun warna hex (sesuaikan susunan r,g,b jika warna terbalik)
-                uint32_t hex_color = (r << 16) | (g << 8) | b;
-                sys_draw_pixel(start_x + x, start_y + y, hex_color);
-            }
+            // Susun menjadi 1 kode Hex: 0xAARRGGBB
+            image_array[array_idx++] = (a << 24) | (r << 16) | (g << 8) | b;
         }
     }
 
-    // 5. Bersihkan memori agar tidak bocor
+    // BOM! Kirim seluruh array ke Kernel dalam 1x panggilan saja!
+    sys_draw_image(start_x, start_y, width, height, image_array);
+
+    // Bersihkan memori
+    sys_free(image_array);
     sys_free(img_data);
     sys_free(file_buffer);
 }

@@ -34,4 +34,6 @@ void get_cpu_string(char* buffer);
 void sys_get_time(uint32_t* time_array);
 
 void sys_draw_pixel(int x, int y, uint32_t color);
+
+void sys_draw_image(int x, int y, int width, int height, uint32_t* buffer);
 #endif

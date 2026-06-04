@@ -93,3 +93,12 @@ void sys_get_time(uint32_t* time_array) {
 void sys_draw_pixel(int x, int y, uint32_t color) {
     __asm__ volatile("int $0x80" : : "a"(22), "b"(x), "c"(y), "d"(color));
 }
+
+void sys_draw_image(int x, int y, int width, int height, uint32_t* buffer) {
+    __asm__ volatile(
+        "int $0x80"
+        : 
+        // a=23, b=x, c=y, d=width, S(esi)=height, D(edi)=buffer
+        : "a"(23), "b"(x), "c"(y), "d"(width), "S"(height), "D"(buffer) 
+    );
+}
