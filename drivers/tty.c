@@ -1,101 +1,98 @@
 #include "tty.h"
-#include "io.h" // Wajib di-include agar bisa memakai outb() untuk kursor
 #include <stddef.h>
+#include <stdint.h>
 
-static const size_t VGA_WIDTH = 80;
-static const size_t VGA_HEIGHT = 25;
+// 1. Impor variabel dan fungsi GUI dari kernel.c
+extern uint32_t* fb_ptr;
+extern uint32_t fb_width;
+extern uint32_t fb_height;
+extern uint32_t fb_pitch;
+extern void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color);
+extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
+
+// 2. Konstanta Terminal GUI
+#define FONT_WIDTH 8
+#define FONT_HEIGHT 16 // Tinggi diset 16 agar ada jarak kosong 8px di bawah setiap huruf
+#define BG_COLOR 0x1E1E1E 
+#define FG_COLOR 0xFFFFFF
+
 size_t terminal_row;
 size_t terminal_column;
-uint8_t terminal_color;
-volatile uint16_t* terminal_buffer;
 fs_node_t tty_node; 
 
-static inline uint8_t vga_entry_color(uint8_t fg, uint8_t bg) { return fg | bg << 4; }
-static inline uint16_t vga_entry(unsigned char uc, uint8_t color) { return (uint16_t) uc | (uint16_t) color << 8; }
+// --- ANIMASI KURSOR ---
+int cursor_state = 1; // 1 = Menyala, 0 = Mati
 
-// --- FITUR KURSOR HARDWARE ---
-void tty_enable_cursor(uint8_t cursor_start, uint8_t cursor_end) {
-    outb(0x3D4, 0x0A);
-    outb(0x3D5, (inb(0x3D5) & 0xC0) | cursor_start);
-    outb(0x3D4, 0x0B);
-    outb(0x3D5, (inb(0x3D5) & 0xE0) | cursor_end);
+// --- TAMBAHKAN FUNGSI INI KEMBALI ---
+void tty_draw_cursor() {
+    cursor_state = 1; // Paksa status menyala
+    draw_rect(terminal_column * FONT_WIDTH, (terminal_row * FONT_HEIGHT) + 14, FONT_WIDTH, 2, FG_COLOR);
+}
+// -----------------------------------
+
+void tty_blink_cursor() {
+    cursor_state = !cursor_state; // Balikkan status
+    if (cursor_state) {
+        draw_rect(terminal_column * FONT_WIDTH, (terminal_row * FONT_HEIGHT) + 14, FONT_WIDTH, 2, FG_COLOR);
+    } else {
+        draw_rect(terminal_column * FONT_WIDTH, (terminal_row * FONT_HEIGHT) + 14, FONT_WIDTH, 2, BG_COLOR);
+    }
 }
 
-void tty_update_cursor(int x, int y) {
-    uint16_t pos = y * VGA_WIDTH + x;
-    outb(0x3D4, 0x0F);
-    outb(0x3D5, (uint8_t)(pos & 0xFF));
-    outb(0x3D4, 0x0E);
-    outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
+void tty_erase_cursor() {
+    draw_rect(terminal_column * FONT_WIDTH, (terminal_row * FONT_HEIGHT) + 14, FONT_WIDTH, 2, BG_COLOR);
 }
+// ----------------------
 
-// --- FITUR SCROLLING LAYAR ---
+// --- FITUR SCROLLING LAYAR GUI ---
 void tty_scroll() {
-    // Geser seluruh baris memori VGA naik 1 baris
-    for (size_t y = 1; y < VGA_HEIGHT; y++) {
-        for (size_t x = 0; x < VGA_WIDTH; x++) {
-            terminal_buffer[(y - 1) * VGA_WIDTH + x] = terminal_buffer[y * VGA_WIDTH + x];
+    uint32_t copy_height = fb_height - FONT_HEIGHT;
+    for (uint32_t y = 0; y < copy_height; y++) {
+        for (uint32_t x = 0; x < fb_width; x++) {
+            fb_ptr[(y * (fb_pitch / 4)) + x] = fb_ptr[((y + FONT_HEIGHT) * (fb_pitch / 4)) + x];
         }
     }
-    // Kosongkan baris paling bawah dengan spasi
-    for (size_t x = 0; x < VGA_WIDTH; x++) {
-        terminal_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = vga_entry(' ', terminal_color);
-    }
-    // Tahan kursor agar tetap di baris terakhir
-    terminal_row = VGA_HEIGHT - 1;
+    draw_rect(0, fb_height - FONT_HEIGHT, fb_width, FONT_HEIGHT, BG_COLOR);
+    terminal_row--; 
 }
 
-// --- LOGIKA CETAK HURUF (UPDATE) ---
+// --- LOGIKA CETAK HURUF PIKSEL DEMI PIKSEL ---
 void terminal_putchar(char c) {
-    // 1. Tangani Enter (Newline)
+    tty_erase_cursor(); // Hapus kursor lama secara paksa sebelum pindah
+
     if (c == '\n') {
         terminal_column = 0;
-        if (++terminal_row == VGA_HEIGHT) {
-            tty_scroll(); // Panggil scroll kalau mentok bawah!
-        }
-        tty_update_cursor(terminal_column, terminal_row);
-        return;
+        if (++terminal_row >= (fb_height / FONT_HEIGHT)) tty_scroll();
     }
-
-    // 2. Tangani Backspace
-    if (c == '\b') {
+    else if (c == '\b') {
         if (terminal_column > 0) {
             terminal_column--;
         } else if (terminal_row > 0) {
             terminal_row--;
-            terminal_column = VGA_WIDTH - 1;
+            terminal_column = (fb_width / FONT_WIDTH) - 1;
         }
-        const size_t index = terminal_row * VGA_WIDTH + terminal_column;
-        terminal_buffer[index] = vga_entry(' ', terminal_color);
-        tty_update_cursor(terminal_column, terminal_row); // Perbarui posisi kursor
-        return;
+        draw_rect(terminal_column * FONT_WIDTH, terminal_row * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT, BG_COLOR);
+    }
+    else {
+        draw_rect(terminal_column * FONT_WIDTH, terminal_row * FONT_HEIGHT, FONT_WIDTH, FONT_HEIGHT, BG_COLOR);
+        draw_char(c, terminal_column * FONT_WIDTH, terminal_row * FONT_HEIGHT, FG_COLOR);
+        
+        if (++terminal_column >= (fb_width / FONT_WIDTH)) {
+            terminal_column = 0;
+            if (++terminal_row >= (fb_height / FONT_HEIGHT)) tty_scroll();
+        }
     }
 
-    // 3. Tangani Huruf Biasa
-    const size_t index = terminal_row * VGA_WIDTH + terminal_column;
-    terminal_buffer[index] = vga_entry(c, terminal_color);
-    
-    // Majukan kursor ke kanan
-    if (++terminal_column == VGA_WIDTH) {
-        terminal_column = 0;
-        if (++terminal_row == VGA_HEIGHT) {
-            tty_scroll(); // Panggil scroll kalau mentok kanan bawah!
-        }
-    }
-    tty_update_cursor(terminal_column, terminal_row); // Kursor selalu ikuti huruf terakhir
+    // Paksa kursor menyala setiap kali kita mengetik agar responsif
+    tty_draw_cursor(); 
 }
 
-// Panggil fungsi pembersih layar
 void tty_clear(void) {
-    for (size_t y = 0; y < VGA_HEIGHT; y++) {
-        for (size_t x = 0; x < VGA_WIDTH; x++) {
-            const size_t index = y * VGA_WIDTH + x;
-            terminal_buffer[index] = vga_entry(' ', terminal_color);
-        }
-    }
+    draw_rect(0, 0, fb_width, fb_height, BG_COLOR);
     terminal_row = 0;
     terminal_column = 0;
-    tty_update_cursor(0, 0); // Reset kursor ke pojok kiri atas
+    // 3. PASTIKAN KURSOR MUNCUL SAAT LAYAR DIBERSIHKAN
+    tty_draw_cursor(); 
 }
 
 uint32_t tty_write(fs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buffer) {
@@ -113,21 +110,10 @@ uint32_t tty_read(fs_node_t *node, uint32_t offset, uint32_t size, uint8_t *buff
 }
 
 fs_node_t* init_tty(void) {
-    terminal_row = 0;
-    terminal_column = 0;
-    terminal_color = vga_entry_color(7, 0); 
-    terminal_buffer = (volatile uint16_t*) 0xB8000;
-
     tty_clear();
-
-    // Aktifkan kursor bergaris bawah (Scanline 14 sampai 15). 
-    // Kalau mau bentuk kotak penuh (Block Cursor), ganti jadi (0, 15).
-    tty_enable_cursor(14, 15);
-
     tty_node.name[0] = 't'; tty_node.name[1] = 't'; tty_node.name[2] = 'y'; tty_node.name[3] = '0'; tty_node.name[4] = '\0';
     tty_node.flags = FS_CHARDEVICE;
     tty_node.write = tty_write; 
     tty_node.read = tty_read; 
-
     return &tty_node;
 }

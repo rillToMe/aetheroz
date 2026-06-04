@@ -1,4 +1,8 @@
 #include <stdint.h>
+#include <stddef.h>
+#include "multiboot.h"  
+#define FONT8x16_IMPLEMENTATION 
+#include "font8x16.h" // <-- Pustaka font ajaib yang baru kita unduh!
 #include "fs.h"
 #include "tty.h"
 #include "pmm.h"
@@ -9,48 +13,126 @@
 #include "kyuzenfs.h"
 #include "task.h"
 #include "timer.h"
-#include "shell.h" // Import Shell kita
-#include "multiboot.h"
+#include "shell.h"
 
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
-extern fs_node_t tty_node;
-extern void set_kernel_stack(uint32_t stack);
-extern void pmm_set_total_ram(uint32_t size);
+extern void init_keyboard();
+extern void switch_to_user_mode(void (*user_func)());
+extern void user_shell();
 
+// --- VARIABEL GLOBAL FRAMEBUFFER ---
+uint32_t* fb_ptr = NULL;
+uint32_t fb_width = 0;
+uint32_t fb_height = 0;
+uint32_t fb_pitch = 0;
+
+void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (x >= fb_width || y >= fb_height) return;
+    fb_ptr[(y * (fb_pitch / 4)) + x] = color;
+}
+
+void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color) {
+    for (uint32_t y = start_y; y < start_y + height; y++) {
+        for (uint32_t x = start_x; x < start_x + width; x++) {
+            draw_pixel(x, y, color);
+        }
+    }
+}
+
+// --- MESIN PENGGAMBAR TEKS GRAFIS ---
+void draw_char(char c, uint32_t x, uint32_t y, uint32_t color) {
+    if (c < 0 || c > 127) return;
+
+    // Ambil cetak biru biner untuk huruf dari array font8x16
+    const unsigned char* bitmap = font8x16[(int)c];
+
+    for (int row = 0; row < 16; row++) { // Sekarang tingginya 16 piksel murni!
+        for (int col = 0; col < 8; col++) {
+            // Pustaka ini menggunakan urutan MSB (Most Significant Bit)
+            // Jadi kita gunakan 0x80 (10000000) yang digeser ke kanan
+            if (bitmap[row] & (0x80 >> col)) {
+                draw_pixel(x + col, y + row, color);
+            }
+        }
+    }
+}
+
+void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color) {
+    uint32_t curr_x = x;
+    uint32_t curr_y = y;
+
+    for (int i = 0; str[i] != '\0'; i++) {
+        if (str[i] == '\n') {
+            curr_y += 16; // Jarak Vertikal (8px untuk huruf + 8px spasi kosong)
+            curr_x = x;   
+        } else {
+            draw_char(str[i], curr_x, curr_y, color);
+            curr_x += 8; // Geser ke kanan sesuai lebar font (8px)
+        }
+    }
+}
+// ------------------------------------
+
+void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
+    // 1. TANGKAP LAYAR GUI DARI MULTIBOOT
+    if (magic == 0x2BADB002 && (mbi->flags & (1 << 12))) {
+        fb_ptr = (uint32_t *)(uint32_t)mbi->framebuffer_addr;
+        fb_width = mbi->framebuffer_width;
+        fb_height = mbi->framebuffer_height;
+        fb_pitch = mbi->framebuffer_pitch;
+
+        uint32_t total_ram = (mbi->mem_upper * 1024) + (1024 * 1024);
+        pmm_set_total_ram(total_ram);
+    }
+
+    // 2. INISIALISASI ARSITEKTUR KERNEL
+    init_gdt(); 
+    init_idt(); 
+    pmm_init(); 
+    init_paging((uint32_t)fb_ptr);
+    init_heap();
+    pic_remap(); 
+    init_timer(50); 
+    // init_keyboard(); 
+    // ata_init(); <--- HAPUS BARIS INI
+    kfs_init();
+
+    // 3. AKTIFKAN DRIVER LAYAR GUI BARU KITA
+    init_tty(); // <--- Ubah baris ini (Hapus fs_node_t* tty0 =)
+
+    // 4. LOMPAT KE USER SPACE (Menjalankan kyuzen-shell!)
+    switch_to_user_mode(user_shell);
+
+    // Fallback jika Ring 3 gagal
+    __asm__ volatile("cli");
+    while (1) { __asm__ volatile("hlt"); }
+}
+
+
+// Dummy untuk linker
+extern fs_node_t tty_node;
 uint32_t string_length(const char* str) {
     uint32_t len = 0;
     while (str[len]) len++;
     return len;
 }
-
-void print_hex(uint32_t num) {
-    char hex_str[11] = "0x00000000";
-    char hex_chars[] = "0123456789ABCDEF";
-    for (int i = 9; i >= 2; i--) { hex_str[i] = hex_chars[num & 0xF]; num >>= 4; }
-    write_fs(&tty_node, 0, 10, (uint8_t*)hex_str);
-    write_fs(&tty_node, 0, 1, (uint8_t*)"\n");
+void print_hex(uint32_t num) { 
+    (void)num; // Trik membungkam compiler
 }
 
-void background_task() {
-    volatile uint16_t* vga = (volatile uint16_t*)0xB8000;
-    int counter = 0;
-    char spinner[] = {'|', '/', '-', '\\'};
-    while(1) {
-        vga[78] = (uint16_t)spinner[counter % 4] | (0x0E << 8); 
-        counter++;
-        for(volatile int i = 0; i < 500000; i++); 
-        yield(); 
-    }
-}
+// Impor fungsi penyetel stack khusus untuk mode user
+extern void set_kernel_stack(uint32_t stack);
 
-// --- LOGIKA LOMPATAN RING 3 ---
+// --- KEMBALIKAN LOGIKA LOMPATAN RING 3 ---
 void switch_to_user_mode(void (*user_func)()) {
+    // Alokasikan memori 4KB untuk Stack User dan Stack pendaratan Kernel
     uint32_t user_stack = (uint32_t)kmalloc(4096) + 4096;
     uint32_t kernel_landing_stack = (uint32_t)kmalloc(4096) + 4096;
     set_kernel_stack(kernel_landing_stack);
 
+    // Assembly sakti untuk memanipulasi register dan memaksa CPU turun kasta ke Ring 3
     __asm__ volatile(
         "cli \n" "mov $0x23, %%ax \n" "mov %%ax, %%ds \n" "mov %%ax, %%es \n"
         "mov %%ax, %%fs \n" "mov %%ax, %%gs \n" "pushl $0x23 \n" "pushl %0 \n"            
@@ -58,33 +140,4 @@ void switch_to_user_mode(void (*user_func)()) {
         "pushl $0x1B \n" "pushl %1 \n" "iret \n"                
         : : "r"(user_stack), "r"(user_func) : "%eax"
     );
-}
-
-void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
-    fs_node_t* tty0 = init_tty();
-
-    // Tangkap data RAM asli dari QEMU/Bootloader
-    if (magic == 0x2BADB002) {
-        uint32_t total_ram = (mbi->mem_upper * 1024) + (1024 * 1024);
-        pmm_set_total_ram(total_ram);
-    }
-
-    init_gdt(); init_idt(); pmm_init(); init_paging(); init_heap();
-
-    char* msg1 = "========================================\n";
-    write_fs(tty0, 0, string_length(msg1), (uint8_t*)msg1);
-    char* msg2 = "   Kyuzen OS - Kernel Initialized       \n";
-    write_fs(tty0, 0, string_length(msg2), (uint8_t*)msg2);
-    write_fs(tty0, 0, string_length(msg1), (uint8_t*)msg1);
-
-    pic_remap();
-    __asm__ volatile("sti");
-
-    kfs_init();
-    tasking_init();
-    init_timer(100);
-    create_task(background_task);
-
-    // KERNEL SELESAI BEKERJA, SERAHKAN KE USER SPACE SHELL!
-    switch_to_user_mode(user_shell);
 }

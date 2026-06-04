@@ -1,11 +1,18 @@
 #include "io.h"
 #include <stdint.h>
-#include "timer.h" // Tambahan
-#include "task.h"  // Tambahan untuk yield()
+#include "timer.h"
+#include "task.h"
 
 volatile uint32_t timer_ticks = 0;
 
-// FITUR BARU: Mengubah kecepatan detak jantung CPU (PIT)
+// Impor variabel dan mesin gambar dari kernel.c
+extern uint32_t fb_width;
+extern void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color);
+extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
+extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
+
+extern void tty_blink_cursor();
+
 void init_timer(uint32_t freq) {
     uint32_t divisor = 1193180 / freq;
     outb(0x43, 0x36);
@@ -14,51 +21,48 @@ void init_timer(uint32_t freq) {
 }
 
 void timer_handler() {
-    timer_ticks++; // Hitung detak jantung CPU
+    timer_ticks++; 
     
-    volatile uint16_t* vga = (volatile uint16_t*)0xB8000;
-    
-    // 1. VISUAL SPINNER (Tetap berputar di pojok kanan)
-    if (timer_ticks % 10 == 0) { // Diperlambat sedikit animasinya karena sekarang detaknya 100Hz
-        const char spinner[] = {'|', '/', '-', '\\'};
-        uint8_t color_spinner = 0x0E; // Kuning Terang
-        vga[79] = (uint16_t)spinner[(timer_ticks / 10) % 4] | ((uint16_t)color_spinner << 8);
-    }
-
-    // 2. UPTIME TIMER (DIUBAH KE 100 TICK = 1 DETIK)
-    if (timer_ticks % 100 == 0) {
-        uint32_t total_seconds = timer_ticks / 100;
-        uint32_t seconds = total_seconds % 60;
-        uint32_t minutes = (total_seconds / 60) % 60;
-        uint32_t hours   = (total_seconds / 3600);
-
-        uint8_t color_text = 0x0B; // Cyan Terang
-
-        const char* label = " UPTIME: ";
-        for (int i = 0; label[i] != '\0'; i++) {
-            vga[60 + i] = (uint16_t)label[i] | ((uint16_t)color_text << 8);
+    if (fb_width > 0) {
+        
+        // 1. VISUAL SPINNER (Pojok Kanan Atas)
+        if (timer_ticks % 10 == 0) {
+            const char spinner[] = {'|', '/', '-', '\\'};
+            char current_spin = spinner[(timer_ticks / 10) % 4];
+            draw_rect(fb_width - 20, 5, 8, 16, 0x1E1E1E); 
+            draw_char(current_spin, fb_width - 20, 5, 0xFFFF00);
         }
 
-        vga[69] = (uint16_t)((hours / 10) + '0') | ((uint16_t)color_text << 8);
-        vga[70] = (uint16_t)((hours % 10) + '0') | ((uint16_t)color_text << 8);
-        vga[71] = (uint16_t)':' | ((uint16_t)color_text << 8);
+        // 2. UPTIME TIMER (Setiap 100 ticks = 1 detik)
+        if (timer_ticks % 100 == 0) {
+            // ... [Logika penghitung waktu milikmu biarkan sama persis] ...
+            uint32_t total_seconds = timer_ticks / 100;
+            uint32_t seconds = total_seconds % 60;
+            uint32_t minutes = (total_seconds / 60) % 60;
+            uint32_t hours   = (total_seconds / 3600);
 
-        vga[72] = (uint16_t)((minutes / 10) + '0') | ((uint16_t)color_text << 8);
-        vga[73] = (uint16_t)((minutes % 10) + '0') | ((uint16_t)color_text << 8);
-        vga[74] = (uint16_t)':' | ((uint16_t)color_text << 8);
+            char time_str[] = "UPTIME: 00:00:00";
+            time_str[8]  = (hours / 10) + '0';
+            time_str[9]  = (hours % 10) + '0';
+            time_str[11] = (minutes / 10) + '0';
+            time_str[12] = (minutes % 10) + '0';
+            time_str[14] = (seconds / 10) + '0';
+            time_str[15] = (seconds % 10) + '0';
 
-        vga[75] = (uint16_t)((seconds / 10) + '0') | ((uint16_t)color_text << 8);
-        vga[76] = (uint16_t)((seconds % 10) + '0') | ((uint16_t)color_text << 8);
+            draw_rect(fb_width - 150, 5, 16 * 8, 16, 0x1E1E1E); 
+            draw_string(time_str, fb_width - 150, 5, 0x00FFFF); 
+        }
+
+        // 3. ANIMASI KURSOR KEDAP-KEDIP (Setiap 25 ticks)
+        if (timer_ticks % 25 == 0) {
+            tty_blink_cursor();
+        }
     }
 
-    // 3. WAJIB lapor ke PIC bahwa interupsi selesai
-    outb(0x20, 0x20);
-
-    // 4. PREEMPTIVE MULTITASKING: Rampas CPU!
-    yield();
+    outb(0x20, 0x20); // Lapor PIC
+    yield();          // Rampas CPU untuk Multitasking
 }
 
 uint32_t get_uptime(void) {
-    // Ingat, 100 ticks = 1 detik
     return timer_ticks / 100;
 }
