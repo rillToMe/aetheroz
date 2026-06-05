@@ -42,3 +42,8 @@ void read_rtc(uint32_t* time_buf) {
     time_buf[4] = bcd_to_bin(min);
     time_buf[5] = bcd_to_bin(sec);
 }
+
+// Alias publik yang dipanggil oleh syscall.c (sys_get_time / syscall 20)
+void rtc_read_time(uint32_t* time_buf) {
+    read_rtc(time_buf);
+}

@@ -14,7 +14,11 @@ static uint32_t slen(const char* str) {
     uint32_t l = 0; while(str[l]) l++; return l;
 }
 void kprint(const char* str) {
+    if (!str || !tty_node.write) return; // Guard: init_tty() belum dipanggil
     write_fs(&tty_node, 0, slen(str), (uint8_t*)str);
+    // Flush langsung ke layar — jangan tunggu timer tick
+    extern void compositor_flush(void);
+    if (tty_node.write) compositor_flush();
 }
 
 static uint16_t find_free_sector() {

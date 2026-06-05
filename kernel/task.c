@@ -6,8 +6,8 @@ task_t tasks[MAX_TASKS];
 int current_task = 0;
 int task_count = 0;
 
-// Panggil fungsi Assembly yang kita buat tadi
-extern void switch_task(uint32_t *old_esp, uint32_t new_esp);
+// Panggil fungsi Assembly switch_task (sekarang 64-bit)
+extern void switch_task(uint64_t *old_rsp, uint64_t new_rsp);
 
 void tasking_init() {
     tasks[0].active = 1; // Program ke-0 adalah Kernel Utama (Shell)
@@ -15,39 +15,38 @@ void tasking_init() {
     task_count = 1;
 }
 
-// Bikin program baru (Thread)
+// Buat program baru (Thread)
 void create_task(void (*func)()) {
     if (task_count >= MAX_TASKS) return;
 
-    // Sewa RAM 1KB (1024) saja, cukup untuk stack sederhana!
-    uint32_t* stack = (uint32_t*)kmalloc(4096);
-    
-    // SATPAM ANTI-BSOD: Kalau memori habis, batalkan pembuatan task!
-    if (stack == NULL) return; 
+    uint64_t* stack = (uint64_t*)kmalloc(4096);
+    if (stack == NULL) return;
 
-    uint32_t* top_of_stack = (uint32_t*)((uint32_t)stack + 4096);
+    // Puncak stack (tumbuh ke bawah)
+    uint64_t* top = (uint64_t*)((uint64_t)stack + 4096);
 
-    // Manipulasi stack agar menyerupai perilaku CPU setelah interupsi
-    *(--top_of_stack) = (uint32_t)func; // EIP (Titik mulai fungsi)
+    // Tiru urutan push yang dilakukan switch_task saat dipanggil:
+    //   push rbp, push rbx, push r12, push r13, push r14, push r15
+    // kemudian ret akan kembali ke func.
+    *(--top) = (uint64_t)func; // return address → func
+    *(--top) = 0;              // rbp
+    *(--top) = 0;              // rbx
+    *(--top) = 0;              // r12
+    *(--top) = 0;              // r13
+    *(--top) = 0;              // r14
+    *(--top) = 0;              // r15
 
-    // Simulasikan instruksi 'pusha'
-    for (int i = 0; i < 8; i++) {
-        *(--top_of_stack) = 0;
-    }
-
-    // Daftarkan programnya
-    tasks[task_count].esp = (uint32_t)top_of_stack;
+    tasks[task_count].rsp    = (uint64_t)top;
     tasks[task_count].active = 1;
     task_count++;
 }
 
 // Tukar kendali CPU ke program selanjutnya
 void yield() {
-    if (task_count <= 1) return; // Kalau cuma 1 program, tidak perlu tukar
-    
+    if (task_count <= 1) return;
+
     int old_task = current_task;
-    current_task = (current_task + 1) % task_count; // Berputar (0 -> 1 -> 0 -> 1)
-    
-    // Panggil fungsi Assembly untuk menukar otak CPU
-    switch_task(&tasks[old_task].esp, tasks[current_task].esp);
-}
+    current_task = (current_task + 1) % task_count;
+
+    switch_task(&tasks[old_task].rsp, tasks[current_task].rsp);
+}

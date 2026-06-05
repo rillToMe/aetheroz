@@ -1,13 +1,27 @@
 #include <stdint.h>
 
+// ========================================================
+// STRUKTUR REGISTER 64-BIT (MURNI)
+// Harus cocok dengan PUSHA64 di isr_macro.inc
+// ========================================================
+typedef struct {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;  
+    uint64_t int_num, error_code;                
+    uint64_t rip, cs, rflags, rsp, ss;           
+} __attribute__((packed)) registers_t;
+
 extern uint32_t* fb_ptr;
 extern uint32_t fb_width;
 extern uint32_t fb_height;
 extern uint32_t fb_pitch;
 extern const unsigned char font8x16[256][16];
 
+// Impor fungsi cek rute fisik (dari paging.c)
+extern int paging_is_mapped(uint64_t vaddr);
+
 // =======================================================================
-// MESIN GAMBAR DARURAT (TANPA MALLOC — Aman saat heap korup sekalipun)
+// MESIN GAMBAR DARURAT (TANPA MALLOC)
 // =======================================================================
 
 void panic_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
@@ -32,21 +46,21 @@ void panic_draw_string(const char* str, uint32_t x, uint32_t y, uint32_t fg, uin
     }
 }
 
-void panic_draw_hex(uint32_t num, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
+// FORMAT HEX 64-BIT TERBARU (Mendukung alamat memori raksasa)
+void panic_draw_hex(uint64_t num, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
     const char* digits = "0123456789ABCDEF";
-    char buf[11] = "0x00000000";
-    for (int i = 9; i >= 2; i--) {
+    char buf[19] = "0x0000000000000000";
+    for (int i = 17; i >= 2; i--) {
         buf[i] = digits[num & 0xF];
         num >>= 4;
     }
     panic_draw_string(buf, x, y, fg, bg);
 }
 
-// Gambar desimal (untuk nomor interrupt dll)
-void panic_draw_dec(uint32_t num, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
-    char buf[12];
-    int i = 10;
-    buf[11] = '\0';
+void panic_draw_dec(uint64_t num, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg) {
+    char buf[22];
+    int i = 20;
+    buf[21] = '\0';
     if (num == 0) { panic_draw_char('0', x, y, fg, bg); return; }
     while (num > 0 && i >= 0) {
         buf[i--] = '0' + (num % 10);
@@ -83,9 +97,9 @@ static const char* exception_names[] = {
 };
 
 // =======================================================================
-// BSOD GENERIK (dipanggil oleh kernel_panic)
+// BSOD GENERIK
 // =======================================================================
-void kernel_panic(const char* title, const char* desc, uint32_t code) {
+void kernel_panic(const char* title, const char* desc, uint64_t code) {
     __asm__ volatile("cli");
     if (!fb_ptr) { while(1) { __asm__ volatile("hlt"); } }
 
@@ -97,7 +111,7 @@ void kernel_panic(const char* title, const char* desc, uint32_t code) {
     fill_screen(BG);
 
     panic_draw_string("=====================================================", 50,  40, FG, BG);
-    panic_draw_string("   *** KYUZEN OS FATAL KERNEL PANIC ***              ", 50,  60, FG, HDR);
+    panic_draw_string("   *** KYUZEN OS FATAL KERNEL PANIC *** ", 50,  60, FG, HDR);
     panic_draw_string("=====================================================", 50,  80, FG, BG);
 
     panic_draw_string("EXCEPTION:", 50, 110, FG, BG);
@@ -114,18 +128,26 @@ void kernel_panic(const char* title, const char* desc, uint32_t code) {
 }
 
 // =======================================================================
-// EXCEPTION HANDLER UTAMA — Dipanggil oleh exception_common_stub di ASM
-// Stack args (dari kanan ke kiri C): error_code, int_num, cr2_value
+// EXCEPTION HANDLER UTAMA 64-BIT
+// (Dipanggil oleh semua Exception ASM melalui Call RDI)
 // =======================================================================
-void exception_handler(uint32_t error_code, uint32_t int_num, uint32_t cr2) {
+void exception_handler(registers_t *r) {
     __asm__ volatile("cli");
     if (!fb_ptr) { while(1) { __asm__ volatile("hlt"); } }
 
-    uint32_t BG    = 0x0000AA;  // Biru BSOD
-    uint32_t FG    = 0xFFFFFF;  // Putih
-    uint32_t HDR   = 0xAA0000;  // Merah (header)
-    uint32_t WARN  = 0xFFFF00;  // Kuning (nilai penting)
-    uint32_t ERR   = 0xFF4444;  // Merah muda (error)
+    // Ambil data langsung dari struct register (RDI)
+    uint64_t int_num = r->int_num;
+    uint64_t error_code = r->error_code;
+
+    // BACA CR2 MENGGUNAKAN REGISTER 64-BIT!
+    uint64_t cr2;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+
+    uint32_t BG    = 0x0000AA;  
+    uint32_t FG    = 0xFFFFFF;  
+    uint32_t HDR   = 0xAA0000;  
+    uint32_t WARN  = 0xFFFF00;  
+    uint32_t ERR   = 0xFF4444;  
 
     fill_screen(BG);
 
@@ -147,29 +169,22 @@ void exception_handler(uint32_t error_code, uint32_t int_num, uint32_t cr2) {
     panic_draw_string("ERR CODE: ", 50, 145, FG, BG);
     panic_draw_hex(error_code, 170, 145, WARN, BG);
 
-    // --- CR2 (Fault Address, sangat penting untuk Page Fault) ---
-    panic_draw_string("CR2 ADDR: ", 50, 165, FG, BG);
-    panic_draw_hex(cr2, 170, 165, WARN, BG);
+    // --- RIP (Instruksi yang Bikin Crash, OTOMATIS DIDAPAT DARI 64-BIT STACK) ---
+    panic_draw_string("CRASH RIP:", 50, 165, FG, BG);
+    panic_draw_hex(r->rip, 170, 165, WARN, BG);
 
     // --- Analisis Page Fault ---
     if (int_num == 14) {
-        extern uint32_t page_directory[1024];
-        uint32_t dir_idx  = cr2 >> 22;
-        int is_mapped = (page_directory[dir_idx] & 1);
+        panic_draw_string("CR2 ADDR: ", 50, 190, FG, BG);
+        panic_draw_hex(cr2, 170, 190, WARN, BG);
 
-        panic_draw_string("PG STATUS:", 50, 190, FG, BG);
-        if (is_mapped)
-            panic_draw_string("PRESENT (ada PT, hak akses ditolak!)", 170, 190, 0xFF8800, BG);
+        panic_draw_string("PG STATUS:", 50, 210, FG, BG);
+        // Cek langsung menggunakan 4-Level Paging Limine
+        if (paging_is_mapped(cr2))
+            panic_draw_string("PRESENT (Ada rute fisik, hak akses ditolak!)", 170, 210, 0xFF8800, BG);
         else
-            panic_draw_string("NOT PRESENT (Blok 4MB ini belum dipetakan!)", 170, 190, ERR, BG);
+            panic_draw_string("NOT PRESENT (Alamat 64-bit ini belum dipetakan!)", 170, 210, ERR, BG);
 
-        panic_draw_string("PD INDEX: ", 50, 210, FG, BG);
-        panic_draw_dec(dir_idx, 170, 210, WARN, BG);
-        panic_draw_string("(hex:", 230, 210, FG, BG);
-        panic_draw_hex(dir_idx, 280, 210, WARN, BG);
-        panic_draw_char(')', 370, 210, FG, BG);
-
-        // Decode error code bits untuk page fault
         panic_draw_string("PF BITS:  ", 50, 230, FG, BG);
         if (error_code & 1)  panic_draw_string("PROT ", 170, 230, 0xFF8800, BG);
         else                 panic_draw_string("NONP ", 170, 230, ERR, BG);
@@ -183,29 +198,15 @@ void exception_handler(uint32_t error_code, uint32_t int_num, uint32_t cr2) {
     if (int_num == 13) {
         panic_draw_string("GPF HINT: ", 50, 190, FG, BG);
         if (error_code == 0)
-            panic_draw_string("error_code=0: NULL deref, bad stack, atau salah segment", 170, 190, WARN, BG);
+            panic_draw_string("error_code=0: Akses memori non-canonical atau NULL pointer", 170, 190, WARN, BG);
         else {
-            // Decode selector
             int ext  = (error_code & 1) ? 1 : 0;
-            int tbl  = (error_code >> 1) & 3;  // 0=GDT,1=IDT,2=LDT,3=IDT
+            int tbl  = (error_code >> 1) & 3;
             int idx  = (error_code >> 3) & 0x1FFF;
             panic_draw_string("SEG IDX:  ", 170, 190, FG, BG);
             panic_draw_dec(idx, 260, 190, WARN, BG);
             panic_draw_string((tbl == 0 ? "GDT" : (tbl == 2 ? "LDT" : "IDT")), 310, 190, WARN, BG);
         }
-    }
-
-    // --- Stack Fault ---
-    if (int_num == 12) {
-        panic_draw_string("HINT:     ", 50, 190, FG, BG);
-        panic_draw_string("Stack overflow atau akses stack di luar segment!", 170, 190, ERR, BG);
-    }
-
-    // --- Double Fault ---
-    if (int_num == 8) {
-        panic_draw_string("HINT:     ", 50, 190, FG, BG);
-        panic_draw_string("Double Fault = CPU tidak bisa handle exception sebelumnya.", 170, 190, ERR, BG);
-        panic_draw_string("Kemungkinan: kernel stack overflow atau IDT gate rusak.", 170, 210, ERR, BG);
     }
 
     panic_draw_string("====================================================", 50, 280, FG, BG);
@@ -215,23 +216,9 @@ void exception_handler(uint32_t error_code, uint32_t int_num, uint32_t cr2) {
 }
 
 // =======================================================================
-// SHORTCUT HANDLER (masih bisa dipanggil langsung dari C jika perlu)
+// SHORTCUT HANDLER
 // =======================================================================
-void page_fault_handler() {
-    uint32_t cr2;
-    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-    // Panggil handler umum dengan int_num=14, error_code=0 (tidak bisa ambil dari sini)
-    exception_handler(0, 14, cr2);
-}
-
-void divide_by_zero_handler() {
-    exception_handler(0, 0, 0);
-}
-
-void general_protection_fault_handler() {
-    exception_handler(0, 13, 0);
-}
-
-void double_fault_handler() {
-    exception_handler(0, 8, 0);
+void page_fault_handler(registers_t *r, uint64_t fault_addr) {
+    // Alihkan langsung ke handler utama, CR2 otomatis dibaca ulang di sana
+    exception_handler(r);
 }

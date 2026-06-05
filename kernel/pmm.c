@@ -37,16 +37,14 @@ void pmm_init_dynamic(void* memmap_entries, uint64_t entry_count) {
 
         if (entry->type == LIMINE_MEMMAP_USABLE) {
             uint64_t start = entry->base;
-            uint64_t end = start + entry->length;
+            uint64_t end   = start + entry->length;
 
             if (end > highest_addr) highest_addr = end;
 
-            // Batasi mentok 4GB untuk OS 32-bit
-            if (start >= 0x100000000ULL) continue;
-            if (end > 0x100000000ULL) end = 0x100000000ULL;
-
             for (uint64_t addr = start; addr < end; addr += PAGE_SIZE) {
-                bitmap_clear((uint32_t)(addr / PAGE_SIZE));
+                uint32_t page = (uint32_t)(addr / PAGE_SIZE);
+                if (page < PMM_BITMAP_SIZE * 8)
+                    bitmap_clear(page);
             }
         }
     }
@@ -80,15 +78,19 @@ void pmm_free_page(void* ptr) {
     bitmap_clear(bit); // Tandai sebagai kosong lagi
 }
 
-// Hitung berapa banyak blok RAM (Page) yang bernilai 1 di Bitmap
+// Hitung RAM yang benar-benar terpakai = total - free
+// (Cara lama menghitung semua page bitmap=1 termasuk MMIO/reserved → hasilnya salah besar)
 uint32_t pmm_get_used_ram(void) {
-    uint32_t used_pages = 0;
-    for (uint32_t i = 0; i < PMM_BITMAP_SIZE * 8; i++) {
-        if (bitmap_test(i)) {
-            used_pages++;
-        }
+    uint32_t free_pages = 0;
+    // Hanya hitung sampai real_total_ram / PAGE_SIZE
+    uint32_t max_page = (uint32_t)(real_total_ram / PAGE_SIZE);
+    if (max_page > PMM_BITMAP_SIZE * 8) max_page = PMM_BITMAP_SIZE * 8;
+    for (uint32_t i = 0; i < max_page; i++) {
+        if (!bitmap_test(i)) free_pages++;
     }
-    return used_pages * PAGE_SIZE; // Kembalikan dalam satuan Byte
+    uint32_t free_bytes = free_pages * PAGE_SIZE;
+    uint32_t total = real_total_ram;
+    return (total > free_bytes) ? (total - free_bytes) : 0;
 }
 
 void pmm_set_total_ram(uint32_t size) {

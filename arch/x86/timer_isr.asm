@@ -1,9 +1,13 @@
+%include "arch/x86/isr_macro.inc"
 section .text
 global timer_isr_stub
 extern timer_handler
 
 timer_isr_stub:
-    pushad               ; Simpan status CPU
-    call timer_handler   ; Panggil logika di C
-    popad                ; Kembalikan status CPU
-    iretd                ; Kembali ke proses utama
+    push 0
+    push 32         ; IRQ 0
+    PUSHA64
+    call timer_handler  ; timer_handler() tidak punya parameter
+    POPA64
+    add rsp, 16
+    iretq

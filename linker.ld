@@ -1,38 +1,63 @@
-ENTRY(_start)
+/* ============================================================
+   Kyuzen OS — Linker Script (x86-64 Higher Half, Limine Protocol)
+   
+   Limine menempatkan kernel di higher half virtual address space.
+   Kernel harus di-link ke FFFFFFFF80000000 ke atas.
+   
+   Referensi: https://github.com/limine-bootloader/limine/blob/trunk/PROTOCOL.md
+   ============================================================ */
+
+OUTPUT_FORMAT(elf64-x86-64)
+OUTPUT_ARCH(i386:x86-64)
+
+ENTRY(kernel_main)
+
+/* Higher-half kernel base address (standar Limine) */
+KERNEL_VMA = 0xFFFFFFFF80000000;
 
 SECTIONS
 {
-    /* Mulai meletakkan section di 1 Megabyte */
-    . = 1M;
+    /* Posisi fisik yang akan diminta ke Limine */
+    . = KERNEL_VMA;
 
-    /* Taruh Multiboot Header persis di awal, WAJIB di-KEEP */
-    .multiboot : ALIGN(4K)
-    {
-        KEEP(*(.multiboot))
-    }
-
-    /* Kode utama (Assembly & C) */
+    /* ---- Kode Utama ---- */
     .text : ALIGN(4K)
     {
-        *(.text)
+        *(.text .text.*)
     }
 
-    /* Read-only data */
+    /* ---- Read-only data ---- */
     .rodata : ALIGN(4K)
     {
-        *(.rodata)
+        *(.rodata .rodata.*)
     }
 
-    /* Read-write data (initialized) */
+    /* ---- Data Limine Requests (WAJIB agar request terdeteksi) ---- */
+    .requests : ALIGN(4K)
+    {
+        KEEP(*(.requests_start_marker))
+        KEEP(*(.requests))
+        KEEP(*(.requests_end_marker))
+    }
+
+    /* ---- Data terinisialisasi ---- */
     .data : ALIGN(4K)
     {
-        *(.data)
+        *(.data .data.*)
     }
 
-    /* Read-write data (uninitialized) dan stack */
+    /* ---- Data tidak terinisialisasi + stack ---- */
     .bss : ALIGN(4K)
     {
         *(COMMON)
-        *(.bss)
+        *(.bss .bss.*)
+    }
+
+    /* Buang section debug dan sisa Multiboot (tidak relevan) */
+    /DISCARD/ :
+    {
+        *(.note .note.*)
+        *(.eh_frame)
+        *(.multiboot)
     }
 }

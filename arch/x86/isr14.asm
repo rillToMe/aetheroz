@@ -1,10 +1,18 @@
+%include "arch/x86/isr_macro.inc"
 section .text
 global isr14_stub
 extern page_fault_handler
 
 isr14_stub:
-    pushad                  ; Simpan semua register CPU
-    call page_fault_handler ; Panggil fungsi layar biru di C
-    popad                   ; (Opsional) Kembalikan register
-    add esp, 4              ; PENTING: Buang Error Code (4 byte) dari stack
-    iretd
+    ; CPU otomatis push error code
+    push 14         ; Push int_num
+    PUSHA64
+    
+    mov rdi, rsp    ; Arg 1 (RDI) = struct registers*
+    mov rsi, cr2    ; Arg 2 (RSI) = fault_addr (CR2)
+    
+    call page_fault_handler
+    
+    POPA64
+    add rsp, 16
+    iretq

@@ -2,24 +2,21 @@
 #include "kyuzenfs.h"
 #include "heap.h"
 #include "string.h"
-#include "paging.h"  // Untuk paging_map_region() dan paging_is_mapped()
+#include "paging.h"
 
 extern void kprint(const char* str);
 extern void kprint_num(uint32_t num);
 
 // =======================================================================
-// elf_load_file() — Muat file ELF ke RAM dan kembalikan entry point-nya
+// elf_load_file() — Load ELF64 user-app ke RAM, kembalikan entry point
 //
-// ALUR KERJA:
-//   1. Baca file ELF dari KyuzenFS ke buffer sementara
-//   2. Validasi ELF magic number (0x7F 'E' 'L' 'F')
-//   3. Untuk setiap PT_LOAD segment:
-//      a. PRE-MAP: Petakan semua blok 4MB yang dibutuhkan segmen ke Page Table
-//      b. COPY: Salin data dari file ke alamat virtual yang diminta (p_vaddr)
-//      c. ZERO BSS: Isi sisa ruang (p_memsz > p_filesz) dengan nol
-//   4. Kembalikan entry point (e_entry)
+// CATATAN: User apps dikompilasi sebagai 64-bit ELF (e_machine = 0x3E = x86_64)
+// ELF64 berbeda dari ELF32 dalam dua hal penting:
+//   1. e_entry, e_phoff, e_shoff adalah uint64_t (bukan uint32_t)
+//   2. Di Program Header, p_flags ada SEBELUM p_offset (bukan setelah!)
+// Menggunakan struct ELF32 untuk ELF64 → semua field offset salah → crash!
 // =======================================================================
-uint32_t elf_load_file(char* filename) {
+uint64_t elf_load_file(char* filename) {
     uint32_t file_size = kfs_get_file_size(filename);
     if (file_size == 0) {
         kprint("[ELF] Error: File kosong atau tidak ditemukan!\n");
@@ -28,67 +25,103 @@ uint32_t elf_load_file(char* filename) {
 
     uint8_t* file_buffer = (uint8_t*)kmalloc(file_size);
     if (!file_buffer) {
-        kprint("[ELF] Error: Heap habis, tidak bisa alokasi buffer!\n");
+        kprint("[ELF] Error: Heap habis!\n");
         return 0;
     }
     kfs_read_to_buffer(filename, (char*)file_buffer);
 
-    // Validasi ELF Magic Number: 0x7F 'E' 'L' 'F'
-    elf32_ehdr_t* elf_hdr = (elf32_ehdr_t*)file_buffer;
-    if (elf_hdr->e_ident[0] != 0x7F ||
-        elf_hdr->e_ident[1] != 'E'  ||
-        elf_hdr->e_ident[2] != 'L'  ||
-        elf_hdr->e_ident[3] != 'F') {
-        kprint("[ELF] Error: Magic Number tidak cocok (bukan file ELF)!\n");
+    // Validasi ELF Magic Number
+    if (file_buffer[0] != 0x7F || file_buffer[1] != 'E' ||
+        file_buffer[2] != 'L'  || file_buffer[3] != 'F') {
+        kprint("[ELF] Error: Bukan file ELF!\n");
         kfree(file_buffer);
         return 0;
     }
 
-    // Bongkar tabel Program Header
-    elf32_phdr_t* phdr = (elf32_phdr_t*)(file_buffer + elf_hdr->e_phoff);
+    // Deteksi class: byte[4] = 1 (ELF32) atau 2 (ELF64)
+    uint8_t elf_class = file_buffer[4];
 
-    for (int i = 0; i < elf_hdr->e_phnum; i++) {
-        // Hanya proses segment yang bertipe PT_LOAD (type == 1)
-        if (phdr[i].p_type == 1) {
+    if (elf_class == ELFCLASS64) {
+        // ===========================
+        //  LOAD ELF64 (x86_64)
+        // ===========================
+        elf64_ehdr_t* hdr  = (elf64_ehdr_t*)file_buffer;
+        elf64_phdr_t* phdr = (elf64_phdr_t*)(file_buffer + hdr->e_phoff);
+
+        for (int i = 0; i < hdr->e_phnum; i++) {
+            if (phdr[i].p_type != 1) continue; // Hanya PT_LOAD
+
+            uint64_t seg_vaddr = phdr[i].p_vaddr;
+            uint64_t seg_end   = seg_vaddr + phdr[i].p_memsz;
+
+            // PRE-MAP: map semua 4KB pages yang dicakup segmen
+            for (uint64_t page = seg_vaddr & ~0xFFFULL; page < seg_end; page += 4096) {
+                if (!paging_is_mapped(page)) {
+                    if (!vmm_alloc_page(page, 7)) {
+                        kprint("[ELF64] FATAL: Tidak bisa map page 0x");
+                        kprint_num((uint32_t)(page >> 32)); kprint_num((uint32_t)page);
+                        kprint("\n");
+                        kfree(file_buffer);
+                        return 0;
+                    }
+                }
+            }
+
+            // COPY: salin data segmen ke virtual address tujuan
+            memcpy((void*)seg_vaddr,
+                   file_buffer + phdr[i].p_offset,
+                   (uint32_t)phdr[i].p_filesz);
+
+            // ZERO BSS: isi sisa ruang dengan 0
+            if (phdr[i].p_memsz > phdr[i].p_filesz) {
+                memset((uint8_t*)seg_vaddr + phdr[i].p_filesz,
+                       0,
+                       (uint32_t)(phdr[i].p_memsz - phdr[i].p_filesz));
+            }
+        }
+
+        kfree(file_buffer);
+        return hdr->e_entry;  // 64-bit entry point
+
+    } else if (elf_class == ELFCLASS32) {
+        // ===========================
+        //  LOAD ELF32 (i386) — legacy
+        // ===========================
+        elf32_ehdr_t* hdr  = (elf32_ehdr_t*)file_buffer;
+        elf32_phdr_t* phdr = (elf32_phdr_t*)(file_buffer + hdr->e_phoff);
+
+        for (int i = 0; i < hdr->e_phnum; i++) {
+            if (phdr[i].p_type != 1) continue;
+
             uint32_t seg_vaddr = phdr[i].p_vaddr;
             uint32_t seg_end   = seg_vaddr + phdr[i].p_memsz;
 
-            // ----------------------------------------------------------
-            // PRE-MAP: Petakan semua blok 4MB yang dicakup segmen ini
-            // Segmen bisa merentang lebih dari satu blok 4MB, jadi kita
-            // iterasi dari batas bawah hingga batas atas (per 4MB).
-            // ----------------------------------------------------------
-            uint32_t block = seg_vaddr & 0xFFC00000; // Bulatkan ke bawah ke 4MB
+            uint32_t block = seg_vaddr & 0xFFC00000;
             while (block < seg_end) {
                 if (!paging_map_region(block)) {
-                    kprint("[ELF] FATAL: Pool page table habis! Tidak bisa memetakan segmen.\n");
-                    kprint("[ELF] Segmen p_vaddr = 0x"); kprint_num(seg_vaddr); kprint("\n");
+                    kprint("[ELF32] FATAL: Tidak bisa map region!\n");
                     kfree(file_buffer);
                     return 0;
                 }
-                block += 0x400000; // Lanjut ke blok 4MB berikutnya
+                block += 0x400000;
             }
-            // ----------------------------------------------------------
 
-            // COPY: Pindahkan data segmen ke alamat virtual yang diminta
-            memcpy((void*)seg_vaddr,
+            memcpy((void*)(uint64_t)seg_vaddr,
                    file_buffer + phdr[i].p_offset,
                    phdr[i].p_filesz);
 
-            // ZERO BSS: Jika memsz > filesz, sisa ruang adalah .bss (harus diisi 0)
             if (phdr[i].p_memsz > phdr[i].p_filesz) {
-                memset((uint8_t*)seg_vaddr + phdr[i].p_filesz,
+                memset((uint8_t*)(uint64_t)seg_vaddr + phdr[i].p_filesz,
                        0,
                        phdr[i].p_memsz - phdr[i].p_filesz);
             }
         }
+
+        kfree(file_buffer);
+        return (uint64_t)hdr->e_entry;
     }
 
-    // Catat dan kembalikan entry point
-    uint32_t entry_point = elf_hdr->e_entry;
-
-    // Bebaskan buffer sementara
+    kprint("[ELF] Error: ELF class tidak dikenal!\n");
     kfree(file_buffer);
-
-    return entry_point;
-}
+    return 0;
+}

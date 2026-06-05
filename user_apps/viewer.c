@@ -171,28 +171,32 @@ void main() {
     // 8. Event Loop — Menunggu klik tombol Close atau ESC
     // ==========================================================
     kyuzen_event_t event;
+    int mouse_x = 0, mouse_y = 0;  // Cache posisi mouse
     while (1) {
         if (sys_get_event(&event)) {
-            static int mouse_x = 0;
-            static int mouse_y = 0;
-
-            if (event.type == 2) { 
-                mouse_x = event.param1; 
-                mouse_y = event.param2; 
+            if (event.type == EVENT_MOUSE_MOVE) {
+                mouse_x = event.param1;
+                mouse_y = event.param2;
             }
 
-            if (event.type == 3 && event.param1 == 0 && event.param2 == 1) {
-                // Posisi Absolut Jendela: X=250, Y=100
-                // Tombol Close: pojok kanan atas (40px lebar)
-                if (mouse_x >= (250 + win_w - 40) && mouse_x <= (250 + win_w) &&
-                    mouse_y >= (100 + 0) && mouse_y <= (100 + 30)) {
-                    break; // Keluar dari event loop
+            // Klik kiri: param1=0, param2=1, param3=mouse_x saat klik
+            if (event.type == EVENT_MOUSE_CLICK && event.param1 == 0 && event.param2 == 1) {
+                if (event.param3 != 0) mouse_x = event.param3;
+                // Window di posisi (250, 100) — konversi ke koordinat relatif
+                int win_off_x = 250, win_off_y = 100;
+                int rel_x = mouse_x - win_off_x;
+                int rel_y = mouse_y - win_off_y;
+
+                // Tombol Close (X): pojok kanan atas, lebar 40px, tinggi 30px
+                if (rel_x >= (win_w - 40) && rel_x <= win_w &&
+                    rel_y >= 0 && rel_y <= 30) {
+                    break;
                 }
             }
 
-            if (event.type == 1 && event.param1 == 27) break; // Tombol ESC
+            if (event.type == EVENT_KEY_PRESS && event.param1 == 27) break; // ESC
         }
-        sys_yield(); 
+        sys_yield();
     }
     
     // ==========================================================
@@ -205,9 +209,9 @@ void main() {
     // ==========================================================
     // 10. Panggil balik File Manager
     // ==========================================================
-    uint32_t fm_entry = sys_load_elf("fileman.elf");
-    if (fm_entry != 0) { 
-        void (*run_fm)() = (void (*)())fm_entry; 
-        run_fm(); 
+    uint64_t fm_entry = sys_load_elf("fileman.elf");
+    if (fm_entry != 0) {
+        void (*run_fm)(void) = (void (*)(void))fm_entry;
+        run_fm();
     }
 }

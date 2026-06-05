@@ -102,54 +102,53 @@ void main() {
     render_ui(files, total_files);
 
     kyuzen_event_t event;
+    int mouse_x = 0, mouse_y = 0;  // Cache posisi mouse terkini
     while (1) {
         if (sys_get_event(&event)) {
-            static int mouse_x = 0;
-            static int mouse_y = 0;
-            
-            if (event.type == 2) {
+            if (event.type == EVENT_MOUSE_MOVE) {
                 mouse_x = event.param1;
                 mouse_y = event.param2;
             }
 
-            if (event.type == 3 && event.param1 == 0 && event.param2 == 1) {
-                
-                // 1. DETEKSI KLIK: Tombol Merah (Close)
-                int btn_x_start = 200 + (win_w - 40);
-                int btn_x_end = 200 + win_w;
-                int btn_y_start = 150 + 0;
-                int btn_y_end = 150 + 30;
+            // EVENT_MOUSE_CLICK: param1=0 (kiri), param2=1 (ditekan), param3=mouse_x
+            // mouse_y diambil dari cache MOVE (selalu valid karena mouse gerak sebelum klik)
+            if (event.type == EVENT_MOUSE_CLICK && event.param1 == 0 && event.param2 == 1) {
+                // Sinkronkan mouse_x dari click event jika ada
+                if (event.param3 != 0) mouse_x = event.param3;
 
-                if (mouse_x >= btn_x_start && mouse_x <= btn_x_end &&
-                    mouse_y >= btn_y_start && mouse_y <= btn_y_end) {
-                    break; 
+                // Window ada di layar posisi (win_off_x=200, win_off_y=150)
+                int win_off_x = 200, win_off_y = 150;
+
+                // Koordinat RELATIF terhadap window
+                int rel_x = mouse_x - win_off_x;
+                int rel_y = mouse_y - win_off_y;
+
+                // 1. DETEKSI KLIK: Tombol Close (X) — pojok kanan atas
+                if (rel_x >= (win_w - 40) && rel_x <= win_w &&
+                    rel_y >= 0 && rel_y <= 30) {
+                    break;
                 }
 
                 // 2. DETEKSI KLIK: Daftar File
-                int list_start_y = 150 + 70; 
-                int list_end_y = list_start_y + (total_files * 20);
-                int list_start_x = 200 + 10;
-                int list_end_x = 200 + win_w - 10;
+                int list_x0 = 10, list_x1 = win_w - 10;
+                int list_y0 = 70, list_y1 = list_y0 + (total_files * 20);
 
-                if (mouse_x >= list_start_x && mouse_x <= list_end_x &&
-                    mouse_y >= list_start_y && mouse_y < list_end_y) {
-                    
-                    int clicked_index = (mouse_y - list_start_y) / 20;
+                if (rel_x >= list_x0 && rel_x <= list_x1 &&
+                    rel_y >= list_y0 && rel_y < list_y1) {
+                    int clicked_index = (rel_y - list_y0) / 20;
                     if (clicked_index >= 0 && clicked_index < total_files) {
                         selected_file = clicked_index;
-                        render_ui(files, total_files); 
+                        render_ui(files, total_files);
                     }
-                } // <-- TUTUP KURUNG DAFTAR FILE HARUS DI SINI!
+                }
 
-                // 3. DETEKSI KLIK: TOMBOL BUKA (CYAN)
+                // 3. DETEKSI KLIK: TOMBOL BUKA (CYAN) — koordinat rel terhadap window
                 if (selected_file != -1) {
-                    int buka_x_start = 200 + (win_w - 70);
-                    int buka_x_end = 200 + win_w - 10;
-                    int buka_y_start = 150 + (win_h - 26);
-                    int buka_y_end = 150 + (win_h - 4);
+                    int buka_x0 = win_w - 70, buka_x1 = win_w - 10;
+                    int buka_y0 = win_h - 26, buka_y1 = win_h - 4;
 
-                    if (mouse_x >= buka_x_start && mouse_x <= buka_x_end &&
-                        mouse_y >= buka_y_start && mouse_y <= buka_y_end) {
+                    if (rel_x >= buka_x0 && rel_x <= buka_x1 &&
+                        rel_y >= buka_y0 && rel_y <= buka_y1) {
                         
                         char* target_file = files[selected_file].filename;
                         
@@ -162,33 +161,30 @@ void main() {
                             // --- LOGIKA BUKA .ELF ---
                             sys_destroy_window(win_id);
                             sys_free(my_canvas);
-                            
-                            uint32_t app_entry = sys_load_elf(target_file);
+
+                            uint64_t app_entry = sys_load_elf(target_file);
                             if (app_entry != 0) {
-                                void (*run_app)() = (void (*)())app_entry;
+                                void (*run_app)(void) = (void (*)(void))app_entry;
                                 run_app();
                             }
-                            return; // Akhiri eksekusi File Manager
+                            return;
                         } 
                         else if (len > 4 && target_file[len-4] == '.' && target_file[len-3] == 'p' && 
                                  target_file[len-2] == 'n' && target_file[len-1] == 'g') {
                             
-                            // --- LOGIKA BUKA .PNG (JEMBATAN KE VIEWER.ELF) ---
-                            // 1. Tulis nama file ke 'view.tmp'
+                            // --- LOGIKA BUKA .PNG → VIEWER.ELF ---
                             if (sys_file_exists("view.tmp")) fs_delete("view.tmp");
                             sys_create_file("view.tmp", target_file, len);
-                            
-                            // 2. Hancurkan GUI File Manager sebelum berpindah
+
                             sys_destroy_window(win_id);
                             sys_free(my_canvas);
-                            
-                            // 3. Panggil Aplikasi Viewer!
-                            uint32_t app_entry = sys_load_elf("viewer.elf");
-                            if (app_entry != 0) {
-                                void (*run_app)() = (void (*)())app_entry;
-                                run_app();
+
+                            uint64_t app_entry2 = sys_load_elf("viewer.elf");
+                            if (app_entry2 != 0) {
+                                void (*run_app2)(void) = (void (*)(void))app_entry2;
+                                run_app2();
                             }
-                            return; // Akhiri eksekusi File Manager
+                            return;
                         } 
                         else {
                             // Untuk file format lain (.sys, .txt, dll)

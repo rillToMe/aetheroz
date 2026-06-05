@@ -11,7 +11,8 @@ extern uint32_t fb_pitch;
 extern void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color);
 extern void draw_char(char c, uint32_t x, uint32_t y, uint32_t color);
 
-extern uint32_t backbuffer[1024 * 768];
+// tty_scroll harus scroll base_canvas (bukan backbuffer yang di-overwrite compositor tiap frame!)
+extern uint32_t base_canvas[1920 * 1080];
 
 // 2. Konstanta Terminal GUI
 #define FONT_WIDTH 8
@@ -47,14 +48,17 @@ void tty_erase_cursor() {
 // --- FITUR SCROLLING LAYAR GUI ---
 void tty_scroll() {
     uint32_t copy_height = fb_height - FONT_HEIGHT;
+    uint32_t stride = fb_pitch / 4; // pixels per row
     for (uint32_t y = 0; y < copy_height; y++) {
         for (uint32_t x = 0; x < fb_width; x++) {
-            // SCROLL HARUS DI LAKUKAN DI DALAM BACKBUFFER!
-            backbuffer[(y * (fb_pitch / 4)) + x] = backbuffer[((y + FONT_HEIGHT) * (fb_pitch / 4)) + x];
+            // Scroll base_canvas, bukan backbuffer!
+            // compositor_flush() copy base_canvas -> backbuffer setiap frame,
+            // jadi scroll di backbuffer langsung hilang.
+            base_canvas[(y * stride) + x] = base_canvas[((y + FONT_HEIGHT) * stride) + x];
         }
     }
     draw_rect(0, fb_height - FONT_HEIGHT, fb_width, FONT_HEIGHT, BG_COLOR);
-    terminal_row--; 
+    terminal_row--;
 }
 
 void terminal_putchar(char c) {

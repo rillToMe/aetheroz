@@ -2,6 +2,7 @@
 #define USERLIB_H
 
 #include <stdint.h>
+#include <stddef.h>   // size_t
 
 // --- STRUKTUR PESAN EVENT (GUI) ---
 #define EVENT_NONE          0
@@ -59,7 +60,7 @@ typedef struct {
 
 int sys_get_file_list(file_info_t* buffer, int max_entries);
 
-uint32_t sys_load_elf(char* filename);
+uint64_t sys_load_elf(char* filename);
 
 void sys_draw_string(const char* str, int x, int y, uint32_t color);
 
@@ -74,6 +75,6 @@ int sys_create_window(int x, int y, uint32_t width, uint32_t height);
 void sys_update_window(int win_id, uint32_t* buffer);
 void sys_destroy_window(int win_id);
 
-void* memcpy(void* dest, const void* src, uint32_t count);
-void* memset(void* dest, int val, uint32_t count);
+void* memcpy(void* dest, const void* src, size_t count);
+void* memset(void* dest, int val, size_t count);
 #endif

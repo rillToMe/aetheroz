@@ -1,156 +1,113 @@
 #include "paging.h"
+#include "pmm.h"
+#include "string.h"
+#include <stdint.h>
 
-// ===================================================================
-// PAGE DIRECTORY & TABEL STATIS (Pemetaan 64 MB Pertama!)
-// ===================================================================
-uint32_t page_directory[1024] __attribute__((aligned(4096)));
+// HHDM offset dari kernel.c: physical P accessible di hhdm_offset + P
+extern uint64_t hhdm_offset;
 
-// KITA GANTI 5 VARIABEL MANUAL MENJADI 1 ARRAY 2D RAKSASA!
-// 16 Tabel x 4MB = 64 MB Area Aman untuk Kernel & Heap
-uint32_t kernel_page_tables[32][1024] __attribute__((aligned(4096)));
+// Macro konversi: physical address → virtual address via HHDM
+#define PHYS_TO_VIRT(phys) ((uint64_t)(phys) + hhdm_offset)
+// Inverse: virtual (HHDM) → physical
+#define VIRT_TO_PHYS(virt) ((uint64_t)(virt) - hhdm_offset)
 
-// Tabel khusus Framebuffer GPU
-// Tabel khusus Framebuffer GPU (KITA PERBESAR JADI 4 TABEL = 16 MB!)
-uint32_t fb_page_tables[4][1024] __attribute__((aligned(4096)));
+// Current PML4: disimpan sebagai VIRTUAL address (sudah ditambah HHDM)
+uint64_t* current_pml4 = 0;
 
-// ===================================================================
-// POOL TABEL HALAMAN DINAMIS
-// ===================================================================
-static uint32_t dynamic_tables[MAX_DYNAMIC_TABLES][1024] __attribute__((aligned(4096)));
-static uint8_t  dynamic_table_used[MAX_DYNAMIC_TABLES];   // 0 = kosong, 1 = terpakai
+void init_paging(uint32_t unused) {
+    (void)unused;
+    // Baca CR3 (physical address PML4), lalu konversi ke virtual via HHDM
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
 
-// ===================================================================
-// INISIALISASI PAGING (Dipanggil sekali saat boot)
-// ===================================================================
-void init_paging(uint32_t fb_phys_addr) {
-    // Tandai semua entri sebagai Not Present dulu
-    for (int i = 0; i < 1024; i++) {
-        page_directory[i] = 2; // Bit 1 = R/W, Bit 0 = Not Present
-    }
+    uint64_t phys_pml4 = cr3 & 0xFFFFFFFFFFFFF000ULL;
+    current_pml4 = (uint64_t*)PHYS_TO_VIRT(phys_pml4);
+}
 
-    // Inisialisasi pool dinamis
-    for (int i = 0; i < MAX_DYNAMIC_TABLES; i++) {
-        dynamic_table_used[i] = 0;
-    }
-
-    // =========================================================
-    // PETAKAN 64 MB PERTAMA RAM SECARA OTOMATIS!
-    // =========================================================
-    for (int t = 0; t < 32; t++) { // <-- UBAH BATAS LOOP JADI 32
-        for (int i = 0; i < 1024; i++) {
-            kernel_page_tables[t][i] = ((t * 0x400000) + (i * 4096)) | 7;
-        }
-        page_directory[t] = ((uint32_t)kernel_page_tables[t]) | 7;
-    }
-
-    // --- PEMETAAN FRAMEBUFFER VRAM ---
-    if (fb_phys_addr != 0) {
-        uint32_t fb_dir_index = fb_phys_addr >> 22;
-        uint32_t fb_base      = fb_phys_addr & 0xFFC00000;
-
-        // Petakan 4 blok (16 Megabyte) berturut-turut untuk VRAM Monitor!
-        for (int t = 0; t < 4; t++) {
-            for (int i = 0; i < 1024; i++) {
-                fb_page_tables[t][i] = (fb_base + (t * 0x400000) + (i * 4096)) | 7;
-            }
-            // Daftarkan ke Page Directory secara berurutan
-            page_directory[fb_dir_index + t] = ((uint32_t)fb_page_tables[t]) | 7;
-        }
-    }
-    // ---------------------------------
-
-    // Aktifkan paging
-    __asm__ volatile("mov %0, %%cr3" :: "r"(page_directory));
-    uint32_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000;
-    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+// Helper: alokasi page fisik dan kembalikan virtual address-nya (via HHDM)
+static uint64_t* alloc_page_virt(void) {
+    void* phys = pmm_alloc_page();
+    if (!phys) return 0;
+    uint64_t* virt = (uint64_t*)PHYS_TO_VIRT(phys);
+    memset(virt, 0, 4096);
+    return virt;
 }
 
 // ===================================================================
-// paging_map_region() — Petakan blok 4MB yang mencakup 'vaddr'
-//
-// Cara kerja:
-//   1. Hitung indeks Page Directory dari alamat virtual (bit 31-22)
-//   2. Jika sudah dipetakan (Present bit = 1), return langsung (idempoten)
-//   3. Ambil slot kosong dari pool dynamic_tables[]
-//   4. Isi 1024 entri dengan identity mapping untuk blok 4MB tersebut
-//   5. Daftarkan ke page_directory[] dan flush TLB via CR3 reload
+// VMM 64-BIT: Walk 4-Level Page Tables menggunakan HHDM untuk akses
 // ===================================================================
-int paging_map_region(uint32_t vaddr) {
-    uint32_t dir_index = vaddr >> 22; // Bit 31-22 = indeks Page Directory
+void vmm_map_page(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    if (!current_pml4) return;
 
-    // Sudah dipetakan? Return langsung (idempoten)
-    if (page_directory[dir_index] & 1) return 1;
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
+    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
 
-    // Cari slot kosong dari pool
-    for (int i = 0; i < MAX_DYNAMIC_TABLES; i++) {
-        if (!dynamic_table_used[i]) {
-            dynamic_table_used[i] = 1;
-
-            // Hitung alamat fisik base untuk blok 4MB ini
-            uint32_t base = dir_index << 22; // dir_index * 0x400000
-
-            // Isi 1024 page entries (masing-masing 4KB = 4MB total)
-            // Flag | 7: Present | R/W | User-accessible
-            for (int j = 0; j < 1024; j++) {
-                dynamic_tables[i][j] = (base + (uint32_t)(j * 4096)) | 7;
-            }
-
-            // Daftarkan ke Page Directory
-            page_directory[dir_index] = ((uint32_t)dynamic_tables[i]) | 7;
-
-            // Flush TLB: Reload CR3 agar CPU membaca pemetaan baru
-            __asm__ volatile("mov %0, %%cr3" :: "r"(page_directory) : "memory");
-
-            return 1; // Sukses
-        }
+    // Level 4 (PML4) → Level 3 (PDPT)
+    if (!(current_pml4[pml4_idx] & 1)) {
+        uint64_t* new_pdpt = alloc_page_virt();
+        if (!new_pdpt) return;
+        // Simpan physical address di PTE (bukan virtual!)
+        current_pml4[pml4_idx] = VIRT_TO_PHYS(new_pdpt) | 7;
     }
+    // Akses PDPT via virtual address
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(current_pml4[pml4_idx] & 0xFFFFFFFFFFFFF000ULL);
 
-    return 0; // Pool habis (8 tabel x 4MB = 32MB sudah terpakai)
-}
-
-// ===================================================================
-// paging_is_mapped() — Cek apakah alamat sudah dipetakan
-// Mengembalikan 1 jika Present bit aktif, 0 jika belum dipetakan
-// ===================================================================
-int paging_is_mapped(uint32_t addr) {
-    uint32_t dir_index = addr >> 22;
-    return (page_directory[dir_index] & 1) ? 1 : 0;
-}
-
-// Import fungsi PMM
-extern void* pmm_alloc_page(void);
-extern void* memset(void* s, int c, uint32_t n);
-
-// ===================================================================
-// VMM: Mengikat Alamat Virtual ke Alamat Fisik (Physical Frame)
-// ===================================================================
-void vmm_map_page(uint32_t vaddr, uint32_t paddr, uint32_t flags) {
-    uint32_t pd_index = vaddr >> 22;
-    uint32_t pt_index = (vaddr >> 12) & 0x03FF;
-
-    if (!(page_directory[pd_index] & 1)) {
-        uint32_t* new_pt = (uint32_t*)pmm_alloc_page(); 
-        memset(new_pt, 0, 4096);
-        page_directory[pd_index] = ((uint32_t)new_pt) | 7; 
-        
-        // ---> TAMBAHKAN BARIS INI: RELOAD CR3 CACHE! <---
-        // Wajib dilakukan agar CPU sadar ada rute Page Table yang baru!
-        __asm__ volatile("mov %0, %%cr3" :: "r"(page_directory) : "memory");
+    // Level 3 (PDPT) → Level 2 (PD)
+    // Guard: bit 7 (PS) = 1GB huge page — jangan dereference!
+    if (pdpt[pdpt_idx] & (1ULL << 7)) return; // huge page, tidak bisa split
+    if (!(pdpt[pdpt_idx] & 1)) {
+        uint64_t* new_pd = alloc_page_virt();
+        if (!new_pd) return;
+        pdpt[pdpt_idx] = VIRT_TO_PHYS(new_pd) | 7;
     }
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[pdpt_idx] & 0xFFFFFFFFFFFFF000ULL);
 
-    uint32_t* pt = (uint32_t*)(page_directory[pd_index] & 0xFFFFF000);
-    pt[pt_index] = (paddr & 0xFFFFF000) | flags;
-    __asm__ volatile("invlpg (%0)" ::"r" (vaddr) : "memory");
+    // Level 2 (PD) → Level 1 (PT)
+    // Guard: bit 7 (PS) = 2MB huge page — jangan dereference!
+    if (pd[pd_idx] & (1ULL << 7)) return; // huge page, tidak bisa split
+    if (!(pd[pd_idx] & 1)) {
+        uint64_t* new_pt = alloc_page_virt();
+        if (!new_pt) return;
+        pd[pd_idx] = VIRT_TO_PHYS(new_pt) | 7;
+    }
+    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[pd_idx] & 0xFFFFFFFFFFFFF000ULL);
+
+    // Tanamkan physical address di PT (PTE menyimpan phys, bukan virt)
+    pt[pt_idx] = (paddr & 0xFFFFFFFFFFFFF000ULL) | flags;
+
+    __asm__ volatile("invlpg (%0)" ::"r"(vaddr) : "memory");
 }
-// ===================================================================
-// VMM: Alokator Otomatis (Dipanggil oleh Heap!)
-// ===================================================================
-int vmm_alloc_page(uint32_t vaddr, uint32_t flags) {
-    void* paddr = pmm_alloc_page(); // Minta RAM fisik beneran ke hardware
-    if (!paddr) return 0;           // RAM fisik habis total!
-    
-    vmm_map_page(vaddr, (uint32_t)paddr, flags); // Rakit ilusi virtualnya
+
+// Wrapper: alokasi halaman fisik dari PMM dan map ke vaddr
+int vmm_alloc_page(uint64_t vaddr, uint64_t flags) {
+    void* paddr = pmm_alloc_page();
+    if (!paddr) return 0;
+    vmm_map_page(vaddr, (uint64_t)paddr, flags);
     return 1;
+}
+
+int paging_map_region(uint64_t vaddr) {
+    return vmm_alloc_page(vaddr, 7);
+}
+
+// Cek apakah virtual address sudah punya mapping
+int paging_is_mapped(uint64_t vaddr) {
+    if (!current_pml4) return 0;
+
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    if (!(current_pml4[pml4_idx] & 1)) return 0;
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(current_pml4[pml4_idx] & 0xFFFFFFFFFFFFF000ULL);
+
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    if (!(pdpt[pdpt_idx] & 1)) return 0;
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[pdpt_idx] & 0xFFFFFFFFFFFFF000ULL);
+
+    uint64_t pd_idx = (vaddr >> 21) & 0x1FF;
+    if (!(pd[pd_idx] & 1)) return 0;
+    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[pd_idx] & 0xFFFFFFFFFFFFF000ULL);
+
+    uint64_t pt_idx = (vaddr >> 12) & 0x1FF;
+    return (pt[pt_idx] & 1);
 }

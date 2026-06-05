@@ -1,13 +1,13 @@
 # ==========================================================
-# Kyuzen OS — User Apps Build System
+# Kyuzen OS — User Apps Build System (64-bit)
 # ==========================================================
-# Menghasilkan ELF apps yang siap dimuat oleh Kernel via
+# Menghasilkan ELF64 apps yang siap dimuat oleh Kernel via
 # syscall sys_load_elf(). Setiap app di-link ke zona
 # memori yang sudah dipetakan oleh dynamic paging.
 #
 # Zona Memori User Apps:
-#   fileman.elf  →  0xC00000  (PD[3], 12MB)
-#   viewer.elf   →  0xE00000  (PD[3], 14MB)
+#   fileman.elf  →  0x4000000  (64 MB)
+#   viewer.elf   →  0x4400000  (68 MB)
 #
 # Penggunaan:
 #   make          → Compile semua app
@@ -26,18 +26,17 @@ APPS_DIR  = $(ROOT_DIR)/apps
 INC_DIR   = $(ROOT_DIR)/include
 OUT_DIR   = $(ROOT_DIR)
 
-# --- Flags Compiler ---
-# -ffreestanding : Tidak pakai libc standar (bare metal)
-# -nostdlib      : Jangan link library apapun
-# -O2            : Optimasi sedang (aman untuk userlib)
-# -O0            : Tanpa optimasi (debug-friendly untuk app utama)
-# --- Flags Compiler ---
-CFLAGS_COMMON = --target=i686-pc-none-elf -m32 -ffreestanding -nostdlib -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INC_DIR)
+# --- Flags Compiler 64-bit ---
+# 1. Target x86_64-pc-none-elf
+# 2. Hapus -m32
+# 3. Tambahkan -mno-red-zone (Agar tidak bertabrakan saat terjadi interrupt/syscall)
+CFLAGS_COMMON = --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INC_DIR)
 CFLAGS_APP    = $(CFLAGS_COMMON) -O0
 CFLAGS_LIB    = $(CFLAGS_COMMON) -O2
 
-# --- Flags Linker ---
-LDFLAGS = -m elf_i386 -nostdlib
+# --- Flags Linker 64-bit ---
+# Format output diubah menjadi elf_x86_64
+LDFLAGS = -m elf_x86_64 -nostdlib
 
 # --- File Objek Bersama ---
 USERLIB_OBJ = userlib.o
@@ -53,7 +52,7 @@ VIEWER_ELF  = $(OUT_DIR)/viewer.elf
 
 all: $(FILEMAN_ELF) $(VIEWER_ELF)
 	@echo ""
-	@echo "[USER APPS] Build selesai!"
+	@echo "[USER APPS 64-BIT] Build selesai!"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
 	@echo "  viewer.elf  → $(VIEWER_ELF)"
 
@@ -62,14 +61,14 @@ all: $(FILEMAN_ELF) $(VIEWER_ELF)
 # Dipakai oleh semua app sebagai runtime library Ring 3
 # ==========================================================
 $(USERLIB_OBJ): $(APPS_DIR)/userlib.c
-	@echo "[CC] Mengompilasi userlib..."
+	@echo "[CC] Mengompilasi userlib (64-bit)..."
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
 # ==========================================================
-# FILEMAN — File Manager (link ke 0xC00000)
+# FILEMAN — File Manager (link ke 0x4000000)
 # ==========================================================
 fileman.o: fileman.c
-	@echo "[CC] Mengompilasi fileman.c..."
+	@echo "[CC] Mengompilasi fileman.c (64-bit)..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
 $(FILEMAN_ELF): fileman.o $(USERLIB_OBJ)
@@ -80,7 +79,7 @@ $(FILEMAN_ELF): fileman.o $(USERLIB_OBJ)
 fileman: $(FILEMAN_ELF)
 
 # ==========================================================
-# VIEWER — Image Viewer PNG (link ke 0xE00000)
+# VIEWER — Image Viewer PNG (link ke 0x4400000)
 # ==========================================================
 viewer.o: viewer.c
 	@echo "[CC] Mengompilasi viewer.c (O2 — stb_image butuh optimasi!)..."

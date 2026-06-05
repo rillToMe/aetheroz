@@ -1,8 +1,8 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "limine.h"
+#include "limine.h" // <-- Kembali menggunakan Limine Native!
 #define FONT8x16_IMPLEMENTATION 
-#include "font8x16.h" // <-- Pustaka font ajaib yang baru kita unduh!
+#include "font8x16.h"
 #include "fs.h"
 #include "tty.h"
 #include "pmm.h"
@@ -15,6 +15,48 @@
 #include "timer.h"
 #include "shell.h"
 
+// ============================================================
+// LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
+// ============================================================
+__attribute__((used, section(".requests_start_marker")))
+static volatile uint64_t __limine_requests_start[] = LIMINE_REQUESTS_START_MARKER;
+
+__attribute__((used)) static volatile uint64_t base_revision[] = LIMINE_BASE_REVISION(3);
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_framebuffer_request framebuffer_request = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST_ID,
+    .revision = 0
+};
+
+// HHDM: Limine memetakan SELURUH RAM fisik di offset ini
+// Physical address P accessible di hhdm_offset + P
+__attribute__((used, section(".requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST_ID,
+    .revision = 0
+};
+
+__attribute__((used, section(".requests_end_marker")))
+static volatile uint64_t __limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
+// ============================================================
+
+// HHDM offset: dipakai oleh paging.c untuk convert phys → virt
+uint64_t hhdm_offset = 0;
+
+
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
@@ -22,8 +64,8 @@ extern void init_keyboard();
 extern void switch_to_user_mode(void (*user_func)());
 extern void user_login();
 extern void init_mouse();
-extern void kprint(const char* str);
 extern void kfs_delete_file(char* filename);
+// terminal_putchar tidak lagi dibutuhkan langsung (kprint ada di kyuzenfs.c)
 
 // --- VARIABEL GLOBAL FRAMEBUFFER ---
 uint32_t* fb_ptr = NULL;
@@ -31,43 +73,23 @@ uint32_t fb_width = 0;
 uint32_t fb_height = 0;
 uint32_t fb_pitch = 0;
 
-// KANVAS BAYANGAN (BACKBUFFER) DI RAM
-// 1024x768 = 786.432 Piksel. Bootloader akan otomatis mengalokasikan RAM ini!
-uint32_t backbuffer[1366 * 768]; 
+// Buffer resolusi maksimal 1920x1080 — cukup untuk semua konfigurasi QEMU/HW
+// Jika base_canvas terlalu kecil dari fb_width*fb_height, pixel wrap dan muncul dua kali
+uint32_t backbuffer[1920 * 1080];
+uint32_t base_canvas[1920 * 1080];
 
+// kprint didefinisikan di kernel/kyuzenfs.c (via write_fs & tty_node)
+extern void kprint(const char* str);
 
-// ==========================================
-// REQUEST PROTOKOL LIMINE (PENGGANTI MBI)
-// ==========================================
-static volatile struct limine_framebuffer_request framebuffer_request = {
-    .id = LIMINE_FRAMEBUFFER_REQUEST_ID, // <-- Tambahkan _ID
-    .revision = 0
-};
-
-static volatile struct limine_memmap_request memmap_request = {
-    .id = LIMINE_MEMMAP_REQUEST_ID,      // <-- Tambahkan _ID
-    .revision = 0
-};
-
-static volatile struct limine_module_request module_request = {
-    .id = LIMINE_MODULE_REQUEST_ID,      // <-- Tambahkan _ID
-    .revision = 0
-};
-// Fungsi Detektif untuk mencetak angka
-void kprint_num(uint32_t num) {
+void kprint_num(uint64_t num) {
     if (num == 0) { kprint("0"); return; }
-    char buf[16]; int i = 14; buf[15] = '\0';
+    char buf[20]; int i = 18; buf[19] = '\0';
     while (num > 0) { buf[i--] = (num % 10) + '0'; num /= 10; }
     kprint(&buf[i + 1]);
 }
 
-// --- KANVAS HIBRIDA (CLI & GUI) ---
-uint32_t base_canvas[1024 * 768]; // Layer 0: Tempat Teks CLI / Login / Shell
-uint32_t backbuffer[1366 * 768];   // Layer 1: Kanvas Rakitan Compositor
-
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= fb_width || y >= fb_height) return;
-    // PENTING: Aplikasi Ring 0 & CLI sekarang menggambar ke Base Canvas!
     base_canvas[(y * (fb_pitch / 4)) + x] = color;
 }
 
@@ -102,49 +124,32 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
 
 void kwm_update_window(int win_id, uint32_t* app_buffer) {
     if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
-    if(!kwm_windows[win_id].canvas || !app_buffer) return; // Cek NULL canvas
+    if(!kwm_windows[win_id].canvas || !app_buffer) return; 
 
-    // PENTING: rep movsl menggunakan ECX sebagai hitungan DWORD (bukan byte)!
-    // Setiap iterasi movsl menyalin 4 byte (1 uint32/pixel).
-    // ECX = jumlah pixel = width * height  (BUKAN width * height * 4)
-    // Kesalahan: * 4 → menyalin 4× terlalu banyak → merusak heap!
-    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height; // dwords (pixels)
-
+    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height; 
     uint32_t* dest = kwm_windows[win_id].canvas;
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
 }
 
-// --- FUNGSI BARU DITAMBAHKAN DI SINI ---
 void kwm_destroy_window(int win_id) {
     if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
-    
-    // 1. Bebaskan memori kanvas yang kita pinjamkan
-    if (kwm_windows[win_id].canvas) {
-        kfree(kwm_windows[win_id].canvas);
-    }
-    
-    // 2. Tandai jendela ini sebagai tidak aktif (Compositor akan berhenti menggambarnya)
+    if (kwm_windows[win_id].canvas) kfree(kwm_windows[win_id].canvas);
     kwm_windows[win_id].active = 0; 
 }
 
-// --- VARIABEL MOUSE DARI DRIVER ---
 extern int32_t mouse_x;
 extern int32_t mouse_y;
 extern const uint8_t cursor_bitmap[16][12];
 
-// --- MESIN COMPOSITOR Z-INDEX (HYBRID) ---
 void compositor_flush() {
     if (fb_width == 0) return;
     uint32_t screen_size = (fb_pitch / 4) * fb_height;
 
-    // 1. JADIKAN CLI SEBAGAI WALLPAPER
-    // Kopi isi base_canvas ke backbuffer sebagai latar paling belakang
     uint32_t* dst_bg = backbuffer;
     uint32_t* src_bg = base_canvas;
-    uint32_t copy_cnt = screen_size;
+    uint64_t copy_cnt = screen_size; // 64-bit counter (rcx)
     __asm__ volatile ("rep movsl" : "+D" (dst_bg), "+S" (src_bg), "+c" (copy_cnt) : : "memory");
 
-    // 2. TUMPUK JENDELA GUI KWM
     for(uint32_t z = 1; z <= next_z_index; z++) {
         for(int w = 0; w < MAX_WINDOWS; w++) {
             if(kwm_windows[w].active && kwm_windows[w].z_index == z) {
@@ -159,7 +164,6 @@ void compositor_flush() {
                         
                         if(screen_x >= 0 && screen_x < (int)fb_width && screen_y >= 0 && screen_y < (int)fb_height) {
                             uint32_t pixel = canvas[(wy * win_w) + wx];
-                            // Trik Alpha murni: Gambar pixel jika Alpha tidak transparan
                             if (pixel >> 24) {
                                 backbuffer[(screen_y * (fb_pitch / 4)) + screen_x] = pixel & 0xFFFFFF;
                             }
@@ -170,7 +174,6 @@ void compositor_flush() {
         }
     }
 
-    // 3. TUMPUK KURSOR MOUSE
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 12; x++) {
             if (mouse_y + y >= (int32_t)fb_height || mouse_x + x >= (int32_t)fb_width) continue;
@@ -180,10 +183,9 @@ void compositor_flush() {
         }
     }
 
-    // 4. SIRAM SEMUA KE MONITOR HARDWARE
     uint32_t* dest_mon = fb_ptr;
     uint32_t* src_mon  = backbuffer;
-    uint32_t count_mon = screen_size;
+    uint64_t count_mon = screen_size;
     __asm__ volatile ("rep movsl" : "+D" (dest_mon), "+S" (src_mon), "+c" (count_mon) : : "memory");
 }
 
@@ -195,39 +197,25 @@ void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t heig
     }
 }
 
-// Fungsi sakti untuk merender gambar secara instan di Ring 0
 void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer) {
     int i = 0;
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             uint32_t pixel = buffer[i++];
-            
-            // Ekstrak nilai Alpha (Transparansi) dari format 0xAARRGGBB
             uint8_t alpha = (pixel >> 24) & 0xFF;
-            
-            // Hanya gambar piksel yang tidak transparan
             if (alpha > 0) {
-                // Buang Alpha, ambil warna murninya saja (0xFFFFFF)
                 draw_pixel(start_x + x, start_y + y, pixel & 0xFFFFFF);
             }
         }
     }
 }
 
-// --- MESIN PENGGAMBAR TEKS GRAFIS ---
 void draw_char(char c, uint32_t x, uint32_t y, uint32_t color) {
     if (c < 0 || c > 127) return;
-
-    // Ambil cetak biru biner untuk huruf dari array font8x16
     const unsigned char* bitmap = font8x16[(int)c];
-
-    for (int row = 0; row < 16; row++) { // Sekarang tingginya 16 piksel murni!
+    for (int row = 0; row < 16; row++) { 
         for (int col = 0; col < 8; col++) {
-            // Pustaka ini menggunakan urutan MSB (Most Significant Bit)
-            // Jadi kita gunakan 0x80 (10000000) yang digeser ke kanan
-            if (bitmap[row] & (0x80 >> col)) {
-                draw_pixel(x + col, y + row, color);
-            }
+            if (bitmap[row] & (0x80 >> col)) draw_pixel(x + col, y + row, color);
         }
     }
 }
@@ -235,21 +223,23 @@ void draw_char(char c, uint32_t x, uint32_t y, uint32_t color) {
 void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color) {
     uint32_t curr_x = x;
     uint32_t curr_y = y;
-
     for (int i = 0; str[i] != '\0'; i++) {
-        if (str[i] == '\n') {
-            curr_y += 16; // Jarak Vertikal (8px untuk huruf + 8px spasi kosong)
-            curr_x = x;   
-        } else {
-            draw_char(str[i], curr_x, curr_y, color);
-            curr_x += 8; // Geser ke kanan sesuai lebar font (8px)
-        }
+        if (str[i] == '\n') { curr_y += 16; curr_x = x; } 
+        else { draw_char(str[i], curr_x, curr_y, color); curr_x += 8; }
     }
 }
-// ------------------------------------
 
-void kernel_main(void) { // <-- Bersih tanpa argumen!
-    // 1. TANGKAP LAYAR GUI DARI LIMINE
+// ----> ENTRY POINT 64-BIT BERSIH <---
+void kernel_main(void) {
+    // 0. AMBIL HHDM OFFSET — WAJIB SEBELUM APA PUN (dipakai oleh paging.c)
+    if (hhdm_request.response != NULL) {
+        hhdm_offset = hhdm_request.response->offset;
+    } else {
+        // Fallback: Limine default HHDM biasanya di 0xFFFF800000000000
+        hhdm_offset = 0xFFFF800000000000ULL;
+    }
+
+    // 1. TANGKAP LAYAR DARI LIMINE
     if (framebuffer_request.response != NULL && framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
         fb_ptr = (uint32_t *)fb->address;
@@ -257,14 +247,13 @@ void kernel_main(void) { // <-- Bersih tanpa argumen!
         fb_height = fb->height;
         fb_pitch = fb->pitch;
     } else {
-        while(1) { __asm__ volatile("hlt"); } // Panic tanpa layar
+        while(1) { __asm__ volatile("hlt"); } 
     }
 
-    // 2. INISIALISASI ARSITEKTUR KERNEL
     init_gdt(); 
     init_idt(); 
 
-    // 3. PMM DYNAMIC VIA LIMINE
+    // 2. PMM DYNAMIC VIA LIMINE
     if (memmap_request.response != NULL) {
         pmm_init_dynamic(memmap_request.response->entries, memmap_request.response->entry_count);
     } else {
@@ -272,7 +261,7 @@ void kernel_main(void) { // <-- Bersih tanpa argumen!
         while(1) { __asm__ volatile("hlt"); }
     }
 
-    init_paging((uint32_t)fb_ptr);
+    init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
     pic_remap(); 
     init_timer(50); 
@@ -281,9 +270,7 @@ void kernel_main(void) { // <-- Bersih tanpa argumen!
     init_tty(); 
     kfs_init();
 
-    // === [BIARKAN BLOK ATA ROUND-TRIP TEST ANDA DI SINI] ===
-
-    // 4. AUTO-INSTALL MODUL DARI LIMINE
+    // 3. AUTO-INSTALL MODUL DARI LIMINE
     kprint("\n--- RADAR AUTO-INSTALL ---\n");
     if (module_request.response != NULL && module_request.response->module_count > 0) {
         kprint("Status: Limine mengirim modul!\n");
@@ -291,16 +278,13 @@ void kernel_main(void) { // <-- Bersih tanpa argumen!
         
         for (uint64_t i = 0; i < module_request.response->module_count; i++) {
             struct limine_file *mod = module_request.response->modules[i];
-            uint32_t size = mod->size;
-            
+            uint64_t size = mod->size;
             kprint("Modul "); kprint_num(i+1); kprint(" | Ukuran: "); kprint_num(size); kprint(" Bytes\n");
             
-            // Limine menyimpan file path di mod->path
-            char* raw_name = mod->path; 
-            if (raw_name == NULL) { kprint(" -> ERROR: Path dari Limine NULL!\n"); continue; }
-            kprint(" -> Raw path: ["); kprint(raw_name); kprint("]\n");
+            char* raw_name = mod->path;
+            if (raw_name == NULL) continue;
+            kprint(" -> Raw string: ["); kprint(raw_name); kprint("]\n");
             
-            // Logika ekstrak nama file (menghapus tanda garis miring direktori)
             char clean_name[24];
             int k = 0;
             char* last_slash = raw_name;
@@ -315,10 +299,9 @@ void kernel_main(void) { // <-- Bersih tanpa argumen!
             
             kprint(" -> Ekstrak Nama: ["); kprint(clean_name); kprint("]\n");
 
-            if (k == 0) { kprint(" -> SKIP: Nama kosong\n"); continue; }
+            if (k == 0) continue;
 
             if (kfs_exists(clean_name)) {
-                kprint(" -> [UPDATE] Menghapus versi lama...\n");
                 kfs_delete_file(clean_name);
             }
 
@@ -331,54 +314,27 @@ void kernel_main(void) { // <-- Bersih tanpa argumen!
     }
     kprint("--------------------------\n");
 
-    // kprint("OS DIBEKUKAN SEMENTARA UNTUK BACA RADAR...\n");
-    
-    // // --- TAMBAHKAN BARIS INI UNTUK MENYIRAM RAM KE MONITOR ---
-    // compositor_flush(); 
-    
-    // while (1) {
-    //     __asm__ volatile("hlt"); // Menyuruh CPU tidur selamanya!
-    // }
+    // Aktifkan interrupts SEBELUM masuk ke user code
+    // Tanpa sti: timer IRQ tidak pernah fire, keyboard beku, OS freeze!
+    __asm__ volatile("sti");
 
-    // 5. LOMPAT KE USER SPACE
     switch_to_user_mode(user_login);
 
     __asm__ volatile("cli");
     while (1) { __asm__ volatile("hlt"); }
 }
 
-// Dummy untuk linker
 extern fs_node_t tty_node;
 uint32_t string_length(const char* str) {
     uint32_t len = 0;
     while (str[len]) len++;
     return len;
 }
-void print_hex(uint32_t num) { 
-    kprint_num(num); // Trik membungkam compiler
-}
+void print_hex(uint32_t num) { kprint_num(num); }
 
-// Impor fungsi penyetel stack khusus untuk mode user
-extern void set_kernel_stack(uint32_t stack);
 
-// --- KEMBALIKAN LOGIKA LOMPATAN RING 3 ---
 void switch_to_user_mode(void (*user_func)()) {
-    // PERBESAR: Berikan 1 MB (1024 * 1024) untuk Stack Aplikasi Ring 3
-    uint32_t user_stack_size = 1024 * 1024;
-    uint32_t user_stack = (uint32_t)kmalloc(user_stack_size) + user_stack_size;
-
-    // PERBESAR: Berikan 64 KB (65536) untuk Stack Kernel saat Syscall
-    uint32_t kernel_stack_size = 65536;
-    uint32_t kernel_landing_stack = (uint32_t)kmalloc(kernel_stack_size) + kernel_stack_size;
-    
-    set_kernel_stack(kernel_landing_stack);
-
-    // Assembly sakti untuk memanipulasi register (Sama seperti sebelumnya)
-    __asm__ volatile(
-        "cli \n" "mov $0x23, %%ax \n" "mov %%ax, %%ds \n" "mov %%ax, %%es \n"
-        "mov %%ax, %%fs \n" "mov %%ax, %%gs \n" "pushl $0x23 \n" "pushl %0 \n"            
-        "pushfl \n" "popl %%eax \n" "orl $0x200, %%eax \n" "pushl %%eax \n"         
-        "pushl $0x1B \n" "pushl %1 \n" "iret \n"                
-        : : "r"(user_stack), "r"(user_func) : "%eax"
-    );
-}
+    // Ring 3 belum diimplementasikan — panggil langsung di Ring 0
+    // (Syscall via int $0x80 tetap bekerja karena IDT sudah di-setup)
+    if (user_func) user_func();
+}

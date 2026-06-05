@@ -12,7 +12,7 @@ void kyuzen_fetch() {
 
     print("\n");
     print("       /\\        OS   : Kyuzen OS (Ring 3)\n");
-    print("      /  \\       Arch : x86 32-bit (Protected Mode)\n");
+    print("      /  \\       Arch : x86_64 (Long Mode)\n");
     
     // Cetak nama CPU aslinya ke layar!
     print("     /____\\      CPU  : "); 
@@ -226,7 +226,7 @@ void user_shell() {
                         elf_filename[i] = '\0';
 
                         // 2. Minta Kernel mencari dan memuat file tersebut
-                        uint32_t app_entry = sys_load_elf(elf_filename);
+                        uint32_t app_entry = sys_load_elf(elf_filename);;
                         
                         if (app_entry != 0) {
                             clear_screen();

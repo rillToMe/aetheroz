@@ -1,5 +1,18 @@
 #include "fs.h"
 #include <stdint.h>
+#include "userlib.h"
+
+// ========================================================
+// STRUKTUR REGISTER 64-BIT (MURNI)
+// Harus 100% cocok dengan urutan PUSHA64 di isr_macro.inc
+// ========================================================
+typedef struct {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;  // Register x86_64 manual
+    uint64_t int_num, error_code;                // Kode Error
+    uint64_t rip, cs, rflags, rsp, ss;           // Otomatis di-push oleh CPU 64-bit
+} __attribute__((packed)) registers_t;
+
 
 extern fs_node_t tty_node;
 extern uint32_t string_length(const char* str);
@@ -22,137 +35,160 @@ extern int kfs_read_to_buffer(char* filename, char* out_buffer);
 extern int kfs_create_file(char* filename, char* data, uint32_t size);
 extern int kfs_get_file_list(void* buffer, int max_entries);
 extern uint32_t elf_load_file(char* filename);
+
+extern void get_cpu_string(char* buffer);
+extern uint32_t pmm_get_used_ram(void);
+extern uint32_t pmm_get_total_ram(void);
+
+// Impor dari KWM (Kyuzen Window Manager)
+extern void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
+extern void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 
-// Impor fungsi Sistem Statistik
-extern uint32_t get_uptime(void);
-extern uint32_t pmm_get_total_ram(void);
-extern uint32_t pmm_get_used_ram(void);
+extern uint32_t timer_ticks;
+int current_uid = 0; // Definisi global — UID proses yang sedang berjalan
 
-// times
-extern void read_rtc(uint32_t* time_buf);
+// ========================================================
+// HANDLER SYSCALL 64-BIT
+// (Dipanggil oleh isr128_stub saat aplikasi melempar int 0x80)
+// ========================================================
+void syscall_handler(registers_t *r) {
+    // Nomor Syscall selalu ada di RAX
+    uint64_t syscall_num = r->rax;
+    uint64_t ret_val = 0; // Default return
 
-extern void draw_pixel(int x, int y, uint32_t color);
-extern void draw_image(int x, int y, int width, int height, uint32_t* buffer);
+    // --- Pemetaan Argumen Standar Kyuzen OS 64-bit ---
+    // RAX = Nomor Syscall
+    // RBX = Argumen 1
+    // RCX = Argumen 2
+    // RDX = Argumen 3
+    // RSI = Argumen 4
+    // RDI = Argumen 5
 
-// window
-extern int kwm_create_window(int x, int y, uint32_t width, uint32_t height);
-extern void kwm_update_window(int win_id, uint32_t* app_buffer);
-extern void kwm_destroy_window(int win_id);
-
-uint32_t current_uid = 0;
-
-typedef struct {
-    uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;
-} registers_t;
-
-// --- SISTEM ANTREAN PESAN (EVENT QUEUE) ---
-typedef struct {
-    uint32_t type; int32_t param1; int32_t param2; int32_t param3;
-} kyuzen_event_t;
-
-#define EVENT_QUEUE_SIZE 256
-kyuzen_event_t event_queue[EVENT_QUEUE_SIZE];
-uint32_t event_head = 0;
-uint32_t event_tail = 0;
-
-// Fungsi ini akan dipanggil oleh Keyboard dan Mouse dari Ring 0
-void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3) {
-    uint32_t next = (event_head + 1) % EVENT_QUEUE_SIZE;
-    if (next != event_tail) {
-        event_queue[event_head].type = type;
-        event_queue[event_head].param1 = p1;
-        event_queue[event_head].param2 = p2;
-        event_queue[event_head].param3 = p3;
-        event_head = next;
-    }
-}
-// ------------------------------------------
-
-uint32_t syscall_handler(registers_t *r) {
-    if (r->eax == 1) { 
-        write_fs(&tty_node, 0, string_length((char*)r->ebx), (uint8_t*)r->ebx); return 0; 
+    if (syscall_num == 1) { // sys_print
+        write_fs(&tty_node, 0, string_length((char*)r->rbx), (uint8_t*)r->rbx);
     } 
-    else if (r->eax == 2) { tty_clear(); return 0; }
-    else if (r->eax == 3) {
-        char* msg = "\n[KERNEL] Aplikasi Ring 3 minta Exit. (System Halt)\n";
-        write_fs(&tty_node, 0, string_length(msg), (uint8_t*)msg);
-        __asm__ volatile("cli"); while(1) { __asm__ volatile("hlt"); } 
-        return 0; 
+    else if (syscall_num == 2) { // sys_clear_screen
+        tty_clear();
+    } 
+    else if (syscall_num == 3) { // sys_read_keyboard
+        ret_val = read_fs(&tty_node, 0, r->rcx, (uint8_t*)r->rbx);
     }
-    else if (r->eax == 4) { return read_fs(&tty_node, 0, r->ecx, (uint8_t*)r->ebx); }
-    else if (r->eax == 5) { yield(); return 0; }
-    
-    // Syscall FS Dasar
-    else if (r->eax == 6) { kfs_format(); return 0; }
-    else if (r->eax == 7) { kfs_list_files(); return 0; }
-    else if (r->eax == 8) { kfs_read_file((char*)r->ebx); return 0; }
-    else if (r->eax == 9) { kfs_delete_file((char*)r->ebx); return 0; }
-    
-    // --- SYSCALL BARU: MANAJEMEN MEMORI & FS LANJUTAN UNTUK ZEN EDITOR ---
-    else if (r->eax == 11) { return (uint32_t)kmalloc(r->ebx); }
-    else if (r->eax == 12) { kfree((void*)r->ebx); return 0; }
-    else if (r->eax == 13) { return (uint32_t)krealloc((void*)r->ebx, r->ecx, r->edx); }
-    else if (r->eax == 14) { return kfs_exists((char*)r->ebx); }
-    else if (r->eax == 15) { return kfs_get_file_size((char*)r->ebx); }
-    else if (r->eax == 16) { return kfs_read_to_buffer((char*)r->ebx, (char*)r->ecx); }
-    else if (r->eax == 17) { return kfs_create_file((char*)r->ebx, (char*)r->ecx, r->edx); }
-    // --- SYSCALL BARU: STATISTIK SISTEM ---
-    else if (r->eax == 18) { return get_uptime(); }
-    else if (r->eax == 19) { return pmm_get_total_ram(); }
-    else if (r->eax == 20) { return pmm_get_used_ram(); }
-    else if (r->eax == 21) {
-        // R->EBX adalah pointer array kosong dari User Space
-        read_rtc((uint32_t*)r->ebx);
-        return 0;
+    else if (syscall_num == 4) { // sys_yield
+        yield();
     }
-    else if (r->eax == 22) {
-        draw_pixel((int)r->ebx, (int)r->ecx, (uint32_t)r->edx);
-        return 0;
+    else if (syscall_num == 5) { // sys_fs_format
+        kfs_format();
     }
-    else if (r->eax == 23) {
-        draw_image((int)r->ebx, (int)r->ecx, (int)r->edx, (int)r->esi, (uint32_t*)r->edi);
-        return 0;
+    else if (syscall_num == 6) { // sys_fs_list
+        kfs_list_files();
     }
-    else if (r->eax == 24) {
-        return kfs_get_file_list((void*)r->ebx, (int)r->ecx);
+    else if (syscall_num == 7) { // sys_fs_read
+        kfs_read_file((char*)r->rbx);
     }
-    else if (r->eax == 25) {
-        return elf_load_file((char*)r->ebx);
+    else if (syscall_num == 8) { // sys_fs_delete
+        kfs_delete_file((char*)r->rbx);
     }
-    else if (r->eax == 26) {
-        draw_string((const char*)r->ebx, (int)r->ecx, (int)r->edx, (uint32_t)r->esi);
-        return 0;
+    else if (syscall_num == 9) { // sys_alloc (kmalloc)
+        ret_val = (uint64_t)kmalloc((uint32_t)r->rbx);
     }
-    // --- SYSCALL BARU: MULTI-USER IDENTITY (ANTI-TABRAKAN) ---
-    else if (r->eax == 27) {
-        current_uid = r->ebx; // sys_set_uid
-        return 0;
+    else if (syscall_num == 10) { // sys_free (kfree)
+        kfree((void*)r->rbx);
     }
-    else if (r->eax == 28) {
-        return current_uid;   // sys_get_uid
+    else if (syscall_num == 11) { // sys_file_exists
+        ret_val = kfs_exists((char*)r->rbx);
     }
-    // --- SYSCALL BARU: EVENT QUEUE UNTUK GUI ---
-    else if (r->eax == 29) {
-        kyuzen_event_t* out_event = (kyuzen_event_t*)r->ebx;
-        if (event_head != event_tail) {
-            *out_event = event_queue[event_tail];
-            event_tail = (event_tail + 1) % EVENT_QUEUE_SIZE;
-            return 1; // Ada pesan!
+    else if (syscall_num == 12) { // sys_file_size
+        ret_val = kfs_get_file_size((char*)r->rbx);
+    }
+    else if (syscall_num == 13) { // sys_read_file_to_buffer
+        ret_val = kfs_read_to_buffer((char*)r->rbx, (char*)r->rcx);
+    }
+    else if (syscall_num == 14) { // sys_uptime
+        ret_val = timer_ticks;
+    }
+    else if (syscall_num == 15) { // sys_total_ram
+        ret_val = pmm_get_total_ram();
+    }
+    else if (syscall_num == 16) { // sys_used_ram
+        ret_val = pmm_get_used_ram();
+    }
+    else if (syscall_num == 17) { // get_cpu_string
+        get_cpu_string((char*)r->rbx);
+    }
+    else if (syscall_num == 18) { // sys_create_file
+        ret_val = kfs_create_file((char*)r->rbx, (char*)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 19) { // krealloc
+        ret_val = (uint64_t)krealloc((void*)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 20) { // sys_get_time
+        extern void rtc_read_time(uint32_t*);
+        rtc_read_time((uint32_t*)r->rbx);
+    }
+    else if (syscall_num == 21) {
+        // Reserved/Unused
+    }
+    else if (syscall_num == 22) { // sys_draw_pixel
+        draw_pixel((uint32_t)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 23) { // sys_draw_image
+        draw_image((int)r->rbx, (int)r->rcx, (int)r->rdx, (int)r->rsi, (uint32_t*)r->rdi);
+    }
+    else if (syscall_num == 24) { // sys_get_file_list
+        ret_val = kfs_get_file_list((void*)r->rbx, (int)r->rcx);
+    }
+    else if (syscall_num == 25) { // sys_load_elf
+        ret_val = elf_load_file((char*)r->rbx);
+    }
+    else if (syscall_num == 26) { // sys_draw_string
+        draw_string((const char*)r->rbx, (int)r->rcx, (int)r->rdx, (uint32_t)r->rsi);
+    }
+    // --- SYSCALL: MULTI-USER IDENTITY ---
+    else if (syscall_num == 27) { // sys_set_uid
+        current_uid = r->rbx; 
+    }
+    else if (syscall_num == 28) { // sys_get_uid
+        ret_val = current_uid;   
+    }
+    // --- SYSCALL: EVENT QUEUE UNTUK GUI ---
+    else if (syscall_num == 29) { // sys_poll_event
+        kyuzen_event_t* out_event = (kyuzen_event_t*)r->rbx;
+        
+        extern int mouse_x, mouse_y;
+        extern uint8_t mouse_left_clicked;
+
+        // Poll event: klik atau gerakan mouse
+        if (mouse_left_clicked) {
+            out_event->type   = EVENT_MOUSE_CLICK;
+            out_event->param1 = 0;        // 0 = Tombol Kiri (fileman cek param1==0!)
+            out_event->param2 = 1;        // 1 = Ditekan
+            out_event->param3 = mouse_x;  // Koordinat X saat klik — tidak perlu cache MOVE
+            mouse_left_clicked = 0;
+            ret_val = 1;
+        } else {
+            // Kirim posisi mouse saat ini (selalu, agar app bisa update hover)
+            out_event->type   = EVENT_MOUSE_MOVE;
+            out_event->param1 = mouse_x;
+            out_event->param2 = mouse_y;
+            out_event->param3 = 0;
+            ret_val = 1;
         }
-        out_event->type = 0; // EVENT_NONE
-        return 0; // Kosong
     }
-    else if (r->eax == 30) {
-        return kwm_create_window((int)r->ebx, (int)r->ecx, r->edx, r->esi);
+    // --- SYSCALL BARU UNTUK KWM (Window Manager) ---
+    else if (syscall_num == 30) { // sys_kwm_create_window
+        extern int kwm_create_window(int, int, uint32_t, uint32_t);
+        ret_val = kwm_create_window((int)r->rbx, (int)r->rcx, (uint32_t)r->rdx, (uint32_t)r->rsi);
     }
-    else if (r->eax == 31) {
-        kwm_update_window((int)r->ebx, (uint32_t*)r->ecx);
-        return 0;
+    else if (syscall_num == 31) { // sys_kwm_update_window
+        extern void kwm_update_window(int, uint32_t*);
+        kwm_update_window((int)r->rbx, (uint32_t*)r->rcx);
     }
-    else if (r->eax == 32) {
-        kwm_destroy_window((int)r->ebx);
-        return 0;
+    else if (syscall_num == 32) { // sys_kwm_destroy_window
+        extern void kwm_destroy_window(int);
+        kwm_destroy_window((int)r->rbx);
     }
-    return (uint32_t)-1;
+
+    // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
+    r->rax = ret_val;
 }

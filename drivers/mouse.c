@@ -70,6 +70,9 @@ void init_mouse() {
 uint8_t mouse_cycle = 0;
 int8_t mouse_byte[3];
 
+// Definisi global — di-extern oleh syscall.c untuk polling sederhana
+uint8_t mouse_left_clicked = 0;
+
 extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
 
 // Pelacak status memori tombol (agar tidak spam klik)
@@ -99,6 +102,7 @@ void mouse_handler() {
             if (left_click != last_left_click) {
                 // EVENT_MOUSE_CLICK (3) -> P1: 0 (Kiri), P2: Status (1=Ditekan, 0=Dilepas)
                 push_event(3, 0, left_click, 0); 
+                if (left_click) mouse_left_clicked = 1; // Set flag untuk polling syscall
                 last_left_click = left_click;
             }
             if (right_click != last_right_click) {

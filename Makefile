@@ -17,19 +17,33 @@ AS = nasm
 LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
-# Direktori sumber (TAMBAHKAN 'apps' DI SINI)
+# Direktori sumber (Biarkan tetap seperti ini dulu)
 SRC_DIRS = arch/x86 drivers kernel fs apps
 INCLUDE_DIR = include
 
-# Flags (-I$(INCLUDE_DIR) penting agar #include "io.h" tetap jalan)
-# --- Flags Compiler ---
-CFLAGS = --target=i686-pc-none-elf -m32 -ffreestanding -O2 -nostdlib -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INCLUDE_DIR)
-ASFLAGS = -f elf32
-LDFLAGS = -flavor gnu -T linker.ld -m elf_i386 --build-id=none -nostdlib
+# --- Flags Compiler 64-bit ---
+# 1. Target diubah menjadi x86_64
+# 2. -m32 DIHAPUS
+# 3. DITAMBAHKAN -mno-red-zone (SANGAT PENTING!)
+# 4. -mcmodel=kernel: wajib untuk higher-half kernel — mencegah R_X86_64_32
+#    relocation error saat simbol berada di atas 4GB (0xFFFFFFFF80000000)
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INCLUDE_DIR)
+
+# --- Flags Assembler ---
+# NASM sekarang merakit output 64-bit
+ASFLAGS = -f elf64
+
+# --- Flags Linker ---
+# LLD sekarang menyatukan file dengan format x86_64
+LDFLAGS = -flavor gnu -T linker.ld -m elf_x86_64 --build-id=none -nostdlib
 
 # Cari semua file .c dan .asm di dalam SRC_DIRS
-C_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
+C_SOURCES_RAW = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
+
+# Exclude apps/userlib.c — file user-space (berisi int $0x80), dikompilasi
+# secara terpisah oleh user_apps/Makefile, BUKAN bagian dari kernel Ring 0.
+C_SOURCES = $(filter-out apps/userlib.c,$(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
@@ -70,16 +84,30 @@ clean-apps:
 	$(MAKE) -C user_apps clean
 
 # ISO: tergantung pada kernel + ELF apps (auto-rebuild jika source berubah)
+# Tahap 3: Pembuatan ISO Hybrid (BIOS + UEFI 64-bit)
 boot_image.iso: $(TARGET) apps limine.conf logo.png
 	rm -rf iso_root
 	mkdir -p iso_root
-	cp $(TARGET) limine.conf logo.png fileman.elf viewer.elf limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
-	xorriso -as mkisofs -R -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -o boot_image.iso iso_root/
+	# Buat folder EFI untuk standar boot UEFI 64-bit
+	mkdir -p iso_root/EFI/BOOT
+	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
+	
+	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
+	cp $(TARGET) limine.conf logo.png fileman.elf viewer.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	
+	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
+	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
+		--efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \
+		iso_root -o boot_image.iso
+		
 	./limine/limine.exe bios-install boot_image.iso
 
-# Tahap 4: Boot up QEMU (Sekarang pakai CD-ROM untuk Boot, dan Hard Disk untuk Data!)
+# Tahap 4: Boot up QEMU (Dengan Fitur Debugging 64-bit)
 run: boot_image.iso
-	qemu-system-x86_64.exe -cpu max -m 512M -boot d -drive file=disk.img,format=raw,index=0,media=disk -drive file=boot_image.iso,media=cdrom,index=2
+	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-no-reboot -no-shutdown
 
 # Bersihkan file hasil build
 clean:
