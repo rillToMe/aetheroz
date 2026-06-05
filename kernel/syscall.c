@@ -35,6 +35,11 @@ extern void read_rtc(uint32_t* time_buf);
 extern void draw_pixel(int x, int y, uint32_t color);
 extern void draw_image(int x, int y, int width, int height, uint32_t* buffer);
 
+// window
+extern int kwm_create_window(int x, int y, uint32_t width, uint32_t height);
+extern void kwm_update_window(int win_id, uint32_t* app_buffer);
+extern void kwm_destroy_window(int win_id);
+
 uint32_t current_uid = 0;
 
 typedef struct {
@@ -137,6 +142,17 @@ uint32_t syscall_handler(registers_t *r) {
         }
         out_event->type = 0; // EVENT_NONE
         return 0; // Kosong
+    }
+    else if (r->eax == 30) {
+        return kwm_create_window((int)r->ebx, (int)r->ecx, r->edx, r->esi);
+    }
+    else if (r->eax == 31) {
+        kwm_update_window((int)r->ebx, (uint32_t*)r->ecx);
+        return 0;
+    }
+    else if (r->eax == 32) {
+        kwm_destroy_window((int)r->ebx);
+        return 0;
     }
     return (uint32_t)-1;
 }

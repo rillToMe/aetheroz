@@ -43,65 +43,124 @@ void kprint_num(uint32_t num) {
     kprint(&buf[i + 1]);
 }
 
+// --- KANVAS HIBRIDA (CLI & GUI) ---
+uint32_t base_canvas[1024 * 768]; // Layer 0: Tempat Teks CLI / Login / Shell
+uint32_t backbuffer[1024 * 768];  // Layer 1: Kanvas Rakitan Compositor
+
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= fb_width || y >= fb_height) return;
-    // PENTING: Semua lukisan OS sekarang masuk ke RAM (Z-Index 0 & 1), bukan ke layar fisik!
-    backbuffer[(y * (fb_pitch / 4)) + x] = color;
+    // PENTING: Aplikasi Ring 0 & CLI sekarang menggambar ke Base Canvas!
+    base_canvas[(y * (fb_pitch / 4)) + x] = color;
 }
 
-// --- MESIN COMPOSITOR Z-INDEX ---
-extern void draw_mouse_to_frontbuffer();
+// --- KYUZEN WINDOW MANAGER (KWM) ---
+#define MAX_WINDOWS 16
+typedef struct {
+    uint8_t active;
+    int32_t x, y;
+    uint32_t width, height;
+    uint32_t* canvas; 
+    uint32_t z_index;
+} kwm_window_t;
+
+kwm_window_t kwm_windows[MAX_WINDOWS];
+uint32_t next_z_index = 1;
+
+int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
+    for(int i = 0; i < MAX_WINDOWS; i++) {
+        if(!kwm_windows[i].active) {
+            kwm_windows[i].active = 1;
+            kwm_windows[i].x = x;
+            kwm_windows[i].y = y;
+            kwm_windows[i].width = width;
+            kwm_windows[i].height = height;
+            kwm_windows[i].canvas = (uint32_t*)kmalloc(width * height * 4);
+            kwm_windows[i].z_index = next_z_index++;
+            return i;
+        }
+    }
+    return -1; 
+}
+
+void kwm_update_window(int win_id, uint32_t* app_buffer) {
+    if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
+    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height * 4;
+    // Blok copy super cepat dari User Space ke Kernel Space
+    uint32_t* dest = kwm_windows[win_id].canvas;
+    __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
+}
+
+// --- FUNGSI BARU DITAMBAHKAN DI SINI ---
+void kwm_destroy_window(int win_id) {
+    if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
+    
+    // 1. Bebaskan memori kanvas yang kita pinjamkan
+    if (kwm_windows[win_id].canvas) {
+        kfree(kwm_windows[win_id].canvas);
+    }
+    
+    // 2. Tandai jendela ini sebagai tidak aktif (Compositor akan berhenti menggambarnya)
+    kwm_windows[win_id].active = 0; 
+}
 
 // --- VARIABEL MOUSE DARI DRIVER ---
 extern int32_t mouse_x;
 extern int32_t mouse_y;
 extern const uint8_t cursor_bitmap[16][12];
 
-// Memori untuk menyimpan latar belakang mouse di dalam RAM
-uint32_t mouse_bg_backbuffer[16][12];
-
-// --- MESIN COMPOSITOR Z-INDEX (ZERO FLICKER) ---
+// --- MESIN COMPOSITOR Z-INDEX (HYBRID) ---
 void compositor_flush() {
     if (fb_width == 0) return;
+    uint32_t screen_size = (fb_pitch / 4) * fb_height;
 
-    // 1. TEMPELKAN MOUSE KE BACKBUFFER (RAM)
+    // 1. JADIKAN CLI SEBAGAI WALLPAPER
+    // Kopi isi base_canvas ke backbuffer sebagai latar paling belakang
+    uint32_t* dst_bg = backbuffer;
+    uint32_t* src_bg = base_canvas;
+    uint32_t copy_cnt = screen_size;
+    __asm__ volatile ("rep movsl" : "+D" (dst_bg), "+S" (src_bg), "+c" (copy_cnt) : : "memory");
+
+    // 2. TUMPUK JENDELA GUI KWM
+    for(uint32_t z = 1; z <= next_z_index; z++) {
+        for(int w = 0; w < MAX_WINDOWS; w++) {
+            if(kwm_windows[w].active && kwm_windows[w].z_index == z) {
+                uint32_t win_w = kwm_windows[w].width;
+                uint32_t win_h = kwm_windows[w].height;
+                uint32_t* canvas = kwm_windows[w].canvas;
+
+                for(uint32_t wy = 0; wy < win_h; wy++) {
+                    for(uint32_t wx = 0; wx < win_w; wx++) {
+                        int screen_x = kwm_windows[w].x + wx;
+                        int screen_y = kwm_windows[w].y + wy;
+                        
+                        if(screen_x >= 0 && screen_x < (int)fb_width && screen_y >= 0 && screen_y < (int)fb_height) {
+                            uint32_t pixel = canvas[(wy * win_w) + wx];
+                            // Trik Alpha murni: Gambar pixel jika Alpha tidak transparan
+                            if (pixel >> 24) {
+                                backbuffer[(screen_y * (fb_pitch / 4)) + screen_x] = pixel & 0xFFFFFF;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. TUMPUK KURSOR MOUSE
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 12; x++) {
             if (mouse_y + y >= (int32_t)fb_height || mouse_x + x >= (int32_t)fb_width) continue;
-            
             uint32_t offset = ((mouse_y + y) * (fb_pitch / 4)) + (mouse_x + x);
-            
-            // Simpan piksel asli backbuffer
-            mouse_bg_backbuffer[y][x] = backbuffer[offset];
-            
-            // Timpa dengan warna kursor mouse
             if (cursor_bitmap[y][x] == 1) backbuffer[offset] = 0xFFFFFF; 
             else if (cursor_bitmap[y][x] == 2) backbuffer[offset] = 0x000000; 
         }
     }
 
-    // 2. TUMPAHKAN 1 LAYAR PENUH KE MONITOR SECEPAT KILAT (HARDWARE ASSEMBLY)
-    // Trik rep movsl ini menjamin kopi memori tercepat tanpa risiko crash SSE!
-    uint32_t* dest = fb_ptr;
-    uint32_t* src  = backbuffer;
-    uint32_t count = (fb_pitch / 4) * fb_height;
-    
-    __asm__ volatile (
-        "rep movsl"
-        : "+D" (dest), "+S" (src), "+c" (count)
-        :
-        : "memory"
-    );
-
-    // 3. CABUT MOUSE DARI BACKBUFFER (RAM)
-    for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 12; x++) {
-            if (mouse_y + y >= (int32_t)fb_height || mouse_x + x >= (int32_t)fb_width) continue;
-            
-            uint32_t offset = ((mouse_y + y) * (fb_pitch / 4)) + (mouse_x + x);
-            backbuffer[offset] = mouse_bg_backbuffer[y][x];
-        }
-    }
+    // 4. SIRAM SEMUA KE MONITOR HARDWARE
+    uint32_t* dest_mon = fb_ptr;
+    uint32_t* src_mon  = backbuffer;
+    uint32_t count_mon = screen_size;
+    __asm__ volatile ("rep movsl" : "+D" (dest_mon), "+S" (src_mon), "+c" (count_mon) : : "memory");
 }
 
 void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color) {
@@ -292,7 +351,7 @@ uint32_t string_length(const char* str) {
     return len;
 }
 void print_hex(uint32_t num) { 
-    (void)num; // Trik membungkam compiler
+    kprint_num(num); // Trik membungkam compiler
 }
 
 // Impor fungsi penyetel stack khusus untuk mode user

@@ -15,9 +15,18 @@ uint32_t elf_load_file(char* filename) {
     uint8_t* file_buffer = (uint8_t*)kmalloc(file_size);
     kfs_read_to_buffer(filename, (char*)file_buffer);
 
+    // --- RADAR FORENSIK BINER ---
+    extern void kprint_num(uint32_t num);
+    kprint("\n[DEBUG] 4 Byte Pertama File:\n");
+    kprint("Byte 0: "); kprint_num(file_buffer[0]); kprint("\n");
+    kprint("Byte 1: "); kprint_num(file_buffer[1]); kprint("\n");
+    kprint("Byte 2: "); kprint_num(file_buffer[2]); kprint("\n");
+    kprint("Byte 3: "); kprint_num(file_buffer[3]); kprint("\n");
+    // ----------------------------
+
     elf32_ehdr_t* elf_hdr = (elf32_ehdr_t*)file_buffer;
     if (elf_hdr->e_ident[0] != 0x7F) {
-        kprint("ELF Error: Magic Number tidak cocok!\n"); // Laporan detektif
+        kprint("ELF Error: Magic Number tidak cocok!\n"); 
         kfree(file_buffer);
         return 0;
     }

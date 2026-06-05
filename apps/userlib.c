@@ -134,3 +134,17 @@ int sys_get_event(kyuzen_event_t* event_out) {
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(29), "b"(event_out)); 
     return ret;
 }
+
+int sys_create_window(int x, int y, uint32_t width, uint32_t height) {
+    uint32_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(30), "b"(x), "c"(y), "d"(width), "S"(height));
+    return ret;
+}
+
+void sys_update_window(int win_id, uint32_t* buffer) {
+    __asm__ volatile("int $0x80" : : "a"(31), "b"(win_id), "c"(buffer));
+}
+
+void sys_destroy_window(int win_id) {
+    __asm__ volatile("int $0x80" : : "a"(32), "b"(win_id));
+}

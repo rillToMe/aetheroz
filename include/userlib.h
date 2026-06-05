@@ -66,5 +66,11 @@ void sys_draw_string(const char* str, int x, int y, uint32_t color);
 void sys_set_uid(uint32_t uid);
 uint32_t sys_get_uid();
 
+// 2. Syscall Event Queue (Syscall 29)
 int sys_get_event(kyuzen_event_t* event_out);
+
+// 3. Syscall Window Manager (Syscall 30 & 31)
+int sys_create_window(int x, int y, uint32_t width, uint32_t height);
+void sys_update_window(int win_id, uint32_t* buffer);
+void sys_destroy_window(int win_id);
 #endif
