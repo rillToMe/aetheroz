@@ -24,11 +24,9 @@ void kyuzen_fetch() {
     
     uint32_t used_mb = sys_used_ram() / 1024 / 1024;
     uint32_t total_mb = sys_total_ram() / 1024 / 1024;
-    
+
     print("  /__________\\   RAM  : ");
-    print_num(used_mb); print(" MB / "); print_num(total_mb); print(" MB\n");
-    print("                 Up   : ");
-    print_num(sys_uptime()); print(" detik\n\n");
+    print_num(used_mb); print(" MB / "); print_num(total_mb); print(" MB\n\n");
 }
 
 void str_append(char* dest, const char* src) {
@@ -192,20 +190,14 @@ void user_shell() {
                     else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
                     }
                     else if (strcmp(command, "jam") == 0) {
-                        uint32_t waktu[6];
-                        sys_get_time(waktu);
-
-                        print("Waktu Dunia Nyata (WIB) : ");
-                        
-                        // Format Tanggal: YYYY-MM-DD
-                        print_num(waktu[0]); print("-");
-                        if(waktu[1] < 10) print("0"); print_num(waktu[1]); print("-");
-                        if(waktu[2] < 10) print("0"); print_num(waktu[2]); print(" ");
-                        
-                        // Format Jam: HH:MM:SS
-                        if(waktu[3] < 10) print("0"); print_num(waktu[3]); print(":");
-                        if(waktu[4] < 10) print("0"); print_num(waktu[4]); print(":");
-                        if(waktu[5] < 10) print("0"); print_num(waktu[5]); print("\n");
+                        // Launch clock.elf — jam digital real-time dengan GUI window
+                        uint64_t entry = sys_load_elf("clock.elf");
+                        if (entry != 0) {
+                            void (*run)(void) = (void (*)(void))entry;
+                            run();
+                        } else {
+                            print("[jam] Gagal memuat clock.elf dari disk.\n");
+                        }
                     }
                     else { 
                         // 1. Siapkan wadah teks untuk menyisipkan ".elf"

@@ -8,11 +8,13 @@
 # Zona Memori User Apps:
 #   fileman.elf  →  0x4000000  (64 MB)
 #   viewer.elf   →  0x4400000  (68 MB)
+#   clock.elf    →  0x6000000  (96 MB)  ← jauh dari 72MB PMM lock boundary
 #
 # Penggunaan:
 #   make          → Compile semua app
 #   make fileman  → Compile hanya fileman.elf
 #   make viewer   → Compile hanya viewer.elf
+#   make clock    → Compile hanya clock.elf
 #   make clean    → Hapus semua file hasil build
 # ==========================================================
 
@@ -44,17 +46,19 @@ USERLIB_OBJ = userlib.o
 # --- Target ELF Akhir (ditulis ke root project) ---
 FILEMAN_ELF = $(OUT_DIR)/fileman.elf
 VIEWER_ELF  = $(OUT_DIR)/viewer.elf
+CLOCK_ELF   = $(OUT_DIR)/clock.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
 .PHONY: all fileman viewer clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF)
 	@echo ""
 	@echo "[USER APPS 64-BIT] Build selesai!"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
 	@echo "  viewer.elf  → $(VIEWER_ELF)"
+	@echo "  clock.elf   → $(CLOCK_ELF)"
 
 # ==========================================================
 # COMPILE SHARED USERLIB
@@ -93,9 +97,23 @@ $(VIEWER_ELF): viewer.o $(USERLIB_OBJ)
 viewer: $(VIEWER_ELF)
 
 # ==========================================================
+# CLOCK — Jam Digital Real-Time (link ke 0x4800000)
+# ==========================================================
+clock.o: clock.c
+	@echo "[CC] Mengompilasi clock.c (64-bit)..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(CLOCK_ELF): clock.o $(USERLIB_OBJ)
+	@echo "[LD] Linking clock.elf ke 0x6000000..."
+	$(LD) $(LDFLAGS) -e main -Ttext 0x6000000 clock.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] clock.elf siap!"
+
+clock: $(CLOCK_ELF)
+
+# ==========================================================
 # CLEAN — Hapus semua file hasil build
 # ==========================================================
 clean:
 	@echo "[CLEAN] Membersihkan file objek user_apps..."
-	rm -f fileman.o viewer.o $(USERLIB_OBJ)
+	rm -f fileman.o viewer.o clock.o $(USERLIB_OBJ)
 	@echo "[CLEAN] Selesai."
