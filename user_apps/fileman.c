@@ -161,13 +161,8 @@ void main() {
                             // --- LOGIKA BUKA .ELF ---
                             sys_destroy_window(win_id);
                             sys_free(my_canvas);
-
-                            uint64_t app_entry = sys_load_elf(target_file);
-                            if (app_entry != 0) {
-                                void (*run_app)(void) = (void (*)(void))app_entry;
-                                run_app();
-                            }
-                            return;
+                            sys_exec(target_file); // OS free RAM lama + load + jump
+                            return; // tidak tercapai (noreturn)
                         } 
                         else if (len > 4 && target_file[len-4] == '.' && target_file[len-3] == 'p' && 
                                  target_file[len-2] == 'n' && target_file[len-1] == 'g') {
@@ -178,13 +173,8 @@ void main() {
 
                             sys_destroy_window(win_id);
                             sys_free(my_canvas);
-
-                            uint64_t app_entry2 = sys_load_elf("viewer.elf");
-                            if (app_entry2 != 0) {
-                                void (*run_app2)(void) = (void (*)(void))app_entry2;
-                                run_app2();
-                            }
-                            return;
+                            sys_exec("viewer.elf"); // OS free RAM lama + load viewer + jump
+                            return; // tidak tercapai (noreturn)
                         } 
                         else {
                             // Untuk file format lain (.sys, .txt, dll)
@@ -206,4 +196,10 @@ void main() {
     
     sys_destroy_window(win_id);
     sys_free(my_canvas);
-}
+
+    // PENTING: Jangan `return` dari main()!
+    // Jika fileman diluncurkan via sys_exec (dari viewer), stack tidak
+    // punya return address yang valid → ret dari main() = BSOD.
+    // sys_exit() aman di semua kasus: kernel bebaskan RAM dan kembali ke shell.
+    sys_exit();
+}

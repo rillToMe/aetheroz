@@ -82,6 +82,9 @@ viewer.elf:
 clock.elf:
 	$(MAKE) -C user_apps clock
 
+calc.elf:
+	$(MAKE) -C user_apps calc
+
 # Bersihkan hanya file objek user_apps (bukan ELF output)
 clean-apps:
 	$(MAKE) -C user_apps clean
@@ -96,7 +99,7 @@ boot_image.iso: $(TARGET) apps limine.conf logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf logo.png fileman.elf viewer.elf clock.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf logo.png fileman.elf viewer.elf clock.elf calc.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \

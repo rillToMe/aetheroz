@@ -111,3 +111,71 @@ int paging_is_mapped(uint64_t vaddr) {
     uint64_t pt_idx = (vaddr >> 12) & 0x1FF;
     return (pt[pt_idx] & 1);
 }
+
+// ===================================================================
+// vmm_unmap_user_space() — Bebaskan physical pages milik user app SAJA
+//
+// HANYA menghapus mapping di range 0x4000000–0x4FFFFFF (app virtual slot).
+// TIDAK menyentuh mapping Limine (identity map, framebuffer, MMIO).
+//
+// Sebelumnya: iterasi PML4[0-255] → hancurkan SEMUA low-half mappings
+//   → free pages milik Limine → corrupt kernel → BSOD
+//
+// Sekarang: surgical unmap — hanya pages yang kita alokasi via vmm_alloc_page
+//   untuk ELF segments di 0x4000000.
+// ===================================================================
+void vmm_unmap_user_space(void) {
+    if (!current_pml4) return;
+    extern void pmm_free_page(void* page);
+
+    // App virtual range: 0x4000000 – 0x4FFFFFF (16MB slot)
+    // PML4[0] → PDPT[0] → PD[32..39] → PT[0..511]
+    //
+    // 0x4000000 >> 39 = 0  → PML4 index 0
+    // 0x4000000 >> 30 = 0  → PDPT index 0
+    // 0x4000000 >> 21 = 32 → PD index 32
+    // 0x4FFFFFF >> 21 = 39  → PD index 39
+
+    // Check PML4[0] exists
+    if (!(current_pml4[0] & 1)) return;
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(current_pml4[0] & 0xFFFFFFFFFFFFF000ULL);
+
+    // Check PDPT[0] exists (not huge page)
+    if (!(pdpt[0] & 1)) return;
+    if (pdpt[0] & (1ULL << 7)) return; // 1GB huge page, don't touch
+
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[0] & 0xFFFFFFFFFFFFF000ULL);
+
+    // Iterate PD entries 32–39 (covers 0x4000000–0x4FFFFFF)
+    for (int p2 = 32; p2 < 40; p2++) {
+        if (!(pd[p2] & 1)) continue;
+
+        // Skip 2MB huge pages (bukan milik kita)
+        if (pd[p2] & (1ULL << 7)) {
+            pd[p2] = 0;
+            continue;
+        }
+
+        uint64_t pt_phys = pd[p2] & 0xFFFFFFFFFFFFF000ULL;
+        uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pt_phys);
+
+        // Free setiap 4KB page di PT
+        for (int p1 = 0; p1 < 512; p1++) {
+            if (!(pt[p1] & 1)) continue;
+            uint64_t page_phys = pt[p1] & 0xFFFFFFFFFFFFF000ULL;
+            pmm_free_page((void*)page_phys);
+            pt[p1] = 0;
+        }
+
+        // Free PT page sendiri
+        pmm_free_page((void*)pt_phys);
+        pd[p2] = 0;
+    }
+
+    // Flush TLB
+    __asm__ volatile(
+        "mov %%cr3, %%rax\n"
+        "mov %%rax, %%cr3\n"
+        ::: "rax", "memory"
+    );
+}

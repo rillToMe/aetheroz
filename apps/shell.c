@@ -3,6 +3,11 @@
 #include "zen.h"
 #include <stddef.h>
 
+// Global: RSP yang disimpan SEBELUM shell memanggil app via CALL.
+// Digunakan oleh sys_exec (syscall 33) untuk me-reset stack sehingga
+// app baru bisa `ret` kembali ke shell dengan benar.
+uint64_t g_shell_return_rsp = 0;
+
 // extern void draw_png_image(const char* filename, int start_x, int start_y);
 
 void kyuzen_fetch() {
@@ -86,7 +91,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {
@@ -189,16 +194,29 @@ void user_shell() {
                     }
                     else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
                     }
-                    else if (strcmp(command, "jam") == 0) {
-                        // Launch clock.elf — jam digital real-time dengan GUI window
-                        uint64_t entry = sys_load_elf("clock.elf");
-                        if (entry != 0) {
-                            void (*run)(void) = (void (*)(void))entry;
-                            run();
-                        } else {
-                            print("[jam] Gagal memuat clock.elf dari disk.\n");
-                        }
-                    }
+                    // else if (strcmp(command, "jam") == 0) {
+                    //     // Launch clock.elf — jam digital real-time dengan GUI window
+                    //     uint64_t entry = sys_load_elf("clock.elf");
+                    //     if (entry != 0) {
+                    //         void (*run)(void) = (void (*)(void))entry;
+                    //         // Simpan RSP sebelum CALL agar sys_exec bisa reset stack
+                    //         __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
+                    //         run();
+                    //     } else {
+                    //         print("[jam] Gagal memuat clock.elf dari disk.\n");
+                    //     }
+                    // }
+                    // else if (strcmp(command, "kalk") == 0) {
+                    //     // Launch calc.elf — kalkulator GUI
+                    //     uint64_t entry = sys_load_elf("calc.elf");
+                    //     if (entry != 0) {
+                    //         void (*run)(void) = (void (*)(void))entry;
+                    //         __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
+                    //         run();
+                    //     } else {
+                    //         print("[kalk] Gagal memuat calc.elf dari disk.\n");
+                    //     }
+                    // }
                     else { 
                         // 1. Siapkan wadah teks untuk menyisipkan ".elf"
                         char elf_filename[32];
@@ -218,22 +236,23 @@ void user_shell() {
                         elf_filename[i] = '\0';
 
                         // 2. Minta Kernel mencari dan memuat file tersebut
-                        uint32_t app_entry = sys_load_elf(elf_filename);;
-                        
+                        uint64_t app_entry = sys_load_elf(elf_filename);
+
                         if (app_entry != 0) {
                             clear_screen();
-                            // 3. Jika ketemu, LOMPAT dan jalankan aplikasinya!
-                            void (*run_app)() = (void (*)())app_entry;
-                            run_app(); 
-                                       
-                            // Opsional: Beri jarak baris setelah aplikasi selesai
-                            print("\n"); 
-
+                            // 3. Lompat dan jalankan aplikasinya
+                            void (*run_app)(void) = (void (*)(void))app_entry;
+                            // Simpan RSP sebelum CALL agar sys_exec bisa reset stack
+                            __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
+                            run_app();
+                            // App returned (baik normal, atau via sys_exit longjmp)
+                            print("\n");
                         } else {
-                            // 4. Jika file memang tidak ada, tampilkan error aslinya
+                            // 4. File tidak ada
                             print("Perintah tidak dikenali: ");
                             print(command);
                             print("\n");
+
                         }
                     }
                     // -------------------------------------------

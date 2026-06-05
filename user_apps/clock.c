@@ -210,4 +210,5 @@ void main(void) {
 
     sys_destroy_window(win_id);
     sys_free(my_canvas);
+    sys_exit();  // Kembali ke shell dengan aman
 }

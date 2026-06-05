@@ -62,6 +62,12 @@ int sys_get_file_list(file_info_t* buffer, int max_entries);
 
 uint64_t sys_load_elf(char* filename);
 
+// sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.
+// OS yang free RAM lama, load app baru, lalu lompat langsung ke entry-nya.
+void sys_exec(char* filename);
+
+// sys_exit: App selesai, kembali ke shell. TIDAK PERNAH kembali ke caller.
+void sys_exit(void);
 void sys_draw_string(const char* str, int x, int y, uint32_t color);
 
 void sys_set_uid(uint32_t uid);

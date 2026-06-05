@@ -81,6 +81,22 @@ void sys_destroy_window(int win_id) {
     __asm__ volatile("int $0x80" : : "a"(32), "b"((uint64_t)win_id));
 }
 
+// sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.
+// OS yang free RAM lama, load app baru, lalu lompat langsung ke entry-nya.
+__attribute__((noreturn))
+void sys_exec(char* filename) {
+    __asm__ volatile("int $0x80" : : "a"(33), "b"((uint64_t)filename));
+    __builtin_unreachable();
+}
+
+// sys_exit: App selesai, kembali ke shell.
+// Kernel membebaskan RAM app dan jump langsung ke shell command loop.
+__attribute__((noreturn))
+void sys_exit(void) {
+    __asm__ volatile("int $0x80" : : "a"(34));
+    __builtin_unreachable();
+}
+
 void print_num(uint32_t num) {
     if (num == 0) { print("0"); return; }
     char buf[16]; int i = 14; buf[15] = '\0';

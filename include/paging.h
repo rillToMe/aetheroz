@@ -9,5 +9,7 @@ void vmm_map_page(uint64_t vaddr, uint64_t paddr, uint64_t flags);
 int vmm_alloc_page(uint64_t vaddr, uint64_t flags);
 int paging_map_region(uint64_t vaddr);
 int paging_is_mapped(uint64_t vaddr);
+// Bebaskan semua user-space pages (dipanggil setelah app exit dari kernel)
+void vmm_unmap_user_space(void);
 
 #endif

@@ -206,12 +206,6 @@ void main() {
     sys_free(my_canvas);
     my_canvas = 0;
     
-    // ==========================================================
-    // 10. Panggil balik File Manager
-    // ==========================================================
-    uint64_t fm_entry = sys_load_elf("fileman.elf");
-    if (fm_entry != 0) {
-        void (*run_fm)(void) = (void (*)(void))fm_entry;
-        run_fm();
-    }
+    // Kembali ke File Manager
+    sys_exec("fileman.elf"); // OS free viewer RAM + load fileman + jump
 }

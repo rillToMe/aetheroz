@@ -188,6 +188,75 @@ void syscall_handler(registers_t *r) {
         extern void kwm_destroy_window(int);
         kwm_destroy_window((int)r->rbx);
     }
+    else if (syscall_num == 33) { // sys_exec — load & jalankan ELF baru, replace current app
+        // PENTING: copy filename ke kernel stack DULU sebelum unmap!
+        char kfname[64];
+        {
+            char* ufname = (char*)r->rbx;
+            int fi = 0;
+            while (fi < 63 && ufname[fi] != '\0') {
+                kfname[fi] = ufname[fi];
+                fi++;
+            }
+            kfname[fi] = '\0';
+        }
+
+        // 1. Unmap user space lama
+        extern void vmm_unmap_user_space(void);
+        vmm_unmap_user_space();
+
+        // 2. Load ELF baru ke slot 0x4000000
+        uint64_t entry = elf_load_file(kfname);
+
+        // 3. Set RIP & RSP untuk IRETQ
+        if (entry != 0) {
+            r->rip = entry;
+
+            // Reset RSP ke shell's saved stack.
+            // g_shell_return_rsp = RSP tepat sebelum shell CALL app.
+            // Kita set r->rsp = g_shell_return_rsp, sehingga setelah IRETQ
+            // stack kembali ke kondisi "seolah belum pernah CALL".
+            // Saat app baru return (ret), RET pops [RSP].
+            // [g_shell_return_rsp] berisi apa yang ada di stack sebelum CALL:
+            // yaitu shell's own stack frame → local vars, saved rbp, etc.
+            // INI MEMANG BUKAN return address, tapi kita handle via sys_exit.
+            extern uint64_t g_shell_return_rsp;
+            if (g_shell_return_rsp != 0) {
+                r->rsp = g_shell_return_rsp;
+            }
+            ret_val = 1;
+        } else {
+            ret_val = 0;
+        }
+    }
+    else if (syscall_num == 34) { // sys_exit — app selesai, kembali ke shell
+        // Bebaskan halaman user app
+        extern void vmm_unmap_user_space(void);
+        vmm_unmap_user_space();
+
+        // Longjmp kembali ke shell: reset RSP dan jump ke user_shell()
+        // Ini BYPASS iretq sepenuhnya — langsung ke shell command loop.
+        // Aman karena int 0x80 = software interrupt (tidak perlu EOI).
+        extern void user_shell(void);
+        extern uint64_t g_shell_return_rsp;
+        uint64_t safe_rsp = g_shell_return_rsp;
+        if (safe_rsp == 0) {
+            // Fallback: jika belum pernah launch app dari shell, halt
+            for(;;) __asm__ volatile("hlt");
+        }
+        // Reset stack dan jump langsung ke shell loop.
+        // Tidak pakai CALL (yang push return addr dan grow stack).
+        // Pakai JMP → shell berjalan di stack level yang sama.
+        __asm__ volatile(
+            "mov %0, %%rsp\n"
+            "xor %%rbp, %%rbp\n"
+            "sti\n"                // Re-enable interrupts! (int 0x80 disabled mereka)
+            "jmp *%1\n"
+            : : "r"(safe_rsp), "r"((uint64_t)user_shell)
+            : "memory"
+        );
+        __builtin_unreachable();
+    }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;
