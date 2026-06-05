@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "multiboot.h"  
+#include "limine.h"
 #define FONT8x16_IMPLEMENTATION 
 #include "font8x16.h" // <-- Pustaka font ajaib yang baru kita unduh!
 #include "fs.h"
@@ -24,6 +24,7 @@ extern void user_login();
 extern void init_mouse();
 extern void kprint(const char* str);
 extern void kfs_delete_file(char* filename);
+
 // --- VARIABEL GLOBAL FRAMEBUFFER ---
 uint32_t* fb_ptr = NULL;
 uint32_t fb_width = 0;
@@ -34,6 +35,24 @@ uint32_t fb_pitch = 0;
 // 1024x768 = 786.432 Piksel. Bootloader akan otomatis mengalokasikan RAM ini!
 uint32_t backbuffer[1366 * 768]; 
 
+
+// ==========================================
+// REQUEST PROTOKOL LIMINE (PENGGANTI MBI)
+// ==========================================
+static volatile struct limine_framebuffer_request framebuffer_request = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST_ID, // <-- Tambahkan _ID
+    .revision = 0
+};
+
+static volatile struct limine_memmap_request memmap_request = {
+    .id = LIMINE_MEMMAP_REQUEST_ID,      // <-- Tambahkan _ID
+    .revision = 0
+};
+
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST_ID,      // <-- Tambahkan _ID
+    .revision = 0
+};
 // Fungsi Detektif untuk mencetak angka
 void kprint_num(uint32_t num) {
     if (num == 0) { kprint("0"); return; }
@@ -229,77 +248,59 @@ void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color) {
 }
 // ------------------------------------
 
-void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
-    // 1. TANGKAP LAYAR GUI DARI MULTIBOOT
-    if (magic == 0x2BADB002 && (mbi->flags & (1 << 12))) {
-        fb_ptr = (uint32_t *)(uint32_t)mbi->framebuffer_addr;
-        fb_width = mbi->framebuffer_width;
-        fb_height = mbi->framebuffer_height;
-        fb_pitch = mbi->framebuffer_pitch;
-
-        uint32_t total_ram = (mbi->mem_upper * 1024) + (1024 * 1024);
-        pmm_set_total_ram(total_ram);
+void kernel_main(void) { // <-- Bersih tanpa argumen!
+    // 1. TANGKAP LAYAR GUI DARI LIMINE
+    if (framebuffer_request.response != NULL && framebuffer_request.response->framebuffer_count > 0) {
+        struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
+        fb_ptr = (uint32_t *)fb->address;
+        fb_width = fb->width;
+        fb_height = fb->height;
+        fb_pitch = fb->pitch;
+    } else {
+        while(1) { __asm__ volatile("hlt"); } // Panic tanpa layar
     }
 
     // 2. INISIALISASI ARSITEKTUR KERNEL
     init_gdt(); 
     init_idt(); 
-    pmm_init(); 
+
+    // 3. PMM DYNAMIC VIA LIMINE
+    if (memmap_request.response != NULL) {
+        pmm_init_dynamic(memmap_request.response->entries, memmap_request.response->entry_count);
+    } else {
+        kprint("PANIC: Bootloader tidak mengirim Memory Map!\n");
+        while(1) { __asm__ volatile("hlt"); }
+    }
+
     init_paging((uint32_t)fb_ptr);
     init_heap();
     pic_remap(); 
     init_timer(50); 
     init_mouse();
     init_keyboard();
-    // 3. AKTIFKAN LAYAR TTY (Harus sebelum FS agar kprint tidak error)
     init_tty(); 
-
-    // 4. INISIALISASI DISK
     kfs_init();
 
-    // === PROBE 1: ATA ROUND-TRIP TEST ===
-    kprint("\n[ATA TEST] Menulis 0xDEADBEEF ke sector 250...\n");
-    {
-        uint8_t* test = (uint8_t*)kmalloc(512);
-        memset(test, 0, 512);
-        test[0] = 0xDE; test[1] = 0xAD; test[2] = 0xBE; test[3] = 0xEF;
-        ata_write_sector(250, test);
+    // === [BIARKAN BLOK ATA ROUND-TRIP TEST ANDA DI SINI] ===
 
-        memset(test, 0, 512); // Bersihkan buffer
-        ata_read_sector(250, test); // Baca balik
-
-        if (test[0] == 0xDE && test[1] == 0xAD && test[2] == 0xBE && test[3] == 0xEF) {
-            kprint("[ATA TEST] MATCH! ATA read/write berfungsi.\n");
-        } else {
-            kprint("[ATA TEST] MISMATCH! ATA GAGAL! Got: ");
-            const char* hex_digits = "0123456789ABCDEF";
-            for (int b = 0; b < 4; b++) {
-                char hx[5] = {'0', 'x', hex_digits[(test[b] >> 4) & 0xF], hex_digits[test[b] & 0xF], '\0'};
-                kprint(hx); kprint(" ");
-            }
-            kprint("\n");
-        }
-        kfree(test);
-    }
-
-    // 5. AUTO-INSTALL & RADAR DETEKTIF
+    // 4. AUTO-INSTALL MODUL DARI LIMINE
     kprint("\n--- RADAR AUTO-INSTALL ---\n");
-    if (mbi->flags & (1 << 3)) {
+    if (module_request.response != NULL && module_request.response->module_count > 0) {
         kprint("Status: Limine mengirim modul!\n");
-        kprint("Jumlah Modul: "); kprint_num(mbi->mods_count); kprint("\n");
+        kprint("Jumlah Modul: "); kprint_num(module_request.response->module_count); kprint("\n");
         
-        typedef struct { uint32_t start; uint32_t end; uint32_t string; uint32_t res; } mod_t;
-        mod_t* mods = (mod_t*)mbi->mods_addr;
-        
-        for (uint32_t i = 0; i < mbi->mods_count; i++) {
-            uint32_t size = mods[i].end - mods[i].start;
+        for (uint64_t i = 0; i < module_request.response->module_count; i++) {
+            struct limine_file *mod = module_request.response->modules[i];
+            uint32_t size = mod->size;
+            
             kprint("Modul "); kprint_num(i+1); kprint(" | Ukuran: "); kprint_num(size); kprint(" Bytes\n");
             
-            char* raw_name = (char*)mods[i].string;
-            if (raw_name == NULL) { kprint(" -> ERROR: Nama dari Limine NULL!\n"); continue; }
+            // Limine menyimpan file path di mod->path
+            char* raw_name = mod->path; 
+            if (raw_name == NULL) { kprint(" -> ERROR: Path dari Limine NULL!\n"); continue; }
+            kprint(" -> Raw path: ["); kprint(raw_name); kprint("]\n");
             
-            kprint(" -> Raw string: ["); kprint(raw_name); kprint("]\n");
-            
+            // Logika ekstrak nama file (menghapus tanda garis miring direktori)
             char clean_name[24];
             int k = 0;
             char* last_slash = raw_name;
@@ -314,19 +315,16 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
             
             kprint(" -> Ekstrak Nama: ["); kprint(clean_name); kprint("]\n");
 
-            // FAILSAFE: Jangan buat file tanpa nama!
-            if (k == 0) { kprint(" -> SKIP: Nama kosong (cek module_string di limine.conf)\n"); continue; }
+            if (k == 0) { kprint(" -> SKIP: Nama kosong\n"); continue; }
 
-            // --- LOGIKA AUTO-UPDATE BARU ---
             if (kfs_exists(clean_name)) {
                 kprint(" -> [UPDATE] Menghapus versi lama...\n");
                 kfs_delete_file(clean_name);
             }
 
-            int res = kfs_create_file(clean_name, (char*)mods[i].start, size);
+            int res = kfs_create_file(clean_name, (char*)mod->address, size);
             if(res) kprint(" -> [SUKSES DITULIS KE DISK]\n");
             else kprint(" -> [GAGAL DITULIS]\n");
-            // -------------------------------
         }
     } else {
         kprint("ERROR: LIMINE TIDAK MENGIRIM MODUL SAMA SEKALI!\n");
@@ -342,14 +340,12 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
     //     __asm__ volatile("hlt"); // Menyuruh CPU tidur selamanya!
     // }
 
-    // 6. LOMPAT KE USER SPACE (Menjalankan kyuzen-shell!)
+    // 5. LOMPAT KE USER SPACE
     switch_to_user_mode(user_login);
 
-    // Fallback jika Ring 3 gagal
     __asm__ volatile("cli");
     while (1) { __asm__ volatile("hlt"); }
 }
-
 
 // Dummy untuk linker
 extern fs_node_t tty_node;

@@ -1,7 +1,11 @@
 #include "pmm.h"
+#include "limine.h"
 
 // Array penyimpan status RAM (0 = bebas, 1 = dipakai)
 static uint8_t pmm_bitmap[PMM_BITMAP_SIZE];
+
+// ---> PINDAHKAN VARIABEL INI KE ATAS SINI <---
+uint32_t real_total_ram = 256 * 1024 * 1024;
 
 // --- Fungsi Helper Bitwise ---
 static inline void bitmap_set(uint32_t bit) {
@@ -18,18 +22,43 @@ static inline uint8_t bitmap_test(uint32_t bit) {
 
 // --- Fungsi Utama PMM ---
 
-void pmm_init(void) {
-    // 1. Bersihkan semua bit (Anggap semua RAM kosong)
+void pmm_init_dynamic(void* memmap_entries, uint64_t entry_count) {
+    // 1. KUNCI SEMUA RAM (Tingkat Keamanan Maksimal)
     for (uint32_t i = 0; i < PMM_BITMAP_SIZE; i++) {
-        pmm_bitmap[i] = 0;
+        pmm_bitmap[i] = 0xFF;
     }
 
-    // 2. SANGAT PENTING: Kunci 72 Megabyte pertama (0x0 sampai 0x4800000).
-    // Melindungi Kernel, GUI, Modul Limine, DAN Aplikasi Ring 3 dari kanibalisme PMM!
+    struct limine_memmap_entry **entries = (struct limine_memmap_entry **)memmap_entries;
+    uint64_t highest_addr = 0;
+
+    // 2. BACA PETA LIMINE (Bebaskan bit hanya untuk RAM yang USABLE)
+    for (uint64_t i = 0; i < entry_count; i++) {
+        struct limine_memmap_entry *entry = entries[i];
+
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            uint64_t start = entry->base;
+            uint64_t end = start + entry->length;
+
+            if (end > highest_addr) highest_addr = end;
+
+            // Batasi mentok 4GB untuk OS 32-bit
+            if (start >= 0x100000000ULL) continue;
+            if (end > 0x100000000ULL) end = 0x100000000ULL;
+
+            for (uint64_t addr = start; addr < end; addr += PAGE_SIZE) {
+                bitmap_clear((uint32_t)(addr / PAGE_SIZE));
+            }
+        }
+    }
+
+    // 3. KUNCI KEMBALI 72 MB PERTAMA
     uint32_t pages_to_lock = 0x4800000 / PAGE_SIZE;
     for (uint32_t i = 0; i < pages_to_lock; i++) {
         bitmap_set(i);
     }
+
+    // Limine membuat kita tidak perlu lagi menebak total RAM!
+    real_total_ram = (uint32_t)highest_addr;
 }
 
 // Fungsi untuk meminta 1 blok RAM (4KB)
@@ -61,8 +90,6 @@ uint32_t pmm_get_used_ram(void) {
     }
     return used_pages * PAGE_SIZE; // Kembalikan dalam satuan Byte
 }
-
-uint32_t real_total_ram = 256 * 1024 * 1024; // Default 256 MB
 
 void pmm_set_total_ram(uint32_t size) {
     real_total_ram = size;
