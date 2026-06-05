@@ -3,7 +3,7 @@
 #include "zen.h"
 #include <stddef.h>
 
-extern void draw_png_image(const char* filename, int start_x, int start_y);
+// extern void draw_png_image(const char* filename, int start_x, int start_y);
 
 void kyuzen_fetch() {
     // Siapkan memori kosong untuk menampung nama CPU
@@ -166,20 +166,20 @@ void user_shell() {
                         else { print("Penggunaan: hapus [nama_file]\n"); }
                     }
                     // --- TAMBAHKAN PERINTAH VIEW DI SINI ---
-                    else if (strcmp(command, "view") == 0) {
-                        if (argument != NULL) {
-                            if (sys_file_exists(argument)) {
-                                print("Menggambar PNG ke layar...\n");
-                                // Panggil fungsi dari viewer.c, letakkan di koordinat X: 200, Y: 100
-                                draw_png_image(argument, 200, 100);
-                            } else {
-                                print("Error: File gambar tidak ditemukan!\n");
-                            }
-                        } 
-                        else { 
-                            print("Penggunaan: view [nama_file.png]\n"); 
-                        }
-                    }
+                    // else if (strcmp(command, "view") == 0) {
+                    //     if (argument != NULL) {
+                    //         if (sys_file_exists(argument)) {
+                    //             print("Menggambar PNG ke layar...\n");
+                    //             // Panggil fungsi dari viewer.c, letakkan di koordinat X: 200, Y: 100
+                    //             draw_png_image(argument, 200, 100);
+                    //         } else {
+                    //             print("Error: File gambar tidak ditemukan!\n");
+                    //         }
+                    //     } 
+                    //     else { 
+                    //         print("Penggunaan: view [nama_file.png]\n"); 
+                    //     }
+                    // }
                     // ---------------------------------------
                     else if (strcmp(command, "install_app") == 0) {
                         char dummy_bin[] = {

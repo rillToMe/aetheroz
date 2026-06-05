@@ -1,8 +1,8 @@
 #include "heap.h"
 #include "string.h"
 
-// KITA SIAPKAN KOLAM MEMORI 1 MEGABYTE! (1024 * 1024 Bytes)
-#define HEAP_SIZE (1024 * 1024 * 4)
+// KITA SIAPKAN KOLAM MEMORI 16 MEGABYTE!
+#define HEAP_SIZE (1024 * 1024 * 16)
 uint8_t heap_memory[HEAP_SIZE];
 
 heap_block_t* heap_head = NULL; // Kepala rantai memori

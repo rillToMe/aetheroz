@@ -24,7 +24,7 @@ extern void switch_to_user_mode(void (*user_func)());
 extern void user_login();
 extern void init_mouse();
 extern void kprint(const char* str);
-
+extern void kfs_delete_file(char* filename);
 // --- VARIABEL GLOBAL FRAMEBUFFER ---
 uint32_t* fb_ptr = NULL;
 uint32_t fb_width = 0;
@@ -84,8 +84,14 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
 
 void kwm_update_window(int win_id, uint32_t* app_buffer) {
     if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
-    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height * 4;
-    // Blok copy super cepat dari User Space ke Kernel Space
+    if(!kwm_windows[win_id].canvas || !app_buffer) return; // Cek NULL canvas
+
+    // PENTING: rep movsl menggunakan ECX sebagai hitungan DWORD (bukan byte)!
+    // Setiap iterasi movsl menyalin 4 byte (1 uint32/pixel).
+    // ECX = jumlah pixel = width * height  (BUKAN width * height * 4)
+    // Kesalahan: * 4 → menyalin 4× terlalu banyak → merusak heap!
+    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height; // dwords (pixels)
+
     uint32_t* dest = kwm_windows[win_id].canvas;
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
 }
@@ -312,13 +318,16 @@ void kernel_main(uint32_t magic, multiboot_info_t* mbi) {
             // FAILSAFE: Jangan buat file tanpa nama!
             if (k == 0) { kprint(" -> SKIP: Nama kosong (cek module_string di limine.conf)\n"); continue; }
 
-            if (!kfs_exists(clean_name)) {
-                int res = kfs_create_file(clean_name, (char*)mods[i].start, size);
-                if(res) kprint(" -> [SUKSES DITULIS KE DISK]\n");
-                else kprint(" -> [GAGAL DITULIS]\n");
-            } else {
-                kprint(" -> [FILE SUDAH ADA]\n");
+            // --- LOGIKA AUTO-UPDATE BARU ---
+            if (kfs_exists(clean_name)) {
+                kprint(" -> [UPDATE] Menghapus versi lama...\n");
+                kfs_delete_file(clean_name);
             }
+
+            int res = kfs_create_file(clean_name, (char*)mods[i].start, size);
+            if(res) kprint(" -> [SUKSES DITULIS KE DISK]\n");
+            else kprint(" -> [GAGAL DITULIS]\n");
+            // -------------------------------
         }
     } else {
         kprint("ERROR: LIMINE TIDAK MENGIRIM MODUL SAMA SEKALI!\n");

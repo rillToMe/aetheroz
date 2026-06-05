@@ -1,6 +1,15 @@
 # ==========================================
 # Kyuzen OS Build System
 # ==========================================
+#
+# Target penting:
+#   make          → Compile kernel (myos.bin)
+#   make apps     → Compile user_apps (fileman.elf, viewer.elf)
+#   make boot_image.iso → Build kernel + apps + ISO
+#   make run      → Build + Boot di QEMU
+#   make clean    → Bersihkan kernel objects
+#   make clean-apps → Bersihkan user_apps objects
+# ==========================================
 
 # Tools
 CC = clang
@@ -13,7 +22,8 @@ SRC_DIRS = arch/x86 drivers kernel fs apps
 INCLUDE_DIR = include
 
 # Flags (-I$(INCLUDE_DIR) penting agar #include "io.h" tetap jalan)
-CFLAGS = --target=i686-pc-none-elf -m32 -ffreestanding -O0 -Wall -Wextra -I$(INCLUDE_DIR)
+# --- Flags Compiler ---
+CFLAGS = --target=i686-pc-none-elf -m32 -ffreestanding -O2 -nostdlib -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INCLUDE_DIR)
 ASFLAGS = -f elf32
 LDFLAGS = -flavor gnu -T linker.ld -m elf_i386 --build-id=none -nostdlib
 
@@ -42,12 +52,28 @@ $(TARGET): $(OBJS)
 %.o: %.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-# Pastikan logo.png ada di baris pertama dan di perintah 'cp'
-boot_image.iso: $(TARGET) limine.conf logo.png fileman.elf
-	rm -rf iso_root  # <-- TAMBAHKAN BARIS INI UNTUK MEMBUNUH HANTU
+# --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
+# Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer
+.PHONY: apps
+apps:
+	$(MAKE) -C user_apps all
+
+# Shortcut: bangun ELF secara individual
+fileman.elf:
+	$(MAKE) -C user_apps fileman
+
+viewer.elf:
+	$(MAKE) -C user_apps viewer
+
+# Bersihkan hanya file objek user_apps (bukan ELF output)
+clean-apps:
+	$(MAKE) -C user_apps clean
+
+# ISO: tergantung pada kernel + ELF apps (auto-rebuild jika source berubah)
+boot_image.iso: $(TARGET) apps limine.conf logo.png
+	rm -rf iso_root
 	mkdir -p iso_root
-	# Tambahkan juga fileman.elf di dalam perintah copy ini
-	cp $(TARGET) limine.conf logo.png fileman.elf limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
+	cp $(TARGET) limine.conf logo.png fileman.elf viewer.elf limine/limine-bios.sys limine/limine-bios-cd.bin iso_root/
 	xorriso -as mkisofs -R -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table -o boot_image.iso iso_root/
 	./limine/limine.exe bios-install boot_image.iso
 

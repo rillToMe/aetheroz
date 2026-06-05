@@ -73,4 +73,7 @@ int sys_get_event(kyuzen_event_t* event_out);
 int sys_create_window(int x, int y, uint32_t width, uint32_t height);
 void sys_update_window(int win_id, uint32_t* buffer);
 void sys_destroy_window(int win_id);
+
+void* memcpy(void* dest, const void* src, uint32_t count);
+void* memset(void* dest, int val, uint32_t count);
 #endif

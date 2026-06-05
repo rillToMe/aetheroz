@@ -148,3 +148,22 @@ void sys_update_window(int win_id, uint32_t* buffer) {
 void sys_destroy_window(int win_id) {
     __asm__ volatile("int $0x80" : : "a"(32), "b"(win_id));
 }
+
+// --- FUNGSI STANDAR C (LIBC) UNTUK RING 3 ---
+
+__attribute__((weak)) void* memcpy(void* dest, const void* src, uint32_t count) {
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
+    for (uint32_t i = 0; i < count; i++) {
+        d[i] = s[i];
+    }
+    return dest;
+}
+
+__attribute__((weak)) void* memset(void* dest, int val, uint32_t count) {
+    uint8_t* d = (uint8_t*)dest;
+    for (uint32_t i = 0; i < count; i++) {
+        d[i] = (uint8_t)val;
+    }
+    return dest;
+}
