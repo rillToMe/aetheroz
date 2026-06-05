@@ -29,4 +29,7 @@ int paging_map_region(uint32_t vaddr);
 // Mengembalikan 1 jika sudah dipetakan, 0 jika belum.
 int paging_is_mapped(uint32_t addr);
 
+// --- VIRTUAL MEMORY MANAGER (VMM) ---
+void vmm_map_page(uint32_t vaddr, uint32_t paddr, uint32_t flags);
+int vmm_alloc_page(uint32_t vaddr, uint32_t flags);
 #endif

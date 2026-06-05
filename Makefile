@@ -79,7 +79,7 @@ boot_image.iso: $(TARGET) apps limine.conf logo.png
 
 # Tahap 4: Boot up QEMU (Sekarang pakai CD-ROM untuk Boot, dan Hard Disk untuk Data!)
 run: boot_image.iso
-	qemu-system-x86_64.exe -cpu max -m 256M -boot d -drive file=disk.img,format=raw,index=0,media=disk -drive file=boot_image.iso,media=cdrom,index=2
+	qemu-system-x86_64.exe -cpu max -m 512M -boot d -drive file=disk.img,format=raw,index=0,media=disk -drive file=boot_image.iso,media=cdrom,index=2
 
 # Bersihkan file hasil build
 clean:

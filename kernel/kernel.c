@@ -15,7 +15,6 @@
 #include "timer.h"
 #include "shell.h"
 
-
 extern void init_gdt();
 extern void init_idt();
 extern void pic_remap();
@@ -33,7 +32,7 @@ uint32_t fb_pitch = 0;
 
 // KANVAS BAYANGAN (BACKBUFFER) DI RAM
 // 1024x768 = 786.432 Piksel. Bootloader akan otomatis mengalokasikan RAM ini!
-uint32_t backbuffer[1024 * 768]; 
+uint32_t backbuffer[1366 * 768]; 
 
 // Fungsi Detektif untuk mencetak angka
 void kprint_num(uint32_t num) {
@@ -45,7 +44,7 @@ void kprint_num(uint32_t num) {
 
 // --- KANVAS HIBRIDA (CLI & GUI) ---
 uint32_t base_canvas[1024 * 768]; // Layer 0: Tempat Teks CLI / Login / Shell
-uint32_t backbuffer[1024 * 768];  // Layer 1: Kanvas Rakitan Compositor
+uint32_t backbuffer[1366 * 768];   // Layer 1: Kanvas Rakitan Compositor
 
 void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (x >= fb_width || y >= fb_height) return;

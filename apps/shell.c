@@ -88,7 +88,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduser:   : Menambahkan User baru(khusus root)\n- logout   : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n install_app : Instal app.bin\n- run    : Jalankan .bin\n- - jam    : Lihat waktu sekarang\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {

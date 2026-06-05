@@ -24,11 +24,9 @@ void pmm_init(void) {
         pmm_bitmap[i] = 0;
     }
 
-    // 2. SANGAT PENTING: Lindungi memori tempat Kernel kita sendiri berada!
-    // Kalau tidak, OS akan menimpa tubuhnya sendiri dan langsung crash.
-    // Kita kunci 4 Megabyte pertama (0x0 sampai 0x400000).
-    // Ini juga melindungi memori VGA dan IDT/GDT kita.
-    uint32_t pages_to_lock = 0x400000 / PAGE_SIZE;
+    // 2. SANGAT PENTING: Kunci 72 Megabyte pertama (0x0 sampai 0x4800000).
+    // Melindungi Kernel, GUI, Modul Limine, DAN Aplikasi Ring 3 dari kanibalisme PMM!
+    uint32_t pages_to_lock = 0x4800000 / PAGE_SIZE;
     for (uint32_t i = 0; i < pages_to_lock; i++) {
         bitmap_set(i);
     }
