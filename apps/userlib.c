@@ -30,8 +30,8 @@ uint32_t sys_file_size(char* filename) {
 int sys_read_file_to_buffer(char* filename, char* buffer) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(13), "b"((uint64_t)filename), "c"((uint64_t)buffer)); return (int)ret;
 }
-uint32_t sys_uptime() {
-    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(14)); return (uint32_t)ret;
+uint64_t sys_uptime() {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(14)); return ret;
 }
 uint32_t sys_total_ram() {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(15)); return (uint32_t)ret;

@@ -1,7 +1,8 @@
 #include "shell.h"
 #include "userlib.h"
 #include "zen.h"
-#include "timer.h"   // timer_sleep_ticks, TICKS()
+#include "timer.h"   // timer_sleep_ms() — hardware-agnostic sleep
+
 #include <stddef.h>
 
 // Global: RSP yang disimpan SEBELUM shell memanggil app via CALL.
@@ -210,7 +211,8 @@ void user_shell() {
                         print("Mata CPU ditutup. Tekan tombol apapun di keyboard untuk membangunkan.\n");
                         
                         // Jeda 2 detik agar user sempat membaca pesan
-                        timer_sleep_ticks(TICKS(2000));
+                        timer_sleep_ms(2000); // Jeda 2 detik
+
 
                         
                         clear_screen(); // Matikan/Bersihkan layar

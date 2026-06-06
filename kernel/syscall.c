@@ -112,10 +112,10 @@ void syscall_handler(registers_t *r) {
     else if (syscall_num == 13) { // sys_read_file_to_buffer
         ret_val = kfs_read_to_buffer((char*)r->rbx, (char*)r->rcx);
     }
-    else if (syscall_num == 14) { // sys_uptime
-        ret_val = timer_get_ticks();
-
+    else if (syscall_num == 14) { // sys_uptime → returns ms sejak boot (hardware-agnostic)
+        ret_val = timer_get_ms();
     }
+
     else if (syscall_num == 15) { // sys_total_ram
         ret_val = pmm_get_total_ram();
     }

@@ -1,16 +1,15 @@
 // ============================================================
-// kernel/timer_callbacks.c — Default Timer Subscribers
+// kernel/timer_callbacks.c — Default Timer Subscribers, Kyuzen OS
 //
-// Berisi 4 fungsi callback yang didaftarkan ke timer:
-//   1. cb_visual   — spinner + uptime display
-//   2. cb_cursor   — cursor blink
-//   3. cb_flush    — compositor frame flush
-//   4. cb_cpu_mark — CPU idle marker (tidak perlu logic, sudah di timer.c)
+// STANDAR: Semua timing di sini pakai timer_get_ms() + timestamp target.
+//   BUKAN: if (tick % 50 == 0) — fragile, tergantung TIMER_HZ
+//   TAPI:  if (now >= next_event) — hardware-agnostic, benar di semua Hz
 //
-// Untuk menambah fitur baru yang bergantung pada waktu,
-// cukup buat fungsi baru dan daftarkan di timer_callbacks_init().
-//
-// PENTING: Semua callback harus CEPAT. Jangan lakukan blocking I/O di sini.
+// Subscriber terdaftar:
+//   Slot 0 — cb_visual  : spinner + uptime HUD
+//   Slot 1 — cb_cursor  : cursor blink TTY
+//   Slot 2 — cb_flush   : compositor screen flush
+//   Slot 3-7 — reserved untuk driver/fitur baru
 // ============================================================
 
 #include <stdint.h>
@@ -25,54 +24,80 @@ extern void tty_blink_cursor(void);
 extern void compositor_flush(void);
 
 // ============================================================
-// CALLBACK 1: Visual HUD (spinner + uptime di pojok kanan atas)
+// CALLBACK 1: Visual HUD — spinner + uptime di pojok kanan atas
+//
+// Menggunakan timestamp ms, bukan modulo ticks.
+// Ini benar di 50Hz, 100Hz, 144Hz — tidak perlu diubah saat ganti TIMER_HZ.
 // ============================================================
+static uint64_t next_spinner_update = 0;  // ms target: kapan spinner ganti frame
+static uint64_t next_uptime_update  = 0;  // ms target: kapan uptime di-refresh
+
+
 static void cb_visual(uint32_t tick) {
+    (void)tick; // Tidak pakai raw tick — pakai ms timestamp
     if (fb_width == 0) return;
 
-    // Spinner — ganti frame setiap 0.2 detik (TICKS(200))
-    const char frames[] = {'|', '/', '-', '\\'};
-    char spin = frames[(tick / TICKS(200)) % 4];
-    draw_rect(fb_width - 18, 3, 10, 16, 0x1E1E1E);
-    draw_char(spin, fb_width - 18, 3, 0xFFFF00);
+    uint64_t now = timer_get_ms();
 
-    // Uptime string — update setiap 1 detik tepat
-    if (tick % TIMER_HZ != 0) return;
 
-    uint32_t total_sec = timer_get_seconds();
-    uint32_t sec  = total_sec % 60;
-    uint32_t min  = (total_sec / 60) % 60;
-    uint32_t hour = (total_sec / 3600);
+    // --- Spinner: ganti frame setiap 200ms ---
+    if (now >= next_spinner_update) {
+        next_spinner_update = now + 200;
 
-    char buf[] = "UPTIME: 00:00:00";
-    buf[8]  = (hour / 10) + '0';
-    buf[9]  = (hour % 10) + '0';
-    buf[11] = (min  / 10) + '0';
-    buf[12] = (min  % 10) + '0';
-    buf[14] = (sec  / 10) + '0';
-    buf[15] = (sec  % 10) + '0';
+        static uint8_t spin_frame = 0;
+        const char frames[] = {'|', '/', '-', '\\'};
+        spin_frame = (spin_frame + 1) % 4;
 
-    // 16 karakter x 8px/char = 128px + 8px margin = 136px wide
-    draw_rect(fb_width - 155, 3, 136, 16, 0x1E1E1E);
-    draw_string(buf, fb_width - 155, 3, 0x00FF00);
+        draw_rect(fb_width - 18, 3, 10, 16, 0x1E1E1E);
+        draw_char(frames[spin_frame], fb_width - 18, 3, 0xFFFF00);
+    }
+
+    // --- Uptime: update setiap 1000ms (1 detik tepat) ---
+    if (now >= next_uptime_update) {
+        next_uptime_update = now + 1000;
+
+        uint64_t total_sec = timer_get_seconds();
+
+        uint32_t sec  = total_sec % 60;
+        uint32_t min  = (total_sec / 60) % 60;
+        uint32_t hour = (total_sec / 3600);
+
+        char buf[] = "UPTIME: 00:00:00";
+        buf[8]  = (hour / 10) + '0';
+        buf[9]  = (hour % 10) + '0';
+        buf[11] = (min  / 10) + '0';
+        buf[12] = (min  % 10) + '0';
+        buf[14] = (sec  / 10) + '0';
+        buf[15] = (sec  % 10) + '0';
+
+        // 16 char × 8px/char = 128px + 8px margin = 136px wide
+        draw_rect(fb_width - 155, 3, 136, 16, 0x1E1E1E);
+        draw_string(buf, fb_width - 155, 3, 0x00FF00);
+    }
 }
 
 // ============================================================
-// CALLBACK 2: Cursor blink — setiap 0.5 detik
+// CALLBACK 2: Cursor blink — setiap 500ms
 // ============================================================
+static uint64_t next_cursor_blink = 0;
+
+
 static void cb_cursor(uint32_t tick) {
-    if (tick % TICKS(500) == 0) {
+    (void)tick;
+    uint64_t now = timer_get_ms();
+
+    if (now >= next_cursor_blink) {
+        next_cursor_blink = now + 500; // Blink setiap 500ms
         tty_blink_cursor();
     }
 }
 
 // ============================================================
-// CALLBACK 3: Screen flush — setiap tick (50fps max)
-// Catatan: compositor_flush() sudah cepat (memcpy + window blit).
-// Jika perlu hemat CPU, ubah ke: if (tick % 2 == 0) untuk 25fps.
+// CALLBACK 3: Screen flush — setiap tick (50fps max pada 50Hz)
+// Untuk hemat CPU, ubah ke setiap 2 tick (25fps): tambah timestamp check.
 // ============================================================
 static void cb_flush(uint32_t tick) {
-    (void)tick; // tick tidak dipakai, flush setiap frame
+    (void)tick;
     compositor_flush();
 }
 
@@ -80,8 +105,8 @@ static void cb_flush(uint32_t tick) {
 // ENTRY POINT — dipanggil dari kmain setelah init_timer()
 // ============================================================
 void timer_callbacks_init(void) {
-    timer_register(cb_visual);   // Slot 0: HUD display
-    timer_register(cb_cursor);   // Slot 1: cursor blink
-    timer_register(cb_flush);    // Slot 2: screen flush
-    // Slot 3-7: tersedia untuk driver/fitur baru
+    timer_register(cb_visual);   // Slot 0
+    timer_register(cb_cursor);   // Slot 1
+    timer_register(cb_flush);    // Slot 2
+    // Slot 3-7: tersedia untuk network polling, audio tick, animasi, dll
 }

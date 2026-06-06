@@ -36,7 +36,8 @@ uint32_t sys_file_size(char* filename);
 int sys_read_file_to_buffer(char* filename, char* buffer);
 int sys_create_file(char* filename, char* data, uint32_t size);
 
-uint32_t sys_uptime(void);
+uint64_t sys_uptime(void);
+
 uint32_t sys_total_ram(void);
 uint32_t sys_used_ram(void);
 

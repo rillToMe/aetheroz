@@ -1,5 +1,6 @@
 #include "userlib.h"
-#include "timer.h"   // Untuk TICKS() macro dan timer_sleep_ticks()
+#include "timer.h"   // timer_sleep_ms() — sleep berbasis ms, hardware-agnostic
+
 
 extern void user_shell();
 
@@ -100,7 +101,8 @@ void first_time_setup() {
     
     print("\n\n  [OK] File users.sys dibuat! Akun root dikonfigurasi.\n");
     print("  Sistem siap digunakan. Memuat halaman login...\n");
-    timer_sleep_ticks(TICKS(2000)); // Jeda 2 detik agar user sempat baca pesan
+    timer_sleep_ms(2000); // Jeda 2 detik
+
 
 }
 
@@ -149,13 +151,15 @@ void user_login() {
         uint32_t active_uid = 0;
         if (parse_auth(username, password, &active_uid)) {
             sys_set_uid(active_uid);
-            timer_sleep_ticks(TICKS(1000)); // Jeda 1 detik sebelum masuk shell
+            timer_sleep_ms(1000); // Jeda 1 detik sebelum masuk shell
+
 
             clear_screen();
             user_shell(); 
         } else {
             print("  [DENIED] Akses Ditolak: Username atau Password salah!\n");
-            timer_sleep_ticks(TICKS(2000)); // Jeda 2 detik agar user baca pesan error
+            timer_sleep_ms(2000); // Jeda 2 detik, tampilkan pesan error
+
 
         }
     }
