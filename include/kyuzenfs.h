@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#define FAT_FREE 0x0000 // Tanda Sektor Kosong
-#define FAT_EOF  0xFFFFFFFF // Tanda Akhir File/Rantai
+#define FAT_FREE 0x00000000 // Tanda Sektor Kosong (32-Bit)
+#define FAT_EOF  0xFFFFFFFF // Tanda Akhir File/Rantai (32-Bit)
 
 #define FLAG_EMPTY  0x00 // Slot kosong yang bisa ditimpa
 #define FLAG_FILE   0x01 // Ini adalah File biasa

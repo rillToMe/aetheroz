@@ -5,7 +5,12 @@ void clear_screen() { __asm__ volatile("int $0x80" : : "a"(2)); }
 uint32_t read_keyboard(char* buffer, uint32_t size) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(3), "b"((uint64_t)buffer), "c"((uint64_t)size)); return (uint32_t)ret;
 }
-void sys_yield() { __asm__ volatile("int $0x80" : : "a"(4)); }
+void sys_yield() { 
+    __asm__ volatile("int $0x80" : : "a"(4)); 
+    // Setelah iretq, IF=1 (interrupt aktif). Tidurkan CPU di LUAR interrupt handler.
+    // Timer/keyboard/mouse akan membangunkan CPU dari hlt.
+    __asm__ volatile("hlt"); 
+}
 
 void fs_format() { __asm__ volatile("int $0x80" : : "a"(5)); }
 void fs_list() { __asm__ volatile("int $0x80" : : "a"(6)); }
@@ -136,4 +141,17 @@ void sys_shutdown(void) {
 
 void sys_reboot(void) {
     __asm__ volatile("int $0x80" : : "a"(39));
+}
+
+uint32_t sys_get_total_disk(void) {
+    uint32_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(35)); return ret;
+}
+
+// UBAH NAMA FUNGSI INI JADI sys_get_used_disk
+uint32_t sys_get_used_disk(void) { 
+    uint32_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(36)); return ret;
+}
+
+uint32_t sys_get_cpu_usage(void) {
+    uint32_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(37)); return ret;
 }

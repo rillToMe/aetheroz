@@ -43,7 +43,7 @@ void create_task(void (*func)()) {
 
 // Tukar kendali CPU ke program selanjutnya
 void yield() {
-    if (task_count <= 1) return;
+    if (task_count <= 1) return; // Single-task: nothing to switch to
 
     int old_task = current_task;
     current_task = (current_task + 1) % task_count;

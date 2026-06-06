@@ -63,7 +63,6 @@ void draw_string(uint32_t* canvas, const char* str, int x, int y, uint32_t color
 }
 
 // --- FUNGSI UTAMA APP ---
-// --- FUNGSI UTAMA APP ---
 void main(void) {
     // Koordinat window di layar utama (dibutuhkan untuk hitungan mouse)
     int win_off_x = 200;
@@ -101,25 +100,28 @@ void main(void) {
             // --- A. BERSIHKAN KANVAS ---
             draw_rect(canvas, 0, 0, WIN_WIDTH, WIN_HEIGHT, BG_COLOR);
             
-            // Header / Judul Window & Tombol Tutup Pseudo
+            // Header / Judul Window & Tombol Tutup
             draw_rect(canvas, 0, 0, WIN_WIDTH, 24, 0xFF555555); // Bar judul
             draw_string(canvas, "Kyuzen Task Manager", 10, 4, TEXT_COLOR);
-            
-            // Menggambar Tombol Merah X (Pojok kanan atas, lebar 24, tinggi 24)
             draw_rect(canvas, WIN_WIDTH - 24, 0, 24, 24, 0xFFFF0000); 
             draw_string(canvas, "X", WIN_WIDTH - 16, 4, TEXT_COLOR);
 
-            // --- B. AMBIL DATA REAL & SIMULASI ---
+            // --- B. AMBIL DATA REAL DARI KERNEL OS LU ---
             
-            // Data RAM (Asli via syscall PMM OS Anda)
+            // RAM (Real, dikonversi dari Byte ke MB)
             uint32_t total_ram = sys_total_ram() / (1024 * 1024); 
             uint32_t used_ram = sys_used_ram() / (1024 * 1024);
 
-            // SIMULASI: Karena syscall asli CPU dan Disk belum dibuat, 
-            // kita jadikan 'sec' (detik) sebagai pengacak agar angkanya terus bergerak!
-            uint32_t cpu_usage = (sec * 27) % 100;        // Berubah acak 0-99%
-            uint32_t total_disk = 128; 
-            uint32_t used_disk = 24 + ((sec % 10) * 3);   // Bergerak naik turun dari 24 ke 51 MB
+            // CPU (Real, beban Scheduler)
+            uint32_t cpu_usage = sys_get_cpu_usage(); 
+
+            // DISK (Real KyuzenFS V3, dikonversi dari Byte ke MB)
+            uint32_t total_disk = sys_get_total_disk() / (1024 * 1024); 
+            uint32_t used_disk = sys_get_used_disk() / (1024 * 1024);   
+
+            // Pengaman kalau total nilainya 0 (biar gak error dibagi nol pas ngegambar bar)
+            if (total_ram == 0) total_ram = 1;
+            if (total_disk == 0) total_disk = 1;
 
             // --- C. GAMBAR ELEMEN UI ---
 
@@ -158,30 +160,24 @@ void main(void) {
             sys_kwm_update_window(win_id, canvas);
         }
 
-        // --- E. EVENT HANDLING (Dari Fileman) ---
+        // --- E. EVENT HANDLING ---
         if (sys_get_event(&ev)) {
-            // Tangkap gerakan mouse
             if (ev.type == EVENT_MOUSE_MOVE) {
                 mouse_x = ev.param1;
                 mouse_y = ev.param2;
             }
 
-            // Tangkap klik kiri mouse
             if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
                 if (ev.param3 != 0) mouse_x = ev.param3;
-
-                // Hitung koordinat klik relatif terhadap window taskmgr
                 int rel_x = mouse_x - win_off_x;
                 int rel_y = mouse_y - win_off_y;
 
-                // Cek area klik tombol X (lebar 24, tinggi 24, pojok kanan atas)
                 if (rel_x >= (WIN_WIDTH - 24) && rel_x <= WIN_WIDTH && 
                     rel_y >= 0 && rel_y <= 24) {
                     running = 0; // KELUAR!
                 }
             }
 
-            // Jika tekan ESC di keyboard
             if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27) { 
                 running = 0; 
             }

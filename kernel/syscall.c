@@ -39,6 +39,12 @@ extern uint32_t elf_load_file(char* filename);
 extern void get_cpu_string(char* buffer);
 extern uint32_t pmm_get_used_ram(void);
 extern uint32_t pmm_get_total_ram(void);
+extern uint32_t kfs_get_total_space(void);
+extern uint32_t kfs_get_used_space(void);
+extern uint32_t get_cpu_usage(void);
+// Counter: setiap kali sys_yield dipanggil, tambah counter ini.
+// Timer membaca dan mereset setiap tick untuk menentukan apakah CPU idle.
+volatile uint32_t yield_counter = 0;
 
 // Impor dari KWM (Kyuzen Window Manager)
 extern void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
@@ -75,7 +81,8 @@ void syscall_handler(registers_t *r) {
         ret_val = read_fs(&tty_node, 0, r->rcx, (uint8_t*)r->rbx);
     }
     else if (syscall_num == 4) { // sys_yield
-        yield();
+        yield_counter++;         // Tandai bahwa app sedang idle/menunggu
+        yield();                 // Context switch (atau return jika single-task)
     }
     else if (syscall_num == 5) { // sys_fs_format
         kfs_format();
@@ -256,6 +263,15 @@ void syscall_handler(registers_t *r) {
             : "memory"
         );
         __builtin_unreachable();
+    }
+    else if (syscall_num == 35) { // sys_get_total_disk
+        ret_val = kfs_get_total_space();
+    }
+    else if (syscall_num == 36) { // sys_get_used_disk
+        ret_val = kfs_get_used_space();
+    }
+    else if (syscall_num == 37) { // sys_get_cpu_usage
+        ret_val = get_cpu_usage();
     }
     else if (syscall_num == 38) { // sys_shutdown
         extern void acpi_poweroff(void);

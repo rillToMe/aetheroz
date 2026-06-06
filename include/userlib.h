@@ -90,4 +90,9 @@ void sys_kwm_destroy_window(int win_id);
 
 void sys_shutdown(void);
 void sys_reboot(void);
+
+//statistik hardware
+uint32_t sys_get_total_disk(void);
+uint32_t sys_get_used_disk(void); 
+uint32_t sys_get_cpu_usage(void);
 #endif

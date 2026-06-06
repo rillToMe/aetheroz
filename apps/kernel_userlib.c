@@ -60,12 +60,21 @@ uint32_t read_keyboard(char* buffer, uint32_t size) {
     uint32_t n = 0;
     while (n == 0) {
         n = read_fs(&tty_node, 0, size, (uint8_t*)buffer);
-        if (n == 0) yield();  // Tidak ada input → yield, jangan busy-spin
+        if (n == 0) {
+            // Tidurkan CPU sampai interrupt berikutnya (timer/keyboard).
+            // AMAN karena ini bukan di dalam interrupt handler.
+            __asm__ volatile("sti; hlt");
+        }
     }
     return n;
 }
 
-void sys_yield(void) { yield(); }
+void sys_yield(void) {
+    yield();  // Context switch jika multi-task
+    // Tidurkan CPU sampai interrupt berikutnya (timer/keyboard/mouse).
+    // AMAN: dipanggil langsung dari kernel code, BUKAN dari int $0x80 handler.
+    __asm__ volatile("sti; hlt");
+}
 
 // --- Filesystem ---
 void     fs_format(void)                { kfs_format(); }

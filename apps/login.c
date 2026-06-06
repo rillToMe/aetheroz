@@ -99,7 +99,7 @@ void first_time_setup() {
     
     print("\n\n  [OK] File users.sys dibuat! Akun root dikonfigurasi.\n");
     print("  Sistem siap digunakan. Memuat halaman login...\n");
-    for(int i = 0; i < 2000000; i++) sys_yield();
+    for(int i = 0; i < 100; i++) sys_yield(); // ~2 detik pada 50Hz
 }
 
 void user_login() {
@@ -147,12 +147,12 @@ void user_login() {
         uint32_t active_uid = 0;
         if (parse_auth(username, password, &active_uid)) {
             sys_set_uid(active_uid);
-            for(int i = 0; i < 500000; i++) sys_yield();
+            for(int i = 0; i < 50; i++) sys_yield(); // ~1 detik pada 50Hz
             clear_screen();
             user_shell(); 
         } else {
             print("  [DENIED] Akses Ditolak: Username atau Password salah!\n");
-            for(int i = 0; i < 1500000; i++) sys_yield();
+            for(int i = 0; i < 100; i++) sys_yield(); // ~2 detik pada 50Hz
         }
     }
 }
