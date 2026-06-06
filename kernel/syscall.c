@@ -82,8 +82,9 @@ void syscall_handler(registers_t *r) {
         ret_val = read_fs(&tty_node, 0, r->rcx, (uint8_t*)r->rbx);
     }
     else if (syscall_num == 4) { // sys_yield
-        yield_counter++;         // Tandai bahwa app sedang idle/menunggu
-        yield();                 // Context switch (atau return jika single-task)
+        yield_counter++; // Tandai CPU idle untuk CPU usage tracker
+        // Preemptive: timer IRQ0 akan switch otomatis saat quantum habis
+        // Tidak perlu explicit switch di sini
     }
     else if (syscall_num == 5) { // sys_fs_format
         kfs_format();

@@ -94,7 +94,7 @@ clean-apps:
 
 # ISO: tergantung pada kernel + ELF apps (auto-rebuild jika source berubah)
 # Tahap 3: Pembuatan ISO Hybrid (BIOS + UEFI 64-bit)
-boot_image.iso: $(TARGET) apps limine.conf logo.png
+boot_image.iso: $(TARGET) apps limine.conf logo.png kyuzen.png
 	rm -rf iso_root
 	mkdir -p iso_root
 	# Buat folder EFI untuk standar boot UEFI 64-bit
@@ -102,7 +102,7 @@ boot_image.iso: $(TARGET) apps limine.conf logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf logo.png kyuzen.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \

@@ -72,12 +72,17 @@ uint32_t read_keyboard(char* buffer, uint32_t size) {
     return n;
 }
 
+// yield_counter didefinisikan di kernel/syscall.c, dipakai timer.c untuk CPU idle tracking
+extern volatile uint32_t yield_counter;
+
 void sys_yield(void) {
-    yield();  // Context switch jika multi-task
-    // Tidurkan CPU sampai interrupt berikutnya (timer/keyboard/mouse).
-    // AMAN: dipanggil langsung dari kernel code, BUKAN dari int $0x80 handler.
+    yield_counter++; // Hint ke CPU idle tracker bahwa kita sedang menunggu
+    // Tidurkan CPU sampai interrupt berikutnya (timer akan preempt otomatis)
+    // AMAN: dipanggil dari kernel code, bukan dari dalam ISR.
     __asm__ volatile("sti; hlt");
 }
+
+
 
 // --- Filesystem ---
 void     fs_format(void)                { kfs_format(); }
