@@ -81,6 +81,20 @@ void sys_destroy_window(int win_id) {
     __asm__ volatile("int $0x80" : : "a"(32), "b"((uint64_t)win_id));
 }
 
+int sys_kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(30), "b"(x), "c"(y), "d"(width), "S"(height));
+    return ret;
+}
+
+void sys_kwm_update_window(int win_id, uint32_t* buffer) {
+    __asm__ volatile("int $0x80" : : "a"(31), "b"(win_id), "c"(buffer));
+}
+
+void sys_kwm_destroy_window(int win_id) {
+    __asm__ volatile("int $0x80" : : "a"(32), "b"(win_id));
+}
+
 // sys_exec: Load app baru, replace current app, TIDAK PERNAH kembali ke caller.
 // OS yang free RAM lama, load app baru, lalu lompat langsung ke entry-nya.
 __attribute__((noreturn))
@@ -114,4 +128,12 @@ __attribute__((weak)) void* memset(void* dest, int val, size_t count) {
     uint8_t* d = (uint8_t*)dest;
     for (size_t i = 0; i < count; i++) d[i] = (uint8_t)val;
     return dest;
+}
+
+void sys_shutdown(void) {
+    __asm__ volatile("int $0x80" : : "a"(38));
+}
+
+void sys_reboot(void) {
+    __asm__ volatile("int $0x80" : : "a"(39));
 }

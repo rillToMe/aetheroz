@@ -111,3 +111,24 @@ void ata_write_sector(uint32_t lba, uint8_t* buffer) {
     ata_delay_400ns();
     ata_wait_bsy();  // Tunggu flush selesai
 }
+
+// Fungsi untuk menanyakan ukuran asli Hard Disk ke Hardware QEMU via ATA IDENTIFY
+uint32_t ata_get_total_sectors(void) {
+    outb(0x1F6, 0xE0); // Pilih Drive Master (LBA mode)
+    outb(0x1F7, 0xEC); // Kirim perintah ATA IDENTIFY
+    
+    uint8_t status = inb(0x1F7);
+    if (status == 0) return 0; // Drive tidak terdeteksi
+    
+    while ((inb(0x1F7) & 0x80) != 0); // Tunggu sampai disk tidak sibuk (BSY hilang)
+    while ((inb(0x1F7) & 0x08) == 0); // Tunggu Data Request (DRQ) siap
+    
+    uint16_t buffer[256];
+    for (int i = 0; i < 256; i++) {
+        buffer[i] = inw(0x1F0); // Baca 256 word data informasi hardware
+    }
+    
+    // Total kapasitas sektor (LBA28) berada di index 60 dan 61
+    uint32_t total_sectors = *((uint32_t*)&buffer[60]);
+    return total_sectors;
+}

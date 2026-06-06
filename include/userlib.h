@@ -83,4 +83,11 @@ void sys_destroy_window(int win_id);
 
 void* memcpy(void* dest, const void* src, size_t count);
 void* memset(void* dest, int val, size_t count);
+
+int sys_kwm_create_window(int x, int y, uint32_t width, uint32_t height);
+void sys_kwm_update_window(int win_id, uint32_t* buffer);
+void sys_kwm_destroy_window(int win_id);
+
+void sys_shutdown(void);
+void sys_reboot(void);
 #endif

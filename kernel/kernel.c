@@ -264,6 +264,10 @@ void kernel_main(void) {
     init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
     pic_remap(); 
+
+    extern void pci_probe(void);
+    pci_probe();
+    
     init_timer(50); 
     init_mouse();
     init_keyboard();
@@ -337,4 +341,4 @@ void switch_to_user_mode(void (*user_func)()) {
     // Ring 3 belum diimplementasikan — panggil langsung di Ring 0
     // (Syscall via int $0x80 tetap bekerja karena IDT sudah di-setup)
     if (user_func) user_func();
-}
+}

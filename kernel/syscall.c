@@ -257,6 +257,15 @@ void syscall_handler(registers_t *r) {
         );
         __builtin_unreachable();
     }
+    else if (syscall_num == 38) { // sys_shutdown
+        extern void acpi_poweroff(void);
+        acpi_poweroff();
+    }
+    else if (syscall_num == 39) { // sys_reboot
+        extern void system_reboot(void);
+        system_reboot();
+    }
+    
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;

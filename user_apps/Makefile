@@ -53,19 +53,21 @@ FILEMAN_ELF = $(OUT_DIR)/fileman.elf
 VIEWER_ELF  = $(OUT_DIR)/viewer.elf
 CLOCK_ELF   = $(OUT_DIR)/clock.elf
 CALC_ELF    = $(OUT_DIR)/calc.elf
+TASKMGR_ELF = $(OUT_DIR)/taskmgr.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
-.PHONY: all fileman viewer clock clean
+.PHONY: all fileman viewer clock calc taskmgr clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF)
 	@echo ""
 	@echo "[USER APPS] Build selesai! Semua app di virtual 0x4000000"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
 	@echo "  viewer.elf  → $(VIEWER_ELF)"
 	@echo "  clock.elf   → $(CLOCK_ELF)"
 	@echo "  calc.elf    → $(CALC_ELF)"
+	@echo "  taskmgr.elf → $(TASKMGR_ELF)"
 	@echo "  OS akan otomatis alokasi physical RAM saat dijalankan."
 
 # ==========================================================
@@ -132,9 +134,23 @@ $(CALC_ELF): calc.o $(USERLIB_OBJ)
 calc: $(CALC_ELF)
 
 # ==========================================================
+# TaskManager — Task Manager GUI (virtual 0x4000000, phys by OS)
+# ==========================================================
+taskmgr.o: taskmgr.c
+	@echo "[CC] Mengompilasi taskmgr.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ)
+	@echo "[LD] Linking taskmgr.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] taskmgr.elf siap!"
+
+taskmgr: $(TASKMGR_ELF)
+
+# ==========================================================
 # CLEAN
 # ==========================================================
 clean:
 	@echo "[CLEAN] Membersihkan file objek user_apps..."
-	rm -f fileman.o viewer.o clock.o calc.o $(USERLIB_OBJ)
+	rm -f fileman.o viewer.o clock.o calc.o taskmgr.o $(USERLIB_OBJ)
 	@echo "[CLEAN] Selesai."

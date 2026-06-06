@@ -111,4 +111,11 @@ void print_num(uint32_t num) {
     print(&buf[i + 1]);
 }
 
+void sys_shutdown(void) {
+    __asm__ volatile("int $0x80" : : "a"(38));
+}
+
+void sys_reboot(void) {
+    __asm__ volatile("int $0x80" : : "a"(39));
+}
 // strcmp sudah ada di kernel/string.c

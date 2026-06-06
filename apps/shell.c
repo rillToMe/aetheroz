@@ -91,7 +91,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {
@@ -193,6 +193,37 @@ void user_shell() {
                         print("Aplikasi app.bin berhasil di-install ke Hard Disk!\n");
                     }
                     else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
+                    }
+                    else if (strcmp(command, "shutdown") == 0) {
+                        print("Mematikan Kyuzen OS...\n");
+                        sys_shutdown();
+                    }
+                    // Perintah RESTART
+                    else if (strcmp(command, "restart") == 0) {
+                        print("Merestart Kyuzen OS...\n");
+                        sys_reboot();
+                    }
+                    // Perintah SLEEP (Standby Mode)
+                    else if (strcmp(command, "sleep") == 0) {
+                        print("Sistem memasuki mode Sleep...\n");
+                        print("Mata CPU ditutup. Tekan tombol apapun di keyboard untuk membangunkan.\n");
+                        
+                        // Jeda sebentar agar user sempat membaca pesan
+                        for(volatile int w = 0; w < 50000000; w++); 
+                        
+                        clear_screen(); // Matikan/Bersihkan layar
+                        
+                        char dummy[2];
+                        // Terus berputar sampai ada tombol keyboard yang ditekan
+                        while (read_keyboard(dummy, 1) == 0) {
+                            // Ini SANGAT PENTING: Sys_yield membuat beban CPU drop ke 0%!
+                            // OS lu benar-benar "tidur" dan tidak membuang listrik/resource QEMU.
+                            sys_yield(); 
+                        }
+                        
+                        // Bangun!
+                        clear_screen();
+                        kyuzen_fetch(); // Tampilkan neofetch OS lu sebagai sapaan pagi
                     }
                     // else if (strcmp(command, "jam") == 0) {
                     //     // Launch clock.elf — jam digital real-time dengan GUI window
