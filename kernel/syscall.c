@@ -51,7 +51,8 @@ extern void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 extern void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 
-extern uint32_t timer_ticks;
+#include "timer.h"  // timer_get_ticks(), timer_get_cpu_usage()
+
 int current_uid = 0; // Definisi global — UID proses yang sedang berjalan
 
 // ========================================================
@@ -112,7 +113,8 @@ void syscall_handler(registers_t *r) {
         ret_val = kfs_read_to_buffer((char*)r->rbx, (char*)r->rcx);
     }
     else if (syscall_num == 14) { // sys_uptime
-        ret_val = timer_ticks;
+        ret_val = timer_get_ticks();
+
     }
     else if (syscall_num == 15) { // sys_total_ram
         ret_val = pmm_get_total_ram();

@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "userlib.h"
 #include "zen.h"
+#include "timer.h"   // timer_sleep_ticks, TICKS()
 #include <stddef.h>
 
 // Global: RSP yang disimpan SEBELUM shell memanggil app via CALL.
@@ -208,8 +209,9 @@ void user_shell() {
                         print("Sistem memasuki mode Sleep...\n");
                         print("Mata CPU ditutup. Tekan tombol apapun di keyboard untuk membangunkan.\n");
                         
-                        // Jeda sebentar agar user sempat membaca pesan
-                        for(volatile int w = 0; w < 50000000; w++); 
+                        // Jeda 2 detik agar user sempat membaca pesan
+                        timer_sleep_ticks(TICKS(2000));
+
                         
                         clear_screen(); // Matikan/Bersihkan layar
                         

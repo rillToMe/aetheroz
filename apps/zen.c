@@ -1,6 +1,7 @@
 #include "zen.h"
-#include <stdint.h>  // TAMBAHKAN BARIS INI!
+#include <stdint.h>
 #include "userlib.h"
+#include "timer.h"   // timer_sleep_ticks, TICKS()
 
 // 2. Impor Syscall Memori & FS yang baru kita buat di kernel.c
 extern void* sys_alloc(uint32_t size);
@@ -71,7 +72,8 @@ void zen_main(char* filename) {
                 
                 if (new_buffer == 0) {
                     print("\n[FATAL] RAM Habis, auto-expand gagal!\n");
-                    for (volatile int w = 0; w < 90000000; w++); 
+                    timer_sleep_ticks(TICKS(3000)); // Jeda 3 detik agar user baca pesan error
+
                     break; 
                 }
                 

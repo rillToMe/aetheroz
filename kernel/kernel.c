@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "timer.h"  // Unified timer API
 #include "limine.h" // <-- Kembali menggunakan Limine Native!
 #define FONT8x16_IMPLEMENTATION 
 #include "font8x16.h"
@@ -268,7 +269,9 @@ void kernel_main(void) {
     extern void pci_probe(void);
     pci_probe();
     
-    init_timer(50); 
+    init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
+    timer_callbacks_init();    // Daftarkan subscriber default (visual, cursor, flush)
+
     init_mouse();
     init_keyboard();
     init_tty(); 

@@ -29,9 +29,11 @@ extern uint32_t   kfs_get_file_size(char* filename);
 extern int        kfs_read_to_buffer(char* filename, char* out_buffer);
 extern int        kfs_create_file(char* filename, char* data, uint32_t size);
 
-extern uint32_t   timer_ticks;
+#include "timer.h"    // Unified timer API (timer_get_ticks, timer_sleep_ticks, TICKS)
+
 extern uint32_t   pmm_get_total_ram(void);
 extern uint32_t   pmm_get_used_ram(void);
+
 extern int        current_uid;
 
 // ============================================================
@@ -93,7 +95,8 @@ void     sys_free(void* ptr)                                 { kfree(ptr); }
 void*    sys_realloc(void* ptr, size_t old_sz, size_t new_sz){ return krealloc(ptr, old_sz, new_sz); }
 
 // --- Info Sistem ---
-uint32_t sys_uptime(void)    { return timer_ticks; }
+uint32_t sys_uptime(void)    { return timer_get_ticks(); }  // Gunakan API, bukan extern langsung
+
 uint32_t sys_total_ram(void) { return pmm_get_total_ram(); }
 uint32_t sys_used_ram(void)  { return pmm_get_used_ram(); }
 
