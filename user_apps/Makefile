@@ -47,6 +47,7 @@ APP_BASE = 0x4000000
 
 # --- File Objek Bersama ---
 USERLIB_OBJ = userlib.o
+LIBGUI_OBJ  = libgui.o
 
 # --- Target ELF Akhir ---
 FILEMAN_ELF = $(OUT_DIR)/fileman.elf
@@ -54,13 +55,14 @@ VIEWER_ELF  = $(OUT_DIR)/viewer.elf
 CLOCK_ELF   = $(OUT_DIR)/clock.elf
 CALC_ELF    = $(OUT_DIR)/calc.elf
 TASKMGR_ELF = $(OUT_DIR)/taskmgr.elf
+NOTEPAD_ELF = $(OUT_DIR)/notepad.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
-.PHONY: all fileman viewer clock calc taskmgr clean
+.PHONY: all fileman viewer clock calc taskmgr notepad clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF)
 	@echo ""
 	@echo "[USER APPS] Build selesai! Semua app di virtual 0x4000000"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
@@ -68,6 +70,7 @@ all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF)
 	@echo "  clock.elf   → $(CLOCK_ELF)"
 	@echo "  calc.elf    → $(CALC_ELF)"
 	@echo "  taskmgr.elf → $(TASKMGR_ELF)"
+	@echo "  notepad.elf → $(NOTEPAD_ELF)"
 	@echo "  OS akan otomatis alokasi physical RAM saat dijalankan."
 
 # ==========================================================
@@ -78,15 +81,22 @@ $(USERLIB_OBJ): $(APPS_DIR)/userlib.c
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
 # ==========================================================
+# COMPILE LIBGUI — Kyuzen GUI Framework
+# ==========================================================
+$(LIBGUI_OBJ): $(APPS_DIR)/libgui.c
+	@echo "[CC] Mengompilasi libgui (GUI Framework)..."
+	$(CC) $(CFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
+
+# ==========================================================
 # FILEMAN — File Manager (virtual 0x4000000, phys by OS)
 # ==========================================================
 fileman.o: fileman.c
 	@echo "[CC] Mengompilasi fileman.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(FILEMAN_ELF): fileman.o $(USERLIB_OBJ)
+$(FILEMAN_ELF): fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[LD] Linking fileman.elf ke $(APP_BASE) (physical RAM dicari otomatis)..."
-	$(LD) $(LDFLAGS) fileman.o $(USERLIB_OBJ) -o $@
+	$(LD) $(LDFLAGS) fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
 	@echo "[OK] fileman.elf siap!"
 
 fileman: $(FILEMAN_ELF)
@@ -98,9 +108,9 @@ viewer.o: viewer.c
 	@echo "[CC] Mengompilasi viewer.c (O2)..."
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
-$(VIEWER_ELF): viewer.o $(USERLIB_OBJ)
+$(VIEWER_ELF): viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[LD] Linking viewer.elf ke $(APP_BASE) (physical RAM dicari otomatis)..."
-	$(LD) $(LDFLAGS) viewer.o $(USERLIB_OBJ) -o $@
+	$(LD) $(LDFLAGS) viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
 	@echo "[OK] viewer.elf siap!"
 
 viewer: $(VIEWER_ELF)
@@ -112,9 +122,9 @@ clock.o: clock.c
 	@echo "[CC] Mengompilasi clock.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(CLOCK_ELF): clock.o $(USERLIB_OBJ)
+$(CLOCK_ELF): clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[LD] Linking clock.elf ke $(APP_BASE) (physical RAM dicari otomatis)..."
-	$(LD) $(LDFLAGS) clock.o $(USERLIB_OBJ) -o $@
+	$(LD) $(LDFLAGS) clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
 	@echo "[OK] clock.elf siap!"
 
 clock: $(CLOCK_ELF)
@@ -126,9 +136,9 @@ calc.o: calc.c
 	@echo "[CC] Mengompilasi calc.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(CALC_ELF): calc.o $(USERLIB_OBJ)
+$(CALC_ELF): calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[LD] Linking calc.elf ke $(APP_BASE)..."
-	$(LD) $(LDFLAGS) calc.o $(USERLIB_OBJ) -o $@
+	$(LD) $(LDFLAGS) calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
 	@echo "[OK] calc.elf siap!"
 
 calc: $(CALC_ELF)
@@ -140,17 +150,31 @@ taskmgr.o: taskmgr.c
 	@echo "[CC] Mengompilasi taskmgr.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ)
+$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[LD] Linking taskmgr.elf ke $(APP_BASE)..."
-	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) -o $@
+	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
 	@echo "[OK] taskmgr.elf siap!"
 
 taskmgr: $(TASKMGR_ELF)
+
+# ==========================================================
+# NOTEPAD — Text Editor GUI (virtual 0x4000000, phys by OS)
+# ==========================================================
+notepad.o: notepad.c
+	@echo "[CC] Mengompilasi notepad.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(NOTEPAD_ELF): notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
+	@echo "[LD] Linking notepad.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+	@echo "[OK] notepad.elf siap!"
+
+notepad: $(NOTEPAD_ELF)
 
 # ==========================================================
 # CLEAN
 # ==========================================================
 clean:
 	@echo "[CLEAN] Membersihkan file objek user_apps..."
-	rm -f fileman.o viewer.o clock.o calc.o taskmgr.o $(USERLIB_OBJ)
+	rm -f fileman.o viewer.o clock.o calc.o taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[CLEAN] Selesai."

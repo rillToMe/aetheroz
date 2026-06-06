@@ -85,6 +85,10 @@ void sys_update_window(int win_id, uint32_t* buffer) {
 void sys_destroy_window(int win_id) {
     __asm__ volatile("int $0x80" : : "a"(32), "b"((uint64_t)win_id));
 }
+void sys_get_window_pos(int win_id, int* out_x, int* out_y) {
+    // Syscall 40: rbx=win_id, rcx=out_x ptr, rdx=out_y ptr
+    __asm__ volatile("int $0x80" : : "a"(40), "b"((uint64_t)win_id), "c"((uint64_t)out_x), "d"((uint64_t)out_y));
+}
 
 int sys_kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
     int ret;

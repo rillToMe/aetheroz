@@ -284,8 +284,12 @@ void syscall_handler(registers_t *r) {
         extern void system_reboot(void);
         system_reboot();
     }
-    
+    else if (syscall_num == 40) { // sys_get_window_pos
+        // rbx = win_id, rcx = int32_t* out_x, rdx = int32_t* out_y
+        extern void kwm_get_window_pos(int, int32_t*, int32_t*);
+        kwm_get_window_pos((int)r->rbx, (int32_t*)r->rcx, (int32_t*)r->rdx);
+    }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;
-}
+}

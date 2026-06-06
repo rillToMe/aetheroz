@@ -135,12 +135,130 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
 void kwm_destroy_window(int win_id) {
     if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
     if (kwm_windows[win_id].canvas) kfree(kwm_windows[win_id].canvas);
-    kwm_windows[win_id].active = 0; 
+    kwm_windows[win_id].active = 0;
+}
+
+// Kembalikan posisi window terkini (setelah drag, dsb) ke app via pointer.
+// App harus panggil ini setiap kali ingin konversi koordinat layar → koordinat lokal window.
+void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) {
+        if (out_x) *out_x = 0;
+        if (out_y) *out_y = 0;
+        return;
+    }
+    if (out_x) *out_x = kwm_windows[win_id].x;
+    if (out_y) *out_y = kwm_windows[win_id].y;
+}
+
+// ============================================================
+// KWM V2 — Drag & Drop + Z-Index Dinamis
+// ============================================================
+
+// State global untuk drag session yang sedang aktif
+static int     dragged_win_id = -1;  // -1 = tidak ada drag
+static int32_t drag_offset_x  = 0;   // Offset klik dalam window (mencegah window "loncat")
+static int32_t drag_offset_y  = 0;
+
+// Bawa window ke depan (Z-index tertinggi)
+// Dipanggil saat user klik pada window manapun.
+void kwm_bring_to_front(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
+    kwm_windows[win_id].z_index = next_z_index++;
+}
+
+// Intercept mouse event sebelum dikirim ke user-space.
+//
+// Dipanggil dari mouse_handler() SEBELUM push_event().
+// Return: 1 = event "dimakan" oleh KWM (jangan kirim ke app)
+//         0 = teruskan event ke app seperti biasa
+//
+// Params:
+//   mouse_px, mouse_py  = posisi kursor saat ini
+//   left_down = 1 saat tombol kiri baru ditekan (edge detect)
+//   left_up   = 1 saat tombol kiri baru dilepas (edge detect)
+int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
+                      uint8_t left_down, uint8_t left_up) {
+
+    // 1. Mouse Up — akhiri drag session
+    if (left_up) {
+        dragged_win_id = -1;
+        return 0; // Kirim event "release" ke app juga
+    }
+
+    // 2. Sedang dalam Drag — update posisi window mengikuti kursor
+    if (dragged_win_id != -1) {
+        int32_t new_x = mouse_px - drag_offset_x;
+        int32_t new_y = mouse_py - drag_offset_y;
+
+        // Clamp: pastikan window tidak keluar layar
+        if (new_x < 0) new_x = 0;
+        if (new_y < 0) new_y = 0;
+        if (new_x + (int32_t)kwm_windows[dragged_win_id].width  > (int32_t)fb_width)
+            new_x = (int32_t)fb_width  - (int32_t)kwm_windows[dragged_win_id].width;
+        if (new_y + (int32_t)kwm_windows[dragged_win_id].height > (int32_t)fb_height)
+            new_y = (int32_t)fb_height - (int32_t)kwm_windows[dragged_win_id].height;
+
+        kwm_windows[dragged_win_id].x = new_x;
+        kwm_windows[dragged_win_id].y = new_y;
+        return 1; // Konsumsi event — jangan sampai app salah deteksi klik
+    }
+
+    // 3. Mouse Down — hit-test, Z-bring-to-front, cek title bar drag
+    if (left_down) {
+        int highest_z  = -1;
+        int target_win = -1;
+
+        // Cari window paling atas yang terkena klik (iterasi semua, ambil z_index tertinggi)
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            if (!kwm_windows[i].active) continue;
+            int32_t wx  = kwm_windows[i].x;
+            int32_t wy  = kwm_windows[i].y;
+            int32_t ww  = (int32_t)kwm_windows[i].width;
+            int32_t wh  = (int32_t)kwm_windows[i].height;
+
+            if (mouse_px >= wx && mouse_px < wx + ww &&
+                mouse_py >= wy && mouse_py < wy + wh) {
+                if ((int)kwm_windows[i].z_index > highest_z) {
+                    highest_z  = (int)kwm_windows[i].z_index;
+                    target_win = i;
+                }
+            }
+        }
+
+        if (target_win != -1) {
+            // Angkat window yang diklik ke paling depan
+            kwm_bring_to_front(target_win);
+
+            // Zona Close Button: 40px terakhir dari kanan title bar
+            // KWM HARUS membiarkan klik di sini lolos ke app!
+            int32_t close_btn_x = kwm_windows[target_win].x
+                                  + (int32_t)kwm_windows[target_win].width - 40;
+
+            // Cek apakah klik berada di Drag Zone Title Bar:
+            //   - Vertikal: 24 pixel teratas window
+            //   - Horizontal: BUKAN area close button (kiri dari close_btn_x)
+            if (mouse_py >= kwm_windows[target_win].y &&
+                mouse_py <  kwm_windows[target_win].y + 24 &&
+                mouse_px <  close_btn_x) {
+                // Area draggable — mulai drag session
+                dragged_win_id = target_win;
+                drag_offset_x  = mouse_px - kwm_windows[target_win].x;
+                drag_offset_y  = mouse_py - kwm_windows[target_win].y;
+                return 1; // Konsumsi — ini drag, bukan klik
+            }
+            // Klik di close button atau body window — teruskan ke app
+            return 0;
+        }
+
+    }
+
+    return 0; // Klik di area kosong — teruskan
 }
 
 extern int32_t mouse_x;
 extern int32_t mouse_y;
 extern const uint8_t cursor_bitmap[16][12];
+
 
 void compositor_flush() {
     if (fb_width == 0) return;

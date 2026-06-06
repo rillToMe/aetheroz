@@ -41,9 +41,11 @@ LDFLAGS = -flavor gnu -T linker.ld -m elf_x86_64 --build-id=none -nostdlib
 C_SOURCES_RAW = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 
-# Exclude apps/userlib.c — file user-space (berisi int $0x80), dikompilasi
-# secara terpisah oleh user_apps/Makefile, BUKAN bagian dari kernel Ring 0.
-C_SOURCES = $(filter-out apps/userlib.c,$(C_SOURCES_RAW))
+# Exclude file user-space — dikompilasi terpisah oleh user_apps/Makefile,
+# BUKAN bagian dari kernel Ring 0 (myos.bin).
+#   apps/userlib.c  → berisi int $0x80 syscall wrappers
+#   apps/libgui.c   → GUI framework (mendefinisikan font8x16, dll)
+C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c,$(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
@@ -88,6 +90,9 @@ calc.elf:
 taskmgr.elf:
 	$(MAKE) -C user_apps taskmgr
 
+notepad.elf:
+	$(MAKE) -C user_apps notepad
+
 # Bersihkan hanya file objek user_apps (bukan ELF output)
 clean-apps:
 	$(MAKE) -C user_apps clean
@@ -102,7 +107,7 @@ boot_image.iso: $(TARGET) apps limine.conf logo.png kyuzen.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf logo.png kyuzen.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf logo.png kyuzen.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \

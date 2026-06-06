@@ -1,142 +1,43 @@
 // ============================================================
-// KYUZEN OS — CALCULATOR APP
-// Kalkulator GUI dengan operasi dasar: +, -, ×, ÷
-// Window: 320×420 px
+// calc.c — Kyuzen Calculator App (libgui standard)
+// Kalkulator GUI dengan operasi: +, -, ×, ÷, %, +/-
 // ============================================================
 #include "userlib.h"
-#define FONT8x16_IMPLEMENTATION
-#include "font8x16.h"
+#include "libgui.h"
 
-// --- Ukuran & posisi window ---
-static int win_id  = -1;
-static int win_w   = 320;
-static int win_h   = 420;
-static uint32_t* canvas = 0;
+// --- Ukuran ---
+#define WIN_W  320
+#define WIN_H  450
 
-// --- State Kalkulator ---
-static double  accumulator = 0;   // hasil operasi sebelumnya
-static double  input       = 0;   // angka yang sedang diketik
-static int     op          = 0;   // 0=none, 1=+, 2=-, 3=*, 4=/
-static int     has_input   = 0;   // apakah user sedang mengetik angka baru
-static int     decimal     = 0;   // apakah sedang mengetik desimal
-static int     dec_place   = 1;   // 10, 100, 1000, ...
-static int     just_result = 0;   // flag: baru saja tekan =
+// --- Warna ---
+#define COL_BG      0x1A1A2E
+#define COL_DISPLAY 0x16213E
+#define COL_BTN_NUM 0x0F3460
+#define COL_BTN_OP  0xE94560
+#define COL_BTN_EQ  0x533483
+#define COL_BTN_CLR 0x111122
+#define COL_BTN_SPC 0x24305E
+#define COL_TEXT    0xE0E0E0
+#define COL_HOVER   0x2A4A7E
 
-// --- Warna Tema Dark ---
-#define COL_BG       0xFF1A1A2E   // background gelap (navy-black)
-#define COL_DISPLAY  0xFF16213E   // display area
-#define COL_BTN_NUM  0xFF0F3460   // tombol angka (biru tua)
-#define COL_BTN_OP   0xFFE94560   // tombol operator (merah-pink)
-#define COL_BTN_EQ   0xFF533483   // tombol = (ungu)
-#define COL_BTN_CLR  0xFF1A1A2E   // tombol C/CE (gelap)
-#define COL_BTN_SPEC 0xFF24305E   // tombol khusus (+/-, .)
-#define COL_TEXT     0xFFE0E0E0   // teks terang
-#define COL_TEXT_OP  0xFFFFFFFF   // teks operator
-#define COL_HOVER    0xFF2A4A7E   // hover effect
+// --- State kalkulator ---
+static double accumulator = 0;
+static double input_val   = 0;
+static int    op          = 0;   // 0=none 1=+ 2=- 3=* 4=/
+static int    has_input   = 0;
+static int    decimal     = 0;
+static int    dec_place   = 1;
+static int    just_result = 0;
 
-// ────────────────────────────────────────────────────────────
-// Helpers draw
-// ────────────────────────────────────────────────────────────
-static void fill_rect(int x, int y, int w, int h, uint32_t c) {
-    for (int py = y; py < y+h; py++)
-        for (int px = x; px < x+w; px++)
-            if (px>=0 && px<win_w && py>=0 && py<win_h)
-                canvas[py*win_w+px] = c;
-}
+// --- Layout tombol ---
+#define BTN_COLS  4
+#define BTN_ROWS  5
+#define BTN_W     68
+#define BTN_H     58
+#define BTN_PAD   8
+#define BTN_OFF_X 10
+#define BTN_OFF_Y 156  // relatif ke area isi (di bawah title bar)
 
-static void draw_char(char ch, int x, int y, uint32_t col) {
-    if (ch < 0 || ch > 127) return;
-    const unsigned char* bm = font8x16[(int)ch];
-    for (int row = 0; row < 16; row++)
-        for (int col2 = 0; col2 < 8; col2++)
-            if (bm[row] & (0x80 >> col2)) {
-                int px = x+col2, py = y+row;
-                if (px>=0 && px<win_w && py>=0 && py<win_h)
-                    canvas[py*win_w+px] = col;
-            }
-}
-
-static void draw_string_r(const char* s, int x, int y, uint32_t col) {
-    // right-aligned: mulai dari x, ke kiri
-    int len = 0;
-    while (s[len]) len++;
-    int sx = x - len*8;
-    for (int i = 0; i < len; i++)
-        draw_char(s[i], sx + i*8, y, col);
-}
-
-static void draw_string_c(const char* s, int x, int y, int w, uint32_t col) {
-    // center-aligned dalam kotak lebar w, mulai x
-    int len = 0;
-    while (s[len]) len++;
-    int sx = x + (w - len*8)/2;
-    for (int i = 0; i < len; i++)
-        draw_char(s[i], sx + i*8, y, col);
-}
-
-// ────────────────────────────────────────────────────────────
-// Konversi double → string
-// Mendukung: integer, desimal, negatif
-// ────────────────────────────────────────────────────────────
-static void double_to_str(double v, char* buf, int maxlen) {
-    int i = 0;
-    if (maxlen < 2) { buf[0]='\0'; return; }
-
-    // Handle negative
-    if (v < 0) { buf[i++]='-'; v=-v; }
-
-    // Clamp besar
-    if (v > 99999999.0) {
-        // Tampilkan sebagai integer besar (overflow)
-        buf[0]='E'; buf[1]='R'; buf[2]='R'; buf[3]='\0';
-        return;
-    }
-
-    // Bagian integer
-    int int_part = (int)v;
-    double frac  = v - (double)int_part;
-
-    // integer ke string
-    char tmp[16]; int ti = 0;
-    if (int_part == 0) { tmp[ti++]='0'; }
-    else {
-        int n = int_part;
-        while (n > 0 && ti < 15) { tmp[ti++] = '0' + (n%10); n/=10; }
-        // reverse
-        for (int a=0,b=ti-1; a<b; a++,b--) { char t=tmp[a]; tmp[a]=tmp[b]; tmp[b]=t; }
-    }
-    for (int k=0; k<ti && i<maxlen-1; k++) buf[i++]=tmp[k];
-
-    // Bagian desimal (hanya jika ada)
-    if (frac > 0.0001) {
-        if (i < maxlen-1) buf[i++]='.';
-        int places = 4;
-        while (places-- > 0 && i < maxlen-1) {
-            frac *= 10.0;
-            int d = (int)frac;
-            buf[i++] = '0' + d;
-            frac -= d;
-        }
-        // Hapus trailing zeros
-        while (i > 1 && buf[i-1]=='0') i--;
-        if (i > 1 && buf[i-1]=='.') i--; // hapus '.' kalau tidak ada desimal
-    }
-
-    buf[i] = '\0';
-}
-
-// ────────────────────────────────────────────────────────────
-// Layout tombol: 4 kolom × 5 baris
-// ────────────────────────────────────────────────────────────
-#define BTN_COLS   4
-#define BTN_ROWS   5
-#define BTN_W      70
-#define BTN_H      60
-#define BTN_PAD    8
-#define BTN_OFF_X  10
-#define BTN_OFF_Y  150   // mulai dari bawah display
-
-// Label tombol [baris][kolom]
 static const char* btn_labels[BTN_ROWS][BTN_COLS] = {
     { "C",  "+/-", "%",  "/" },
     { "7",  "8",   "9",  "*" },
@@ -144,309 +45,252 @@ static const char* btn_labels[BTN_ROWS][BTN_COLS] = {
     { "1",  "2",   "3",  "+" },
     { "0",  ".",   "CE", "=" },
 };
-
-// Tipe tombol untuk warna
-// 0=num, 1=op, 2=eq, 3=clear, 4=special
 static const int btn_type[BTN_ROWS][BTN_COLS] = {
-    { 3, 4, 4, 1 },
-    { 0, 0, 0, 1 },
-    { 0, 0, 0, 1 },
-    { 0, 0, 0, 1 },
-    { 0, 4, 3, 2 },
+    { 3, 4, 4, 1 }, { 0, 0, 0, 1 }, { 0, 0, 0, 1 },
+    { 0, 0, 0, 1 }, { 0, 4, 3, 2 },
 };
-
-static uint32_t btn_color(int type) {
+static uint32_t btn_bg(int type) {
     switch(type) {
         case 1: return COL_BTN_OP;
         case 2: return COL_BTN_EQ;
         case 3: return COL_BTN_CLR;
-        case 4: return COL_BTN_SPEC;
+        case 4: return COL_BTN_SPC;
         default: return COL_BTN_NUM;
     }
 }
 
-// Gambar satu tombol (dengan rounded corner simulasi via inner fill)
-static void draw_button(int col, int row, int hovered) {
-    int x = BTN_OFF_X + col*(BTN_W+BTN_PAD);
-    int y = BTN_OFF_Y + row*(BTN_H+BTN_PAD);
-    uint32_t c = hovered ? COL_HOVER : btn_color(btn_type[row][col]);
+// --- Helpers ---
+static int _str_len(const char* s) { int n=0; while(s[n]) n++; return n; }
 
-    // Shadow
-    fill_rect(x+3, y+3, BTN_W, BTN_H, 0xFF050510);
-    // Button body
-    fill_rect(x, y, BTN_W, BTN_H, c);
-    // Highlight (top edge)
-    fill_rect(x, y, BTN_W, 2, c | 0x304040FF);
-
-    // Label
-    uint32_t tc = COL_TEXT_OP;
-    int ly = y + (BTN_H - 16)/2;
-    draw_string_c(btn_labels[row][col], x, ly, BTN_W, tc);
+static void double_to_str(double v, char* buf, int maxlen) {
+    int i = 0;
+    if (maxlen < 2) { buf[0]='\0'; return; }
+    if (v < 0) { buf[i++]='-'; v=-v; }
+    if (v > 99999999.0) { buf[0]='E'; buf[1]='R'; buf[2]='R'; buf[3]='\0'; return; }
+    int int_part = (int)v;
+    double frac = v - (double)int_part;
+    char tmp[16]; int ti=0;
+    if (int_part == 0) tmp[ti++]='0';
+    else { int n=int_part; while(n>0&&ti<15){tmp[ti++]='0'+(n%10);n/=10;} }
+    for (int a=0,b=ti-1;a<b;a++,b--){char t=tmp[a];tmp[a]=tmp[b];tmp[b]=t;}
+    for (int k=0;k<ti&&i<maxlen-1;k++) buf[i++]=tmp[k];
+    if (frac > 0.0001) {
+        if (i<maxlen-1) buf[i++]='.';
+        int places=4;
+        while (places-->0&&i<maxlen-1){frac*=10.0;int d=(int)frac;buf[i++]='0'+d;frac-=d;}
+        while (i>1&&buf[i-1]=='0') i--;
+        if (i>1&&buf[i-1]=='.') i--;
+    }
+    buf[i]='\0';
 }
 
-// ────────────────────────────────────────────────────────────
-// Render seluruh UI
-// ────────────────────────────────────────────────────────────
-static void render_all(int hover_col, int hover_row) {
-    // Background
-    fill_rect(0, 0, win_w, win_h, COL_BG);
-
-    // Title bar
-    fill_rect(0, 0, win_w, 30, 0xFF0D0D1A);
-    draw_string_c("KALKULATOR", 0, 7, win_w, 0xFFAAAAAA);
-
-    // Close button
-    fill_rect(win_w-36, 2, 32, 26, COL_BTN_OP);
-    draw_string_c("X", win_w-36, 7, 32, COL_TEXT_OP);
-
-    // Display area
-    fill_rect(0, 30, win_w, 120, COL_DISPLAY);
-    // Border bawah display
-    fill_rect(0, 149, win_w, 2, 0xFF0A0A20);
-
-    // Op indicator (kiri atas display)
-    const char* op_str = "";
-    if (op==1) op_str="[+]";
-    else if (op==2) op_str="[-]";
-    else if (op==3) op_str="[*]";
-    else if (op==4) op_str="[/]";
-
-    // Tampilkan accumulator kecil (operand pertama)
-    if (op != 0 && !just_result) {
-        char acc_str[24];
-        double_to_str(accumulator, acc_str, 24);
-        draw_string_r(acc_str, win_w-12, 50, 0xFF6688AA);
-        // op indicator
-        int olen = 0; while(op_str[olen]) olen++;
-        int osx = 12;
-        for (int i=0; i<olen; i++) draw_char(op_str[i], osx+i*8, 50, 0xFFE94560);
+// Gambar teks rata kanan di canvas (koordinat absolut)
+static void draw_r(gui_window_t* win, const char* s, int rx, int y, uint32_t col) {
+    extern const unsigned char font8x16[256][16];
+    int len = _str_len(s);
+    int sx = rx - len*8;
+    int W = (int)win->width, H = (int)win->height;
+    uint32_t solid = col | 0xFF000000;
+    for (int ci=0; ci<len; ci++) {
+        char ch = s[ci]; if (ch<0||ch>127) continue;
+        const unsigned char* bm = font8x16[(int)(unsigned char)ch];
+        for (int row=0;row<16;row++)
+            for (int bit=0;bit<8;bit++)
+                if (bm[row]&(0x80>>bit)) {
+                    int px=sx+ci*8+bit, py=y+row;
+                    if (px>=0&&px<W&&py>=0&&py<H) win->canvas[py*W+px]=solid;
+                }
     }
-
-    // Angka utama (besar, right-aligned)
-    char disp_str[24];
-    double_to_str(input, disp_str, 24);
-
-    // Gambar angka besar (2× scale via loop pixel)
-    // Scale = 2: setiap pixel jadi 2x2 blok
-    int len = 0; while(disp_str[len]) len++;
-    int scale = (len > 8) ? 1 : 2;  // kalau panjang, turunkan skala
-    int total_w = len * 8 * scale;
-    int sx = win_w - 12 - total_w;
-    int sy = 90;
-
-    for (int ci = 0; ci < len; ci++) {
-        char ch = disp_str[ci];
-        if (ch < 0 || ch > 127) continue;
-        const unsigned char* bm = font8x16[(int)ch];
-        for (int row = 0; row < 16; row++)
-            for (int col2 = 0; col2 < 8; col2++)
-                if (bm[row] & (0x80 >> col2))
-                    for (int dy=0; dy<scale; dy++)
-                        for (int dx=0; dx<scale; dx++) {
-                            int px = sx + ci*8*scale + col2*scale + dx;
-                            int py = sy + row*scale + dy;
-                            if (px>=0 && px<win_w && py>=0 && py<win_h)
-                                canvas[py*win_w+px] = COL_TEXT_OP;
-                        }
-    }
-
-    // Tombol-tombol
-    for (int r = 0; r < BTN_ROWS; r++)
-        for (int c = 0; c < BTN_COLS; c++)
-            draw_button(c, r, (c==hover_col && r==hover_row));
-
-    sys_update_window(win_id, canvas);
 }
 
-// ────────────────────────────────────────────────────────────
-// Hit test: klik (rx,ry) ke tombol mana?
-// ────────────────────────────────────────────────────────────
+// Gambar teks tengah dalam kotak [x, x+w]
+static void draw_c(gui_window_t* win, const char* s, int x, int y, int w, uint32_t col) {
+    int len = _str_len(s);
+    int sx = x + (w - len*8)/2;
+    gui_draw_text(win, s, sx - x + x, y + (GUI_TITLEBAR_H > 0 ? -GUI_TITLEBAR_H : 0), col);
+    // Pakai absolute coords
+    extern const unsigned char font8x16[256][16];
+    int W = (int)win->width, H = (int)win->height;
+    uint32_t solid = col | 0xFF000000;
+    for (int ci=0; ci<len; ci++) {
+        char ch = s[ci]; if (ch<0||ch>127) continue;
+        const unsigned char* bm = font8x16[(int)(unsigned char)ch];
+        for (int row=0;row<16;row++)
+            for (int bit=0;bit<8;bit++)
+                if (bm[row]&(0x80>>bit)) {
+                    int px=sx+ci*8+bit, py=y+row;
+                    if (px>=0&&px<W&&py>=0&&py<H) win->canvas[py*W+px]=solid;
+                }
+    }
+}
+
+// --- Hit test ---
 static int hit_col(int rx) {
-    for (int c=0; c<BTN_COLS; c++) {
+    for (int c=0;c<BTN_COLS;c++) {
         int x = BTN_OFF_X + c*(BTN_W+BTN_PAD);
-        if (rx >= x && rx < x+BTN_W) return c;
+        if (rx>=x && rx<x+BTN_W) return c;
     }
     return -1;
 }
 static int hit_row(int ry) {
-    for (int r=0; r<BTN_ROWS; r++) {
+    for (int r=0;r<BTN_ROWS;r++) {
         int y = BTN_OFF_Y + r*(BTN_H+BTN_PAD);
-        if (ry >= y && ry < y+BTN_H) return r;
+        if (ry>=y && ry<y+BTN_H) return r;
     }
     return -1;
 }
 
-// ────────────────────────────────────────────────────────────
-// Proses klik tombol
-// ────────────────────────────────────────────────────────────
-static void press_button(int col, int row) {
+// --- Proses tombol ---
+static void press(int col, int row) {
     const char* lbl = btn_labels[row][col];
-
-    // Angka 0-9
-    if (lbl[0] >= '0' && lbl[0] <= '9' && lbl[1] == '\0') {
-        int digit = lbl[0] - '0';
-        if (just_result) {
-            // Setelah tekan =, mulai angka baru
-            input = 0; accumulator = 0; op = 0;
-            just_result = 0; decimal = 0; dec_place = 1;
-        }
-        if (!has_input) { input = 0; decimal = 0; dec_place = 1; has_input = 1; }
-        if (!decimal) {
-            input = input * 10.0 + digit;
-        } else {
-            dec_place *= 10;
-            input = input + (double)digit / (double)dec_place;
-        }
+    if (lbl[0]>='0'&&lbl[0]<='9'&&lbl[1]=='\0') {
+        int d=lbl[0]-'0';
+        if (just_result){input_val=0;accumulator=0;op=0;just_result=0;decimal=0;dec_place=1;}
+        if (!has_input){input_val=0;decimal=0;dec_place=1;has_input=1;}
+        if (!decimal) input_val=input_val*10.0+d;
+        else { dec_place*=10; input_val+=((double)d/(double)dec_place); }
         return;
     }
-
-    // Titik desimal
-    if (lbl[0]=='.' && lbl[1]=='\0') {
-        if (!has_input) has_input = 1;
-        if (!decimal) { decimal = 1; dec_place = 1; }
-        return;
-    }
-
-    // CE: hapus angka terakhir / reset input
-    if (lbl[0]=='C' && lbl[1]=='E') {
-        input = 0; decimal = 0; dec_place = 1; has_input = 0;
-        return;
-    }
-
-    // C: clear all
-    if (lbl[0]=='C' && lbl[1]=='\0') {
-        input = 0; accumulator = 0; op = 0;
-        decimal = 0; dec_place = 1; has_input = 0; just_result = 0;
-        return;
-    }
-
-    // +/- toggle
-    if (lbl[0]=='+' && lbl[1]=='/') {
-        input = -input;
-        return;
-    }
-
-    // % (persen dari accumulator)
-    if (lbl[0]=='%') {
-        if (op != 0) input = accumulator * input / 100.0;
-        else input = input / 100.0;
-        has_input = 1;
-        return;
-    }
-
-    // = (hitung)
+    if (lbl[0]=='.'&&lbl[1]=='\0'){if(!has_input)has_input=1;if(!decimal){decimal=1;dec_place=1;}return;}
+    if (lbl[0]=='C'&&lbl[1]=='E'){input_val=0;decimal=0;dec_place=1;has_input=0;return;}
+    if (lbl[0]=='C'&&lbl[1]=='\0'){input_val=0;accumulator=0;op=0;decimal=0;dec_place=1;has_input=0;just_result=0;return;}
+    if (lbl[0]=='+'&&lbl[1]=='/'){input_val=-input_val;return;}
+    if (lbl[0]=='%'){input_val=(op!=0)?accumulator*input_val/100.0:input_val/100.0;has_input=1;return;}
     if (lbl[0]=='=') {
-        if (op == 0) { just_result = 1; return; }
-        double result = 0;
-        switch(op) {
-            case 1: result = accumulator + input; break;
-            case 2: result = accumulator - input; break;
-            case 3: result = accumulator * input; break;
-            case 4:
-                if (input == 0.0) { result = 0; } // div by zero → 0
-                else result = accumulator / input;
-                break;
-        }
-        accumulator = result;
-        input = result;
-        op = 0;
-        has_input = 0;
-        decimal = 0; dec_place = 1;
-        just_result = 1;
-        return;
+        if (op==0){just_result=1;return;}
+        double r=0;
+        switch(op){case 1:r=accumulator+input_val;break;case 2:r=accumulator-input_val;break;
+                   case 3:r=accumulator*input_val;break;case 4:r=(input_val==0)?0:accumulator/input_val;break;}
+        accumulator=r;input_val=r;op=0;has_input=0;decimal=0;dec_place=1;just_result=1;return;
     }
-
-    // Operator: + - * /
-    int new_op = 0;
-    if (lbl[0]=='+') new_op=1;
+    int new_op=0;
+    if (lbl[0]=='+'&&lbl[1]=='\0') new_op=1;
     else if (lbl[0]=='-') new_op=2;
     else if (lbl[0]=='*') new_op=3;
     else if (lbl[0]=='/') new_op=4;
-
-    if (new_op != 0) {
-        if (op != 0 && has_input) {
-            // Hitung dulu operasi sebelumnya (chaining)
-            double result = 0;
-            switch(op) {
-                case 1: result = accumulator + input; break;
-                case 2: result = accumulator - input; break;
-                case 3: result = accumulator * input; break;
-                case 4:
-                    if (input == 0.0) result = 0;
-                    else result = accumulator / input;
-                    break;
-            }
-            accumulator = result;
-            input = result;
-        } else {
-            accumulator = input;
-        }
-        op = new_op;
-        has_input = 0;
-        decimal = 0; dec_place = 1;
-        just_result = 0;
-        return;
+    if (new_op) {
+        if (op&&has_input){
+            double r=0;
+            switch(op){case 1:r=accumulator+input_val;break;case 2:r=accumulator-input_val;break;
+                       case 3:r=accumulator*input_val;break;case 4:r=(input_val==0)?0:accumulator/input_val;break;}
+            accumulator=r;input_val=r;
+        } else accumulator=input_val;
+        op=new_op;has_input=0;decimal=0;dec_place=1;just_result=0;
     }
 }
 
-// ────────────────────────────────────────────────────────────
-// MAIN
-// ────────────────────────────────────────────────────────────
-void main() {
-    win_id = sys_create_window(180, 80, win_w, win_h);
-    if (win_id < 0) { sys_exit(); }
+// --- Render ---
+static int hover_col = -1, hover_row = -1;
 
-    canvas = (uint32_t*)sys_alloc(win_w * win_h * 4);
-    if (!canvas) { sys_destroy_window(win_id); sys_exit(); }
+void calc_render(gui_window_t* win) {
+    int W = (int)win->width;
+    int TH = GUI_TITLEBAR_H;
 
-    int hover_col = -1, hover_row = -1;
-    int mouse_x = 0, mouse_y = 0;
+    // Background
+    gui_draw_rect(win, 0, 0, W, (int)win->inner_h, COL_BG);
 
-    render_all(-1, -1);
+    // Display area (relatif ke area isi)
+    gui_draw_rect(win, 0, 0, W, 120, COL_DISPLAY);
+    gui_draw_rect(win, 0, 119, W, 2, 0x0A0A20);
+
+    // Op indicator + accumulator
+    const char* op_str = "";
+    if (op==1) op_str="[+]"; else if(op==2) op_str="[-]";
+    else if(op==3) op_str="[*]"; else if(op==4) op_str="[/]";
+    if (op!=0&&!just_result) {
+        char acc_s[24]; double_to_str(accumulator, acc_s, 24);
+        draw_r(win, acc_s, W-12, TH+20, 0x6688AA);
+        gui_draw_text(win, op_str, 12, 20, 0xE94560);
+    }
+
+    // Angka utama (2x scale, kanan-rata)
+    char disp[24]; double_to_str(input_val, disp, 24);
+    int len=_str_len(disp), scale=(len>8)?1:2;
+    int total_w=len*8*scale, sx=W-12-total_w, sy=TH+60;
+    extern const unsigned char font8x16[256][16];
+    int H = (int)win->height;
+    for (int ci=0;ci<len;ci++) {
+        char ch=disp[ci]; if(ch<0||ch>127) continue;
+        const unsigned char* bm=font8x16[(int)(unsigned char)ch];
+        for(int row=0;row<16;row++)
+            for(int bit=0;bit<8;bit++)
+                if(bm[row]&(0x80>>bit))
+                    for(int dy=0;dy<scale;dy++)
+                        for(int dx=0;dx<scale;dx++){
+                            int px=sx+ci*8*scale+bit*scale+dx;
+                            int py=sy+row*scale+dy;
+                            if(px>=0&&px<W&&py>=0&&py<H)
+                                win->canvas[py*W+px]=0xFFFFFFFF;
+                        }
+    }
+
+    // Tombol-tombol
+    for (int r=0;r<BTN_ROWS;r++) {
+        for (int c=0;c<BTN_COLS;c++) {
+            int bx = BTN_OFF_X + c*(BTN_W+BTN_PAD);
+            int by = BTN_OFF_Y + r*(BTN_H+BTN_PAD);
+            uint32_t bc = (c==hover_col&&r==hover_row) ? COL_HOVER : btn_bg(btn_type[r][c]);
+            // Shadow
+            gui_draw_rect(win, bx+3, by+3, BTN_W, BTN_H, 0x050510);
+            // Body
+            gui_draw_rect(win, bx, by, BTN_W, BTN_H, bc);
+            // Label (tengah tombol)
+            const char* lbl = btn_labels[r][c];
+            int llen = _str_len(lbl);
+            int lx = bx + (BTN_W - llen*8)/2;
+            int ly = by + (BTN_H - 16)/2;
+            gui_draw_text(win, lbl, lx, ly, 0xFFFFFF);
+        }
+    }
+}
+
+void main(void) {
+    gui_window_t* app = gui_create_window("Kalkulator", WIN_W, WIN_H);
+    if (!app) { sys_exit(); return; }
+
+    gui_set_render(app, calc_render);
 
     kyuzen_event_t ev;
-    while (1) {
+    while (app->is_running) {
         if (sys_get_event(&ev)) {
-            // Update mouse position
             if (ev.type == EVENT_MOUSE_MOVE) {
-                mouse_x = ev.param1;
-                mouse_y = ev.param2;
-
-                // Window di posisi (180, 80) layar
-                int rx = mouse_x - 180;
-                int ry = mouse_y - 80;
-
-                int nc = hit_col(rx), nr = hit_row(ry);
-                if (nc != hover_col || nr != hover_row) {
-                    hover_col = nc; hover_row = nr;
-                    render_all(hover_col, hover_row);
+                app->mouse_x = ev.param1;
+                app->mouse_y = ev.param2;
+                // Hitung rel koordinat ke area isi
+                int wx=0, wy=0;
+                sys_get_window_pos(app->win_id, &wx, &wy);
+                int rel_x = app->mouse_x - wx;
+                int rel_y = app->mouse_y - wy - GUI_TITLEBAR_H;
+                int nc = hit_col(rel_x), nr = hit_row(rel_y);
+                if (nc!=hover_col||nr!=hover_row) {
+                    hover_col=nc; hover_row=nr;
+                    calc_render(app); gui_flush(app);
                 }
             }
 
-            if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
-                if (ev.param3 != 0) mouse_x = ev.param3;
-
-                int rx = mouse_x - 180;
-                int ry = mouse_y - 80;
-
-                // Tombol Close (X)
-                if (rx >= (win_w-36) && rx <= win_w && ry >= 2 && ry <= 28) {
-                    break;
+            if (ev.type == EVENT_MOUSE_CLICK && ev.param1==0 && ev.param2==1) {
+                if (ev.param3!=0) app->mouse_x=ev.param3;
+                int wx=0,wy=0;
+                sys_get_window_pos(app->win_id,&wx,&wy);
+                int rfx = app->mouse_x - wx;
+                int rfy = app->mouse_y - wy;
+                // Close button
+                if (rfx>=(int)app->width-GUI_CLOSE_BTN_W && rfx<(int)app->width
+                    && rfy>=0 && rfy<GUI_TITLEBAR_H) {
+                    app->is_running = 0; break;
                 }
-
-                int cc = hit_col(rx), cr = hit_row(ry);
-                if (cc >= 0 && cr >= 0) {
-                    press_button(cc, cr);
-                    render_all(hover_col, hover_row);
-                }
+                // Klik tombol kalkulator
+                int rel_x = rfx;
+                int rel_y = rfy - GUI_TITLEBAR_H;
+                int cc=hit_col(rel_x), cr=hit_row(rel_y);
+                if (cc>=0&&cr>=0) { press(cc,cr); calc_render(app); gui_flush(app); }
             }
 
-            if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27) break; // ESC
+            if (ev.type==EVENT_KEY_PRESS&&ev.param1==27) { app->is_running=0; break; }
         }
         sys_yield();
     }
 
-    sys_destroy_window(win_id);
-    sys_free(canvas);
+    gui_destroy(app);
     sys_exit();
 }

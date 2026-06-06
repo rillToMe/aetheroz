@@ -1,205 +1,161 @@
+// ============================================================
+// fileman.c — Kyuzen File Manager (libgui standard)
+// Menampilkan daftar file KyuzenFS, klik untuk memilih & buka.
+// ============================================================
 #include "userlib.h"
-#define FONT8x16_IMPLEMENTATION
-#include "font8x16.h"
+#include "libgui.h"
 
-int win_id = -1;
-uint32_t* my_canvas = 0;
-int win_w = 400, win_h = 300;
+#define WIN_W 400
+#define WIN_H 320
 
-// Variabel Pelacak File yang Sedang Diklik
-int selected_file = -1; 
+// Warna
+#define BG_COLOR   0xFFFFFF
+#define HDR_COLOR  0xEEEEEE
+#define SEL_COLOR  0x111111
+#define TEXT_DARK  0x000000
+#define TEXT_LIGHT 0xFFFFFF
+#define TEXT_GRAY  0x555555
+#define BUKA_COLOR 0x00AEEF
 
-void draw_rect_local(int start_x, int start_y, int width, int height, uint32_t color) {
-    uint32_t solid_color = color | 0xFF000000; 
-    for(int y = start_y; y < start_y + height; y++) {
-        for(int x = start_x; x < start_x + width; x++) {
-            if(x >= 0 && x < win_w && y >= 0 && y < win_h) {
-                my_canvas[(y * win_w) + x] = solid_color;
-            }
-        }
-    }
-}
+// State
+static file_info_t files[16];
+static int total_files   = 0;
+static int selected_file = -1;
 
-void draw_char_local(char c, int x, int y, uint32_t color) {
-    if (c < 0 || c > 127) return;
-    const unsigned char* bitmap = font8x16[(int)c];
-    uint32_t solid_color = color | 0xFF000000;
+// Gambar satu baris file
+#define LIST_START_Y  40    // relatif ke area isi
+#define LIST_ROW_H    20
 
-    for (int row = 0; row < 16; row++) {
-        for (int col = 0; col < 8; col++) {
-            if (bitmap[row] & (0x80 >> col)) {
-                int px = x + col;
-                int py = y + row;
-                if (px >= 0 && px < win_w && py >= 0 && py < win_h) {
-                    my_canvas[(py * win_w) + px] = solid_color;
-                }
-            }
-        }
-    }
-}
+void fileman_render(gui_window_t* win) {
+    int W = (int)win->inner_w;
+    int H = (int)win->inner_h;
 
-void draw_string_local(const char* str, int x, int y, uint32_t color) {
-    int cx = x, cy = y;
-    for (int i = 0; str[i] != '\0'; i++) {
-        if (str[i] == '\n') { cy += 16; cx = x; }
-        else { draw_char_local(str[i], cx, cy, color); cx += 8; }
-    }
-}
+    // Background
+    gui_draw_rect(win, 0, 0, W, H, BG_COLOR);
 
-// --- FUNGSI RENDER UI (Dipanggil setiap kali ada perubahan) ---
-void render_ui(file_info_t* files, int total_files) {
-    // 1. Gambar Dasar Jendela
-    draw_rect_local(0, 0, win_w, win_h, 0xFFFFFF);     
-    draw_rect_local(0, 0, win_w, 30, 0x111111);        
-    draw_rect_local(win_w - 40, 0, 40, 30, 0xE53935);  
+    // Header info
+    gui_draw_rect(win, 0, 0, W, 30, HDR_COLOR);
+    gui_draw_text(win, "Isi Penyimpanan KZFS:", 15, 7, TEXT_GRAY);
 
-    draw_string_local("FILE MANAGER", 10, 7, 0xFFFFFF);
-    draw_string_local("X", win_w - 24, 7, 0xFFFFFF);
-
-    draw_string_local("Isi Penyimpanan KZFS:", 15, 45, 0x000000);
-    
-    // 2. Render Daftar File dengan Deteksi Sorotan
-    int start_y = 70;
+    // Daftar file
+    int sy = LIST_START_Y;
     for (int i = 0; i < total_files; i++) {
         if (i == selected_file) {
-            // Blok sorotan tajam dan tegas untuk file yang dipilih
-            draw_rect_local(10, start_y - 2, win_w - 20, 20, 0x111111);
-            draw_string_local(">", 15, start_y, 0xFFFFFF); 
-            draw_string_local(files[i].filename, 30, start_y, 0xFFFFFF);
+            gui_draw_rect(win, 10, sy - 2, W - 20, 20, SEL_COLOR);
+            gui_draw_text(win, ">", 15, sy, TEXT_LIGHT);
+            gui_draw_text(win, files[i].filename, 30, sy, TEXT_LIGHT);
         } else {
-            draw_string_local(">", 15, start_y, 0x555555);
-            draw_string_local(files[i].filename, 30, start_y, 0x000000);
+            gui_draw_text(win, ">", 15, sy, TEXT_GRAY);
+            gui_draw_text(win, files[i].filename, 30, sy, TEXT_DARK);
         }
-        start_y += 20;
+        sy += LIST_ROW_H;
     }
 
-    // 3. Status Bar Minimalis di Bawah
-    draw_rect_local(0, win_h - 30, win_w, 30, 0xEEEEEE);
+    // Status bar
+    gui_draw_rect(win, 0, H - 30, W, 30, HDR_COLOR);
     if (selected_file != -1) {
-        draw_string_local("Terpilih: ", 10, win_h - 22, 0x555555);
-        draw_string_local(files[selected_file].filename, 90, win_h - 22, 0x000000); 
+        gui_draw_text(win, "Terpilih: ", 10, H - 22, TEXT_GRAY);
+        gui_draw_text(win, files[selected_file].filename, 90, H - 22, TEXT_DARK);
 
-        // --- TAMBAHKAN TOMBOL BUKA (Cyan CMYK: 0x00AEEF) ---
-        draw_rect_local(win_w - 70, win_h - 26, 60, 22, 0x00AEEF);
-        draw_string_local("BUKA", win_w - 55, win_h - 23, 0xFFFFFF);
-        // ---------------------------------------------------
+        // Tombol BUKA
+        gui_draw_rect(win, W - 70, H - 27, 60, 22, BUKA_COLOR);
+        gui_draw_text(win, "BUKA", W - 55, H - 23, TEXT_LIGHT);
     }
-
-    // 4. Tumpahkan Kanvas Lokal ke Kernel
-    sys_update_window(win_id, my_canvas);
 }
 
-void main() {
-    win_id = sys_create_window(200, 150, win_w, win_h);
-    if (win_id < 0) return;
+void main(void) {
+    gui_window_t* app = gui_create_window("File Manager", WIN_W, WIN_H);
+    if (!app) { sys_exit(); return; }
 
-    my_canvas = (uint32_t*) sys_alloc(win_w * win_h * 4);
+    total_files = sys_get_file_list(files, 16);
+    fileman_render(app);
+    gui_flush(app);
 
-    file_info_t files[16];
-    int total_files = sys_get_file_list(files, 16);
-
-    // Render layar untuk pertama kalinya
-    render_ui(files, total_files);
-
-    kyuzen_event_t event;
-    int mouse_x = 0, mouse_y = 0;  // Cache posisi mouse terkini
-    while (1) {
-        if (sys_get_event(&event)) {
-            if (event.type == EVENT_MOUSE_MOVE) {
-                mouse_x = event.param1;
-                mouse_y = event.param2;
+    kyuzen_event_t ev;
+    while (app->is_running) {
+        if (sys_get_event(&ev)) {
+            if (ev.type == EVENT_MOUSE_MOVE) {
+                app->mouse_x = ev.param1;
+                app->mouse_y = ev.param2;
             }
 
-            // EVENT_MOUSE_CLICK: param1=0 (kiri), param2=1 (ditekan), param3=mouse_x
-            // mouse_y diambil dari cache MOVE (selalu valid karena mouse gerak sebelum klik)
-            if (event.type == EVENT_MOUSE_CLICK && event.param1 == 0 && event.param2 == 1) {
-                // Sinkronkan mouse_x dari click event jika ada
-                if (event.param3 != 0) mouse_x = event.param3;
+            if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
+                if (ev.param3 != 0) app->mouse_x = ev.param3;
 
-                // Window ada di layar posisi (win_off_x=200, win_off_y=150)
-                int win_off_x = 200, win_off_y = 150;
+                int wx = 0, wy = 0;
+                sys_get_window_pos(app->win_id, &wx, &wy);
+                int rfx = app->mouse_x - wx;
+                int rfy = app->mouse_y - wy;
 
-                // Koordinat RELATIF terhadap window
-                int rel_x = mouse_x - win_off_x;
-                int rel_y = mouse_y - win_off_y;
-
-                // 1. DETEKSI KLIK: Tombol Close (X) — pojok kanan atas
-                if (rel_x >= (win_w - 40) && rel_x <= win_w &&
-                    rel_y >= 0 && rel_y <= 30) {
-                    break;
+                // Close button (title bar zona kanan)
+                if (rfx >= (int)app->width - GUI_CLOSE_BTN_W &&
+                    rfx <  (int)app->width &&
+                    rfy >= 0 && rfy < GUI_TITLEBAR_H) {
+                    app->is_running = 0; break;
                 }
 
-                // 2. DETEKSI KLIK: Daftar File
-                int list_x0 = 10, list_x1 = win_w - 10;
-                int list_y0 = 70, list_y1 = list_y0 + (total_files * 20);
+                // Koordinat relatif ke area isi
+                int rel_x = rfx;
+                int rel_y = rfy - GUI_TITLEBAR_H;
+
+                // Klik daftar file
+                int list_x0 = 10, list_x1 = (int)app->inner_w - 10;
+                int list_y0 = LIST_START_Y;
+                int list_y1 = list_y0 + total_files * LIST_ROW_H;
 
                 if (rel_x >= list_x0 && rel_x <= list_x1 &&
-                    rel_y >= list_y0 && rel_y < list_y1) {
-                    int clicked_index = (rel_y - list_y0) / 20;
-                    if (clicked_index >= 0 && clicked_index < total_files) {
-                        selected_file = clicked_index;
-                        render_ui(files, total_files);
+                    rel_y >= list_y0 && rel_y <  list_y1) {
+                    int idx = (rel_y - list_y0) / LIST_ROW_H;
+                    if (idx >= 0 && idx < total_files) {
+                        selected_file = idx;
+                        fileman_render(app);
+                        gui_flush(app);
                     }
                 }
 
-                // 3. DETEKSI KLIK: TOMBOL BUKA (CYAN) — koordinat rel terhadap window
+                // Klik tombol BUKA
                 if (selected_file != -1) {
-                    int buka_x0 = win_w - 70, buka_x1 = win_w - 10;
-                    int buka_y0 = win_h - 26, buka_y1 = win_h - 4;
+                    int H = (int)app->inner_h;
+                    int bx0 = (int)app->inner_w - 70;
+                    int bx1 = (int)app->inner_w - 10;
+                    int by0 = H - 27, by1 = H - 5;
+                    if (rel_x >= bx0 && rel_x <= bx1 &&
+                        rel_y >= by0 && rel_y <= by1) {
+                        char* fname = files[selected_file].filename;
+                        int len = 0; while (fname[len]) len++;
 
-                    if (rel_x >= buka_x0 && rel_x <= buka_x1 &&
-                        rel_y >= buka_y0 && rel_y <= buka_y1) {
-                        
-                        char* target_file = files[selected_file].filename;
-                        
-                        // Cek ekstensi file
-                        int len = 0; while(target_file[len]) len++;
-                        
-                        if (len > 4 && target_file[len-4] == '.' && target_file[len-3] == 'e' && 
-                            target_file[len-2] == 'l' && target_file[len-1] == 'f') {
-                            
-                            // --- LOGIKA BUKA .ELF ---
-                            sys_destroy_window(win_id);
-                            sys_free(my_canvas);
-                            sys_exec(target_file); // OS free RAM lama + load + jump
-                            return; // tidak tercapai (noreturn)
-                        } 
-                        else if (len > 4 && target_file[len-4] == '.' && target_file[len-3] == 'p' && 
-                                 target_file[len-2] == 'n' && target_file[len-1] == 'g') {
-                            
-                            // --- LOGIKA BUKA .PNG → VIEWER.ELF ---
+                        if (len > 4 && fname[len-4]=='.' && fname[len-3]=='e' &&
+                            fname[len-2]=='l' && fname[len-1]=='f') {
+                            gui_destroy(app);
+                            sys_exec(fname);
+                            return;
+                        } else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='p' &&
+                                   fname[len-2]=='n' && fname[len-1]=='g') {
                             if (sys_file_exists("view.tmp")) fs_delete("view.tmp");
-                            sys_create_file("view.tmp", target_file, len);
-
-                            sys_destroy_window(win_id);
-                            sys_free(my_canvas);
-                            sys_exec("viewer.elf"); // OS free RAM lama + load viewer + jump
-                            return; // tidak tercapai (noreturn)
-                        } 
-                        else {
-                            // Untuk file format lain (.sys, .txt, dll)
-                            print("\n[Fileman] Format belum didukung untuk GUI: ");
-                            print(target_file);
-                            print("\n");
+                            sys_create_file("view.tmp", fname, len);
+                            gui_destroy(app);
+                            sys_exec("viewer.elf");
+                            return;
+                        }
+                         else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='t' &&
+                                   fname[len-2]=='x' && fname[len-1]=='t') {
+                            if (sys_file_exists("edit.tmp")) fs_delete("edit.tmp");
+                            sys_create_file("edit.tmp", fname, len); // Kasih tau notepad file apa yg mau dibuka
+                            gui_destroy(app);
+                            sys_exec("notepad.elf");
+                            return;
                         }
                     }
-                } // Akhir dari Tombol Buka
-                
-            } // Akhir dari event Type 3 (Click)
+                }
+            }
 
-            if (event.type == 1 && event.param1 == 27) {
-                break;
+            if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27) {
+                app->is_running = 0; break;
             }
         }
-        sys_yield(); 
+        sys_yield();
     }
-    
-    sys_destroy_window(win_id);
-    sys_free(my_canvas);
 
-    // PENTING: Jangan `return` dari main()!
-    // Jika fileman diluncurkan via sys_exec (dari viewer), stack tidak
-    // punya return address yang valid → ret dari main() = BSOD.
-    // sys_exit() aman di semua kasus: kernel bebaskan RAM dan kembali ke shell.
+    gui_destroy(app);
     sys_exit();
-}
+}
