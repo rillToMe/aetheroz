@@ -89,6 +89,15 @@ uint32_t keyboard_read(uint8_t *buffer, uint32_t size) {
     return bytes_read;
 }
 
+// Buang semua karakter yang menunggu di keyboard TTY buffer.
+// Dipanggil bersamaan dengan flush_event_queue() saat ganti app,
+// agar ketikan di app lama tidak bocor ke app berikutnya.
+void flush_kbd_buffer(void) {
+    kbd_head = 0;
+    kbd_tail = 0;
+}
+
+
 void init_keyboard() {
     // Reset status buffer keyboard
     // CATATAN: IDT untuk IRQ1 (INT 33) sudah didaftarkan di arch/x86/idt.c

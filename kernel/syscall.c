@@ -79,8 +79,16 @@ void syscall_handler(registers_t *r) {
         tty_clear();
     } 
     else if (syscall_num == 3) { // sys_read_keyboard
+        // Flush KEDUA buffer saat shell mulai baca:
+        //   - event queue  → sisa event GUI (keystroke notepad dll)
+        //   - kbd_buffer   → sisa karakter TTY (yang juga ditulis keyboard ISR)
+        extern void flush_event_queue(void);
+        extern void flush_kbd_buffer(void);
+        flush_event_queue();
+        flush_kbd_buffer();
         ret_val = read_fs(&tty_node, 0, r->rcx, (uint8_t*)r->rbx);
     }
+
     else if (syscall_num == 4) { // sys_yield
         yield_counter++; // Tandai CPU idle untuk CPU usage tracker
         // Preemptive: timer IRQ0 akan switch otomatis saat quantum habis
@@ -149,8 +157,14 @@ void syscall_handler(registers_t *r) {
         ret_val = kfs_get_file_list((void*)r->rbx, (int)r->rcx);
     }
     else if (syscall_num == 25) { // sys_load_elf
+        // Flush KEDUA buffer sebelum app baru jalan
+        extern void flush_event_queue(void);
+        extern void flush_kbd_buffer(void);
+        flush_event_queue();
+        flush_kbd_buffer();
         ret_val = elf_load_file((char*)r->rbx);
     }
+
     else if (syscall_num == 26) { // sys_draw_string
         draw_string((const char*)r->rbx, (int)r->rcx, (int)r->rdx, (uint32_t)r->rsi);
     }
@@ -162,29 +176,40 @@ void syscall_handler(registers_t *r) {
         ret_val = current_uid;   
     }
     // --- SYSCALL: EVENT QUEUE UNTUK GUI ---
-    else if (syscall_num == 29) { // sys_poll_event
+    else if (syscall_num == 29) { // sys_get_event
         kyuzen_event_t* out_event = (kyuzen_event_t*)r->rbx;
-        
-        extern int mouse_x, mouse_y;
+
+        // 1. Prioritaskan Event Queue asli (Keyboard IRQ + Mouse IRQ via push_event)
+        //    Semua keystroke dan klik mouse sudah dimasukkan ke queue oleh ISR.
+        extern int pop_event(kyuzen_event_t* out);
+        if (pop_event(out_event)) {
+            r->rax = 1;
+            return; // Event berhasil diambil dari queue — langsung return
+        }
+
+        // 2. Fallback: Queue kosong → kirim posisi mouse terkini agar hover GUI tetap responsif
+        //    (App pakai EVENT_MOUSE_MOVE untuk update highlight tombol, dll)
+        extern int32_t mouse_x, mouse_y;
         extern uint8_t mouse_left_clicked;
 
-        // Poll event: klik atau gerakan mouse
         if (mouse_left_clicked) {
             out_event->type   = EVENT_MOUSE_CLICK;
-            out_event->param1 = 0;        // 0 = Tombol Kiri (fileman cek param1==0!)
-            out_event->param2 = 1;        // 1 = Ditekan
-            out_event->param3 = mouse_x;  // Koordinat X saat klik — tidak perlu cache MOVE
+            out_event->param1 = 0;         // 0 = tombol kiri
+            out_event->param2 = 1;         // 1 = ditekan
+            out_event->param3 = mouse_x;   // koordinat X saat klik
             mouse_left_clicked = 0;
-            ret_val = 1;
+            r->rax = 1;
         } else {
-            // Kirim posisi mouse saat ini (selalu, agar app bisa update hover)
+            // Selalu kirim posisi mouse agar app bisa track hover
             out_event->type   = EVENT_MOUSE_MOVE;
             out_event->param1 = mouse_x;
             out_event->param2 = mouse_y;
             out_event->param3 = 0;
-            ret_val = 1;
+            r->rax = 1;
         }
+        return;
     }
+
     // --- SYSCALL BARU UNTUK KWM (Window Manager) ---
     else if (syscall_num == 30) { // sys_kwm_create_window
         extern int kwm_create_window(int, int, uint32_t, uint32_t);
@@ -215,8 +240,16 @@ void syscall_handler(registers_t *r) {
         extern void vmm_unmap_user_space(void);
         vmm_unmap_user_space();
 
-        // 2. Load ELF baru ke slot 0x4000000
+        // 2. Flush KEDUA buffer input agar app baru tidak mewarisi keystroke lama
+        extern void flush_event_queue(void);
+        extern void flush_kbd_buffer(void);
+        flush_event_queue();
+        flush_kbd_buffer();
+
+        // 3. Load ELF baru ke slot 0x4000000
+
         uint64_t entry = elf_load_file(kfname);
+
 
         // 3. Set RIP & RSP untuk IRETQ
         if (entry != 0) {

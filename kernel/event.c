@@ -48,3 +48,11 @@ int pop_event(kyuzen_event_t* out) {
     eq_tail = (eq_tail + 1) % EVENT_QUEUE_SIZE;
     return 1;
 }
+
+// Buang semua event yang belum dibaca dari antrian.
+// WAJIB dipanggil saat sys_exec() agar app baru tidak mewarisi
+// keystroke dari app sebelumnya (password, perintah shell, dsb).
+void flush_event_queue(void) {
+    eq_head = 0;
+    eq_tail = 0;
+}

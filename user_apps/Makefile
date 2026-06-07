@@ -73,9 +73,7 @@ all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTE
 	@echo "  notepad.elf → $(NOTEPAD_ELF)"
 	@echo "  OS akan otomatis alokasi physical RAM saat dijalankan."
 
-# ==========================================================
 # COMPILE SHARED USERLIB
-# ==========================================================
 $(USERLIB_OBJ): $(APPS_DIR)/userlib.c
 	@echo "[CC] Mengompilasi userlib (64-bit)..."
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
