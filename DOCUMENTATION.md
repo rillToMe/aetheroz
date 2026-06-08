@@ -6,12 +6,73 @@
 
 ---
 
-## Cara Kerja Singkat
+## Recent Updates: Network Ping & Refresh Rate
 
-Kyuzen OS menggunakan **Preemptive Multitasking**. Timer PIT (IRQ0) fires setiap **20ms**, menyimpan seluruh register CPU dari task yang sedang berjalan, lalu melanjutkan task berikutnya. Tidak ada `switch_task()` manual — semua context switch terjadi otomatis via interrupt.
+### e1000 / Ping Networking
+
+Kyuzen OS sekarang punya jalur networking awal berbasis **Intel e1000 + lwIP**:
 
 ```
-Timer IRQ0 (tiap 20ms)
+shell ping
+    └─→ sys_ping / kernel_ping()
+            └─→ lwIP raw ICMP
+                    └─→ kyuzen_netif linkoutput
+                            └─→ e1000_send()
+```
+
+Perbaikan penting di driver e1000:
+
+- TX/RX descriptor ring dan packet buffer sekarang dialokasikan dari **PMM physical pages**, lalu diakses CPU lewat **HHDM** (`phys + hhdm_offset`).
+- Driver tidak lagi memakai `kmalloc()` untuk buffer DMA e1000, karena heap kernel berada di virtual mapping VMM (`0xFFFF9000...`) dan tidak bisa dikonversi benar dengan `virt - hhdm_offset`.
+- Bug sebelumnya: NIC menerima alamat DMA palsu, descriptor TX tidak pernah selesai (`DD` tidak balik), lalu log penuh dengan `[e1000] WARN: TX ring full`.
+- Setelah fix, test pertama yang disarankan adalah `ping 10.0.2.2` di QEMU user networking. Jika gateway reply, TX/RX e1000 + ARP + ICMP dasar sudah bekerja.
+
+File terkait:
+
+| File | Fungsi |
+|------|--------|
+| [`drivers/net/e1000/e1000.c`](drivers/net/e1000/e1000.c) | Driver Intel e1000, DMA descriptor ring, TX/RX poll |
+| [`drivers/net/lwip/port/kyuzen_netif.c`](drivers/net/lwip/port/kyuzen_netif.c) | Glue layer e1000 ↔ lwIP |
+| [`kernel/net_init.c`](kernel/net_init.c) | Init lwIP, netif, DHCP/static fallback, DNS |
+| [`kernel/net_ping.c`](kernel/net_ping.c) | ICMP Echo Request/Reply implementation |
+| [`apps/shell.c`](apps/shell.c) | Command shell `ping [host]` |
+
+### Runtime Refresh Rate
+
+Default timer/PIT refresh rate diubah dari **50Hz** menjadi **60Hz**. Refresh rate juga bisa diganti dari shell dengan preset awal:
+
+```text
+refresh
+refresh 60
+refresh 100
+refresh 144
+```
+
+Behavior:
+
+- `refresh` tanpa argumen menampilkan refresh rate aktif.
+- `refresh 60`, `refresh 100`, dan `refresh 144` memprogram ulang PIT runtime.
+- Nilai lain ditolak agar path awal tetap stabil.
+- `timer_get_ms()` sekarang berbasis accumulator runtime, bukan konstanta compile-time, jadi uptime, sleep, lwIP timeout, dan scheduler tetap konsisten saat refresh rate diganti.
+- Scheduler quantum tetap berbasis waktu **20ms**, sementara IRQ timer berjalan sesuai refresh rate aktif.
+
+File terkait:
+
+| File | Fungsi |
+|------|--------|
+| [`include/timer.h`](include/timer.h) | Default 60Hz, API `timer_set_refresh_rate()` dan `timer_get_refresh_rate()` |
+| [`drivers/timer.c`](drivers/timer.c) | Program PIT runtime, accumulator waktu ms, CPU usage tracker |
+| [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Callback visual flush, cursor, network poll |
+| [`apps/shell.c`](apps/shell.c) | Command shell `refresh [60|100|144]` |
+
+---
+
+## Cara Kerja Singkat
+
+Kyuzen OS menggunakan **Preemptive Multitasking**. Timer PIT (IRQ0) default berjalan di **60Hz** (~16.67ms per tick), menyimpan seluruh register CPU dari task yang sedang berjalan, lalu memberi scheduler kesempatan untuk melanjutkan task berikutnya. Tidak ada `switch_task()` manual — semua context switch terjadi otomatis via interrupt.
+
+```
+Timer IRQ0 (default 60Hz, bisa 60/100/144)
     └─→ timer_isr_stub (ASM)
             ├─ PUSHA64 (simpan semua register ke stack)
             ├─→ timer_handler(rsp)           ← C handler
@@ -106,7 +167,7 @@ yield();  // Hemat CPU, tunggu IRQ berikutnya (timer, keyboard, dll)
 ```
 
 > **Catatan:** Dalam preemptive mode, `yield()` **tidak wajib** dipanggil.  
-> Timer akan switch task secara paksa setiap 20ms.  
+> Timer akan mengecek quantum scheduler berbasis waktu setiap tick.  
 > Gunakan `yield()` di dalam loop menunggu untuk hemat daya CPU.
 
 ---
@@ -229,7 +290,7 @@ Stack task (tumbuh ke bawah ↓)
 
 ### Quantum
 
-Scheduler dipanggil setiap **20ms** (bisa diubah di `drivers/timer.c`):
+Scheduler memakai quantum **20ms** (bisa diubah di `drivers/timer.c`). Timer IRQ sendiri berjalan sesuai refresh rate aktif (`60`, `100`, atau `144` Hz):
 
 ```c
 // drivers/timer.c
@@ -242,7 +303,8 @@ Scheduler dipanggil setiap **20ms** (bisa diubah di `drivers/timer.c`):
 |------|-------|---------|
 | Max tasks | 8 | `MAX_TASKS` di `include/task.h` |
 | Stack per task | 8 KB | `TASK_STACK_SIZE` di `include/task.h` |
-| Quantum | 20 ms | Di `drivers/timer.c` |
+| Timer refresh | 60 / 100 / 144 Hz | Default 60Hz, bisa diubah via shell `refresh` |
+| Quantum | 20 ms | Scheduler quantum di `drivers/timer.c` |
 | Ring 3 (user space) | ⚠️ Belum | Semua task saat ini Ring 0 (kernel) |
 | Task cleanup/join | ⚠️ Belum | Tandai `TASK_DEAD` secara manual |
 | Stack overflow guard | ⚠️ Belum | Jangan allokasi array besar di task |
@@ -254,7 +316,9 @@ Scheduler dipanggil setiap **20ms** (bisa diubah di `drivers/timer.c`):
 | File | Fungsi |
 |------|--------|
 | [`include/task.h`](include/task.h) | Public API, `registers_t`, `task_t`, konstanta |
+| [`include/timer.h`](include/timer.h) | Timer API, default refresh rate, preset runtime |
 | [`kernel/task.c`](kernel/task.c) | Implementasi `create_task`, `schedule`, `yield` |
-| [`drivers/timer.c`](drivers/timer.c) | `timer_handler` — trigger scheduler tiap 20ms |
+| [`drivers/timer.c`](drivers/timer.c) | `timer_handler`, PIT runtime refresh, scheduler quantum |
+| [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Timer subscribers: visual, cursor, screen flush, network poll |
 | [`arch/x86/timer_isr.asm`](arch/x86/timer_isr.asm) | ISR stub — inti dari context switch |
 | [`arch/x86/isr_macro.inc`](arch/x86/isr_macro.inc) | `PUSHA64`/`POPA64` — layout stack frame |
