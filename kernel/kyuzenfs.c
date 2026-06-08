@@ -3,6 +3,7 @@
 #include "heap.h"
 #include "string.h"
 #include "fs.h"
+#include "spinlock.h"
 
 // Konstanta Internal
 kfs_header_t current_fs; 
@@ -19,9 +20,12 @@ static uint32_t slen(const char* str) {
 }
 void kprint(const char* str) {
     if (!str || !tty_node.write) return; 
+
+    uint64_t flags = spinlock_lock_irqsave(&g_kernel_lock);
     write_fs(&tty_node, 0, slen(str), (uint8_t*)str);
     extern void compositor_flush(void);
     if (tty_node.write) compositor_flush();
+    spinlock_unlock_irqrestore(&g_kernel_lock, flags);
 }
 
 // Fungsi sangat penting agar OS tidak lag saat copy file besar

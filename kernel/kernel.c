@@ -15,6 +15,7 @@
 #include "task.h"
 #include "timer.h"
 #include "shell.h"
+#include "lapic.h"
 
 // ============================================================
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
@@ -143,6 +144,7 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
 
     gdt_load();
     idt_load();
+    lapic_init_ap();
 
     state->online = 1;
     smp_atomic_inc(&smp_cpu_online_count);
@@ -156,7 +158,7 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     smp_spin_unlock(&smp_log_lock);
 
     for (;;) {
-        __asm__ volatile("hlt");
+        __asm__ volatile("sti; hlt");
     }
 }
 
@@ -525,6 +527,7 @@ void kernel_main(void) {
     init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
     pic_remap(); 
+    lapic_init_bsp();
 
     extern void pci_probe(void);
     pci_probe();
