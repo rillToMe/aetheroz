@@ -17,9 +17,44 @@ AS = nasm
 LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
-# Direktori sumber (Biarkan tetap seperti ini dulu)
+# Direktori sumber kernel (Ring 0)
 SRC_DIRS = arch/x86 drivers kernel fs apps
-INCLUDE_DIR = include
+
+# ==========================================
+# lwIP Network Stack
+# ==========================================
+# Semua file .c dari lwIP core, netif, dan port driver kita.
+# File port/sys_arch.c TIDAK diperlukan saat NO_SYS=1 — hanya sys_now()
+# yang perlu diimplementasikan di kernel/timer.c atau sejenisnya.
+LWIP_CORE_DIR  = drivers/net/lwip/src/core
+LWIP_NETIF_DIR = drivers/net/lwip/src/netif
+LWIP_PORT_DIR  = drivers/net/lwip/port
+LWIP_INC_DIR   = drivers/net/lwip/src/include
+
+# Kumpulkan semua source lwIP secara otomatis
+LWIP_CORE_SRCS = $(wildcard $(LWIP_CORE_DIR)/*.c)       \
+                 $(wildcard $(LWIP_CORE_DIR)/ipv4/*.c)
+
+# Daftar eksplisit netif yang kita butuhkan:
+#   ethernet.c   — Ethernet frame input/output (wajib untuk LWIP_ETHERNET=1)
+# File-file berikut SENGAJA TIDAK diinclude:
+#   slipif.c     — Serial Line IP (butuh sio_open/sio_send/sio_tryread)
+#   zepif.c      — IEEE 802.15.4 ZEP encapsulation
+#   bridgeif*.c  — L2 bridge (butuh infrastruktur terpisah)
+#   lowpan6*.c   — 6LoWPAN untuk IoT (butuh LWIP_IPV6)
+#   ppp/         — Point-to-Point Protocol
+LWIP_NETIF_SRCS= $(LWIP_NETIF_DIR)/ethernet.c
+
+LWIP_PORT_SRCS = $(LWIP_PORT_DIR)/kyuzen_netif.c \
+                 $(LWIP_PORT_DIR)/sys_arch.c
+
+# Gabung semua source lwIP
+LWIP_SRCS      = $(LWIP_CORE_SRCS) $(LWIP_NETIF_SRCS) $(LWIP_PORT_SRCS)
+
+# Object files lwIP (dipisah agar tidak tercampur dengan wildcard SRC_DIRS)
+LWIP_OBJS      = $(LWIP_SRCS:.c=.o)
+
+# LWIP_CFLAGS akan didefinisikan di bawah, setelah CFLAGS kernel tersedia
 
 # --- Flags Compiler 64-bit ---
 # 1. Target diubah menjadi x86_64
@@ -27,7 +62,14 @@ INCLUDE_DIR = include
 # 3. DITAMBAHKAN -mno-red-zone (SANGAT PENTING!)
 # 4. -mcmodel=kernel: wajib untuk higher-half kernel — mencegah R_X86_64_32
 #    relocation error saat simbol berada di atas 4GB (0xFFFFFFFF80000000)
+INCLUDE_DIR = include
 CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INCLUDE_DIR)
+
+# Flags compiler untuk unit lwIP:
+#   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
+#   - Tambahkan path header lwIP dan port Kyuzen
+#   - -Wno-error mencegah warning internal lwIP memblok build
+LWIP_CFLAGS    = $(CFLAGS) -std=c11 -I$(LWIP_INC_DIR) -I$(LWIP_PORT_DIR) -Wno-error
 
 # --- Flags Assembler ---
 # NASM sekarang merakit output 64-bit
@@ -48,6 +90,7 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c,$(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
+# Kernel + arch + drivers object files
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
 
 # File output
@@ -57,12 +100,27 @@ TARGET = myos.bin
 all: $(TARGET)
 
 # Tahap 3: Link Semuanya
-$(TARGET): $(OBJS)
-	$(LD) $(LDFLAGS) $(OBJS) -o $(TARGET)
+$(TARGET): $(OBJS) $(LWIP_OBJS)
+	$(LD) $(LDFLAGS) $(OBJS) $(LWIP_OBJS) -o $(TARGET)
 
-# Tahap 2: Compile C
+# Tahap 2: Compile C (kernel/arch/drivers/fs/apps)
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -std=c11 -c $< -o $@
+
+# Tahap 2b: Compile lwIP source files
+# Aturan eksplisit ini harus muncul SEBELUM aturan generic %.o: %.c
+# agar lwIP mendapat LWIP_CFLAGS (termasuk -I path yang benar).
+$(LWIP_CORE_DIR)/%.o: $(LWIP_CORE_DIR)/%.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
+$(LWIP_CORE_DIR)/ipv4/%.o: $(LWIP_CORE_DIR)/ipv4/%.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
+$(LWIP_NETIF_DIR)/%.o: $(LWIP_NETIF_DIR)/%.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
+$(LWIP_PORT_DIR)/%.o: $(LWIP_PORT_DIR)/%.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
 # Tahap 1: Compile Assembly
 %.o: %.asm
@@ -124,9 +182,9 @@ run: boot_image.iso
 
 		
 
-# Bersihkan file hasil build
+# Bersihkan file hasil build (kernel + lwIP objects)
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET)
 
 # run: boot_image.iso
 # 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
