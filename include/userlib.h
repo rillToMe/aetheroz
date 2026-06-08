@@ -99,4 +99,11 @@ void sys_reboot(void);
 uint32_t sys_get_total_disk(void);
 uint32_t sys_get_used_disk(void); 
 uint32_t sys_get_cpu_usage(void);
+
+// sys_ping: kirim ICMP Echo Request (ping) ke host.
+// host = nama domain atau IP string ("google.com" atau "8.8.8.8")
+// Return: rata-rata RTT dalam ms jika berhasil, -1 jika gagal/timeout
+// Output ping dicetak langsung oleh kernel (kprint) ke TTY.
+int sys_ping(const char *host);
+
 #endif

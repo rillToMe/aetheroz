@@ -48,11 +48,17 @@ LWIP_NETIF_SRCS= $(LWIP_NETIF_DIR)/ethernet.c
 LWIP_PORT_SRCS = $(LWIP_PORT_DIR)/kyuzen_netif.c \
                  $(LWIP_PORT_DIR)/sys_arch.c
 
-# Gabung semua source lwIP
+# Driver e1000 (Intel 82540EM NIC) — dikompilasi dengan CFLAGS kernel biasa
+# (tidak perlu lwIP headers, driver ini standalone)
+E1000_DIR  = drivers/net/e1000
+E1000_SRCS = $(E1000_DIR)/e1000.c
+E1000_OBJS = $(E1000_SRCS:.c=.o)
+
+# Gabung semua source lwIP + e1000
 LWIP_SRCS      = $(LWIP_CORE_SRCS) $(LWIP_NETIF_SRCS) $(LWIP_PORT_SRCS)
 
-# Object files lwIP (dipisah agar tidak tercampur dengan wildcard SRC_DIRS)
-LWIP_OBJS      = $(LWIP_SRCS:.c=.o)
+# Object files lwIP + e1000 (keduanya di-link bersama)
+LWIP_OBJS      = $(LWIP_SRCS:.c=.o) $(E1000_OBJS)
 
 # LWIP_CFLAGS akan didefinisikan di bawah, setelah CFLAGS kernel tersedia
 
@@ -122,6 +128,20 @@ $(LWIP_NETIF_DIR)/%.o: $(LWIP_NETIF_DIR)/%.c
 $(LWIP_PORT_DIR)/%.o: $(LWIP_PORT_DIR)/%.c
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
+# e1000 driver: pakai CFLAGS kernel biasa (bukan LWIP_CFLAGS)
+# e1000.c tidak butuh lwIP headers — hanya kernel headers (heap, string, pci)
+$(E1000_DIR)/%.o: $(E1000_DIR)/%.c
+	$(CC) $(CFLAGS) -std=c11 -I$(INCLUDE_DIR) -c $< -o $@
+
+# net_init.c: butuh LWIP_CFLAGS karena include lwIP headers (dhcp.h, dns.h, dll)
+# Aturan ini OVERRIDE aturan generic %.o:%.c untuk file ini saja.
+kernel/net_init.o: kernel/net_init.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
+# net_ping.c: butuh LWIP_CFLAGS karena include lwIP raw/icmp/dns headers
+kernel/net_ping.o: kernel/net_ping.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
 # Tahap 1: Compile Assembly
 %.o: %.asm
 	$(AS) $(ASFLAGS) $< -o $@
@@ -179,6 +199,7 @@ run: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
 		-drive file=disk.img,format=raw,index=0,media=disk \
 		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000
 
 		
 

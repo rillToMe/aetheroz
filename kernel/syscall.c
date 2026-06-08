@@ -322,6 +322,14 @@ void syscall_handler(registers_t *r) {
         extern void kwm_get_window_pos(int, int32_t*, int32_t*);
         kwm_get_window_pos((int)r->rbx, (int32_t*)r->rcx, (int32_t*)r->rdx);
     }
+    else if (syscall_num == 41) { // sys_ping
+        // RBX = const char* host (user-space pointer ke string hostname/IP)
+        // Return: RTT dalam ms (>=0) jika berhasil, -1 jika timeout/error
+        extern int kernel_ping(const char *host);
+        const char *host = (const char *)r->rbx;
+        int rtt = kernel_ping(host);
+        ret_val = (uint64_t)(int64_t)rtt; // sign-extend -1 dengan benar
+    }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;

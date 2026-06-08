@@ -159,3 +159,12 @@ uint32_t sys_get_used_disk(void) {
 uint32_t sys_get_cpu_usage(void) {
     uint32_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(37)); return ret;
 }
+
+// sys_ping: Syscall 41 — ICMP Echo Request ke host.
+// Output (reply/timeout) dicetak oleh kernel langsung ke TTY.
+// Return: rata-rata RTT dalam ms, atau -1 (sebagai int64) jika gagal.
+int sys_ping(const char *host) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(41), "b"((uint64_t)host));
+    return (int)ret;
+}

@@ -2,7 +2,7 @@
 // kernel/timer_callbacks.c — Default Timer Subscribers, Kyuzen OS
 //
 // STANDAR: Semua timing di sini pakai timer_get_ms() + timestamp target.
-//   BUKAN: if (tick % 50 == 0) — fragile, tergantung TIMER_HZ
+//   BUKAN: if (tick % 60 == 0) — fragile, tergantung refresh rate
 //   TAPI:  if (now >= next_event) — hardware-agnostic, benar di semua Hz
 //
 // Subscriber terdaftar:
@@ -23,11 +23,19 @@ extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color)
 extern void tty_blink_cursor(void);
 extern void compositor_flush(void);
 
+// --- Network stack dependencies ---
+// e1000_poll() dipanggil setiap tick untuk memproses paket masuk dari NIC.
+extern void e1000_poll(void);
+// sys_check_timeouts() dipanggil setiap 1ms untuk drive lwIP software timers
+// (TCP retransmit, ARP expiry, DHCP renewal, dll).
+// Di-define oleh lwIP di src/core/timeouts.c
+extern void sys_check_timeouts(void);
+
 // ============================================================
 // CALLBACK 1: Visual HUD — spinner + uptime di pojok kanan atas
 //
 // Menggunakan timestamp ms, bukan modulo ticks.
-// Ini benar di 50Hz, 100Hz, 144Hz — tidak perlu diubah saat ganti TIMER_HZ.
+// Ini benar di 60Hz, 100Hz, 144Hz — tidak perlu diubah saat ganti refresh rate.
 // ============================================================
 static uint64_t next_spinner_update = 0;  // ms target: kapan spinner ganti frame
 static uint64_t next_uptime_update  = 0;  // ms target: kapan uptime di-refresh
@@ -93,7 +101,7 @@ static void cb_cursor(uint32_t tick) {
 }
 
 // ============================================================
-// CALLBACK 3: Screen flush — setiap tick (50fps max pada 50Hz)
+// CALLBACK 3: Screen flush — setiap tick (default 60fps, preset 60/100/144)
 // Untuk hemat CPU, ubah ke setiap 2 tick (25fps): tambah timestamp check.
 // ============================================================
 static void cb_flush(uint32_t tick) {
@@ -102,11 +110,46 @@ static void cb_flush(uint32_t tick) {
 }
 
 // ============================================================
+// CALLBACK 4: Network polling — setiap tick
+//
+// Dua tugas:
+//   A. e1000_poll()         → cek RX ring NIC, copy paket masuk ke lwIP pbuf
+//   B. sys_check_timeouts() → drive semua lwIP software timers
+//
+// Frekuensi:
+//   - e1000_poll()         : SETIAP tick (default ~16ms pada 60Hz)
+//                            Lebih sering = lebih responsive, tapi refresh rate
+//                            yang rendah ini sudah cukup untuk throughput normal.
+//   - sys_check_timeouts() : Setiap 1ms (sesuai kontrak lwIP).
+//                            Kita gunakan timestamp untuk memastikan dipanggil
+//                            minimal 1x per ms meskipun tick rate default 60Hz.
+//
+// PENTING: Kedua fungsi ini NO-OP jika driver/lwIP belum diinisialisasi,
+//          jadi aman dipanggil bahkan sebelum net_init().
+// ============================================================
+static uint64_t next_lwip_tick = 0; // ms target untuk sys_check_timeouts
+
+static void cb_network(uint32_t tick) {
+    (void)tick;
+
+    // A. Poll NIC untuk paket masuk — setiap timer tick
+    e1000_poll();
+
+    // B. Drive lwIP timers — setiap 1ms (sesuai kontrak sys_check_timeouts)
+    uint64_t now = timer_get_ms();
+    if (now >= next_lwip_tick) {
+        next_lwip_tick = now + 1; // target berikutnya = 1ms dari sekarang
+        sys_check_timeouts();
+    }
+}
+
+// ============================================================
 // ENTRY POINT — dipanggil dari kmain setelah init_timer()
 // ============================================================
 void timer_callbacks_init(void) {
-    timer_register(cb_visual);   // Slot 0
-    timer_register(cb_cursor);   // Slot 1
-    timer_register(cb_flush);    // Slot 2
-    // Slot 3-7: tersedia untuk network polling, audio tick, animasi, dll
+    timer_register(cb_visual);   // Slot 0: HUD spinner + uptime
+    timer_register(cb_cursor);   // Slot 1: TTY cursor blink
+    timer_register(cb_flush);    // Slot 2: Compositor screen flush
+    timer_register(cb_network);  // Slot 3: e1000 RX poll + lwIP timeouts
+    // Slot 4-7: tersedia untuk audio tick, animasi, dll
 }

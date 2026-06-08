@@ -24,6 +24,9 @@
 // ============================================================
 
 static volatile uint64_t timer_ticks = 0;
+static volatile uint64_t timer_ms = 0;
+static volatile uint32_t timer_current_hz = TIMER_DEFAULT_HZ;
+static uint32_t timer_ms_remainder = 0;
 
 // CPU Usage Tracker (tetap tick-based untuk akurasi rasio)
 static uint32_t cpu_idle_ticks    = 0;
@@ -46,7 +49,7 @@ static uint64_t next_schedule_ms = 0;
 // ============================================================
 
 uint64_t timer_get_ms(void) {
-    return (timer_ticks * 1000ULL) / TIMER_HZ;
+    return timer_ms;
 }
 
 void timer_sleep_ms(uint32_t ms) {
@@ -74,6 +77,14 @@ uint32_t timer_get_cpu_usage(void) {
 
 uint32_t get_cpu_usage(void) {  // Legacy alias
     return current_cpu_usage;
+}
+
+uint32_t timer_get_refresh_rate(void) {
+    return timer_current_hz;
+}
+
+int timer_is_supported_refresh_rate(uint32_t hz) {
+    return (hz == 60 || hz == 100 || hz == 144) ? 1 : 0;
 }
 
 void timer_sleep_ticks(uint32_t ticks) {
@@ -107,11 +118,58 @@ void timer_unregister(timer_callback_t cb) {
 // PIT INITIALIZATION
 // ============================================================
 
-void init_timer(uint32_t freq) {
+static void timer_program_pit(uint32_t freq) {
     uint32_t divisor = 1193180 / freq;
     outb(0x43, 0x36);
     outb(0x40, (uint8_t)(divisor & 0xFF));
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+}
+
+static uint64_t timer_irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static void timer_irq_restore(uint64_t flags) {
+    if (flags & (1ULL << 9)) {
+        __asm__ volatile("sti" ::: "memory");
+    }
+}
+
+int timer_set_refresh_rate(uint32_t hz) {
+    if (!timer_is_supported_refresh_rate(hz)) return -1;
+
+    uint64_t flags = timer_irq_save();
+    timer_current_hz = hz;
+    timer_ms_remainder = 0;
+    cpu_total_ticks = 0;
+    cpu_idle_ticks = 0;
+    prev_yield_snapshot = yield_counter;
+    timer_program_pit(hz);
+    timer_irq_restore(flags);
+    return 0;
+}
+
+void init_timer(uint32_t freq) {
+    if (!timer_is_supported_refresh_rate(freq)) {
+        freq = TIMER_DEFAULT_HZ;
+    }
+
+    timer_current_hz = freq;
+    timer_ms_remainder = 0;
+    timer_program_pit(freq);
+}
+
+static void timer_accumulate_ms(void) {
+    uint32_t hz = timer_current_hz;
+    timer_ms += 1000 / hz;
+    timer_ms_remainder += 1000 % hz;
+
+    if (timer_ms_remainder >= hz) {
+        timer_ms++;
+        timer_ms_remainder -= hz;
+    }
 }
 
 // ============================================================
@@ -126,6 +184,7 @@ void init_timer(uint32_t freq) {
 registers_t* timer_handler(registers_t* r) {
     // 1. Tick counter (monotonic, tidak pernah overflow untuk OS normal)
     timer_ticks++;
+    timer_accumulate_ms();
 
     // 2. CPU Usage tracking (tick-based, reset per detik)
     cpu_total_ticks++;
@@ -135,7 +194,7 @@ registers_t* timer_handler(registers_t* r) {
     }
     prev_yield_snapshot = cur;
 
-    if (cpu_total_ticks >= TIMER_HZ) {
+    if (cpu_total_ticks >= timer_current_hz) {
         current_cpu_usage = 100 - ((cpu_idle_ticks * 100) / cpu_total_ticks);
         cpu_total_ticks   = 0;
         cpu_idle_ticks    = 0;

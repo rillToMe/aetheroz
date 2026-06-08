@@ -90,6 +90,14 @@
 /* --- ICMP (ping support) ---------------------------------------------------*/
 #define LWIP_ICMP                       1
 
+/* --- RAW sockets -----------------------------------------------------------*/
+/**
+ * LWIP_RAW = 1: Enable raw API (raw_new, raw_send, raw_recv, raw_bind).
+ * WAJIB untuk implementasi ping — net_ping.c menggunakan raw ICMP socket.
+ * Tanpa ini semua fungsi raw_* dikompilasi sebagai no-op (LWIP_RAW=0 default).
+ */
+#define LWIP_RAW                        1
+
 /* --- UDP ------------------------------------------------------------------*/
 #define LWIP_UDP                        1
 
@@ -98,13 +106,24 @@
 
 /* --- DHCP -----------------------------------------------------------------*/
 /**
- * Disable DHCP for now; a static IP is far simpler during initial porting.
- * Set to 1 and add dhcp.c to your build once the stack is stable.
+ * LWIP_DHCP = 1: Aktifkan DHCP client.
+ * QEMU -nic user secara otomatis menyediakan DHCP server (10.0.2.x).
+ * Setelah netif_set_up() + dhcp_start(), lwIP akan otomatis mendapat IP.
  */
-#define LWIP_DHCP                       0
+#define LWIP_DHCP                       1
+
+/* Ukuran pool untuk DHCP PCB */
+#define MEMP_NUM_DHCP_SERVERS           0   /* Client only, bukan server */
 
 /* --- DNS ------------------------------------------------------------------*/
-#define LWIP_DNS                        0
+/**
+ * LWIP_DNS = 1: Aktifkan DNS resolver.
+ * Wajib untuk `ping google.com` (resolve nama domain ke IP).
+ * QEMU -nic user otomatis forward DNS ke 8.8.8.8.
+ */
+#define LWIP_DNS                        1
+#define DNS_TABLE_SIZE                  4   /* Max 4 hostname concurrent */
+#define DNS_MAX_NAME_LENGTH             256
 
 /* ===========================================================================
  * 4. MEMORY & ALIGNMENT
@@ -210,5 +229,29 @@
 
 /** Broadcast support on UDP */
 #define IP_SOF_BROADCAST                1
+
+/* ===========================================================================
+ * 10. RANDOM NUMBER GENERATOR
+ *
+ * lwIP membutuhkan LWIP_RAND() untuk:
+ *   - dns.c: generate DNS transaction ID (DNS_RAND_TXID macro)
+ *   - dhcp.c: generate transaction ID dan port acak
+ *
+ * Di freestanding kernel tidak ada rand() dari libc.
+ * Kita implementasikan LCG (Linear Congruential Generator) sederhana
+ * langsung sebagai static inline di sini.
+ *
+ * Kualitas: cukup untuk DNS/DHCP (tidak perlu kriptografis).
+ * Konstanta: Knuth MMIX (m=2^64, a=6364136223846793005, c=1442695040888963407)
+ *            disederhanakan ke 32-bit untuk kemudahan.
+ * =========================================================================*/
+
+static inline unsigned int lwip_rand_impl(void) {
+    static unsigned int lwip_rand_state = 0xDEADBEEFu;
+    lwip_rand_state = lwip_rand_state * 1664525u + 1013904223u; /* Knuth LCG */
+    return lwip_rand_state;
+}
+
+#define LWIP_RAND() lwip_rand_impl()
 
 #endif /* LWIPOPTS_H */

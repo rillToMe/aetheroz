@@ -4,6 +4,17 @@
 #include "timer.h"   // timer_sleep_ms() — hardware-agnostic sleep
 
 #include <stddef.h>
+#include <stdint.h>
+
+// sys_ping: weak fallback definition di sini agar link selalu berhasil.
+// Jika apps/userlib.o (versi strong) juga di-link, definisi ini diabaikan.
+// Syscall 41: RBX = host string pointer, return RTT ms atau -1.
+__attribute__((weak))
+int sys_ping(const char *host) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(41ULL), "b"((uint64_t)host));
+    return (int)ret;
+}
 
 // Global: RSP yang disimpan SEBELUM shell memanggil app via CALL.
 // Digunakan oleh sys_exec (syscall 33) untuk me-reset stack sehingga
@@ -51,6 +62,23 @@ void num_to_str(uint32_t num, char* str) {
     str[j] = '\0';
 }
 
+int parse_uint(const char* str, uint32_t* out) {
+    if (str == NULL || out == NULL) return 0;
+
+    while (*str == ' ') str++;
+    if (*str == '\0') return 0;
+
+    uint32_t value = 0;
+    while (*str != '\0') {
+        if (*str < '0' || *str > '9') return 0;
+        value = value * 10 + (uint32_t)(*str - '0');
+        str++;
+    }
+
+    *out = value;
+    return 1;
+}
+
 void user_shell() {
     char cmd_buffer[256];
     int cmd_index = 0;
@@ -93,7 +121,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {
@@ -196,6 +224,24 @@ void user_shell() {
                     }
                     else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
                     }
+                    else if (strcmp(command, "refresh") == 0) {
+                        if (argument == NULL) {
+                            print("Refresh rate saat ini: ");
+                            print_num(timer_get_refresh_rate());
+                            print("Hz\nPilihan: 60, 100, 144\n");
+                        } else {
+                            uint32_t hz = 0;
+                            if (!parse_uint(argument, &hz)) {
+                                print("Penggunaan: refresh [60|100|144]\n");
+                            } else if (timer_set_refresh_rate(hz) == 0) {
+                                print("Refresh rate diubah ke ");
+                                print_num(hz);
+                                print("Hz\n");
+                            } else {
+                                print("Refresh rate tidak didukung. Pilihan: 60, 100, 144\n");
+                            }
+                        }
+                    }
                     else if (strcmp(command, "shutdown") == 0) {
                         print("Mematikan Kyuzen OS...\n");
                         sys_shutdown();
@@ -228,6 +274,19 @@ void user_shell() {
                         // Bangun!
                         clear_screen();
                         kyuzen_fetch(); // Tampilkan neofetch OS lu sebagai sapaan pagi
+                    }
+                    // Perintah PING — ICMP Echo Request via lwIP
+                    else if (strcmp(command, "ping") == 0) {
+                        if (argument == NULL) {
+                            print("Penggunaan: ping [host]\n");
+                            print("Contoh  : ping 10.0.2.2\n");
+                            print("          ping 8.8.8.8\n");
+                            print("          ping google.com\n");
+                        } else {
+                            // Output ping (Reply/Timeout/Statistik) dicetak oleh kernel
+                            // via kprint() ke TTY — kita hanya perlu trigger syscall.
+                            sys_ping(argument);
+                        }
                     }
                     // else if (strcmp(command, "jam") == 0) {
                     //     // Launch clock.elf — jam digital real-time dengan GUI window

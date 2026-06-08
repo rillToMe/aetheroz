@@ -443,6 +443,12 @@ void kernel_main(void) {
     // Tanpa sti: timer IRQ tidak pernah fire, keyboard beku, OS freeze!
     __asm__ volatile("sti");
 
+    // Inisialisasi network stack (lwIP + e1000 + DHCP).
+    // WAJIB setelah sti karena DHCP wait loop menggunakan hlt
+    // dan membutuhkan PIT IRQ untuk drive timer callbacks.
+    extern void net_init(void);
+    net_init();
+
     switch_to_user_mode(user_login);
 
     __asm__ volatile("cli");
