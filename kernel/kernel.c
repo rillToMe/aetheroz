@@ -50,6 +50,14 @@ static volatile struct limine_hhdm_request hhdm_request = {
     .revision = 0
 };
 
+// MP/SMP: minta Limine menyiapkan semua CPU dan biarkan AP menunggu entry point.
+__attribute__((used, section(".requests")))
+static volatile struct limine_mp_request mp_request = {
+    .id = LIMINE_MP_REQUEST_ID,
+    .revision = 0,
+    .flags = 0
+};
+
 __attribute__((used, section(".requests_end_marker")))
 static volatile uint64_t __limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
 // ============================================================
@@ -60,13 +68,147 @@ uint64_t hhdm_offset = 0;
 
 extern void init_gdt();
 extern void init_idt();
+extern void gdt_load(void);
+extern void idt_load(void);
 extern void pic_remap();
 extern void init_keyboard();
 extern void switch_to_user_mode(void (*user_func)());
 extern void user_login();
 extern void init_mouse();
 extern void kfs_delete_file(char* filename);
+extern void kprint(const char* str);
+void kprint_num(uint64_t num);
 // terminal_putchar tidak lagi dibutuhkan langsung (kprint ada di kyuzenfs.c)
+
+// ============================================================
+// SMP BRING-UP AWAL
+//
+// Tahap awal: AP/core lain hanya dibuat online, log, lalu park di hlt loop.
+// Belum menjalankan scheduler multicore, heap/FS concurrent, atau interrupt
+// routing per-core. Ini sengaja kecil agar baseline SMP bisa diuji dulu.
+// ============================================================
+
+#define SMP_MAX_CPUS        16
+#define SMP_AP_STACK_SIZE   16384
+
+typedef struct {
+    uint64_t stack_top;      // offset 0, dibaca oleh arch/x86/smp_ap_entry.asm
+    uint32_t processor_id;
+    uint32_t lapic_id;
+    volatile uint32_t online;
+    uint8_t reserved[4];
+    __attribute__((aligned(16))) uint8_t stack[SMP_AP_STACK_SIZE];
+} smp_cpu_state_t;
+
+static smp_cpu_state_t smp_cpu_states[SMP_MAX_CPUS];
+static volatile uint32_t smp_cpu_online_count = 1; // BSP sudah online
+static volatile uint32_t smp_log_lock = 0;
+
+extern void smp_ap_entry(struct limine_mp_info *cpu);
+
+static void smp_spin_lock(volatile uint32_t *lock) {
+    for (;;) {
+        uint32_t taken = 1;
+        __asm__ volatile(
+            "lock xchg %0, %1"
+            : "+r"(taken), "+m"(*lock)
+            :
+            : "memory"
+        );
+        if (taken == 0) return;
+        while (*lock) {
+            __asm__ volatile("pause");
+        }
+    }
+}
+
+static void smp_spin_unlock(volatile uint32_t *lock) {
+    __asm__ volatile("" ::: "memory");
+    *lock = 0;
+}
+
+static uint32_t smp_atomic_inc(volatile uint32_t *value) {
+    uint32_t old = 1;
+    __asm__ volatile(
+        "lock xadd %0, %1"
+        : "+r"(old), "+m"(*value)
+        :
+        : "memory"
+    );
+    return old + 1;
+}
+
+void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
+    __asm__ volatile("cli");
+
+    gdt_load();
+    idt_load();
+
+    state->online = 1;
+    smp_atomic_inc(&smp_cpu_online_count);
+
+    smp_spin_lock(&smp_log_lock);
+    kprint("[smp] CPU #");
+    kprint_num(cpu->processor_id);
+    kprint(" online (lapic=");
+    kprint_num(cpu->lapic_id);
+    kprint(")\n");
+    smp_spin_unlock(&smp_log_lock);
+
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+static void smp_init(void) {
+    struct limine_mp_response *mp = mp_request.response;
+    if (mp == NULL || mp->cpu_count == 0 || mp->cpus == NULL) {
+        kprint("[smp] MP response unavailable; running single-core\n");
+        return;
+    }
+
+    kprint("[smp] BSP lapic=");
+    kprint_num(mp->bsp_lapic_id);
+    kprint(", CPUs reported=");
+    kprint_num(mp->cpu_count);
+    kprint("\n");
+
+    uint32_t ap_slot = 0;
+    for (uint64_t i = 0; i < mp->cpu_count && ap_slot + 1 < SMP_MAX_CPUS; i++) {
+        struct limine_mp_info *cpu = mp->cpus[i];
+        if (cpu == NULL) continue;
+
+        if (cpu->lapic_id == mp->bsp_lapic_id) {
+            smp_cpu_states[0].processor_id = cpu->processor_id;
+            smp_cpu_states[0].lapic_id = cpu->lapic_id;
+            smp_cpu_states[0].online = 1;
+            continue;
+        }
+
+        ap_slot++;
+        smp_cpu_state_t *state = &smp_cpu_states[ap_slot];
+        state->processor_id = cpu->processor_id;
+        state->lapic_id = cpu->lapic_id;
+        state->online = 0;
+        state->stack_top = ((uint64_t)&state->stack[SMP_AP_STACK_SIZE]) & ~0xFULL;
+
+        cpu->extra_argument = (uint64_t)state;
+        __asm__ volatile("" ::: "memory");
+        cpu->goto_address = smp_ap_entry;
+    }
+
+    uint64_t wait_ticks = 0;
+    while (smp_cpu_online_count < (uint32_t)(ap_slot + 1) && wait_ticks < 10000000ULL) {
+        wait_ticks++;
+        __asm__ volatile("pause");
+    }
+
+    kprint("[smp] Online CPUs: ");
+    kprint_num(smp_cpu_online_count);
+    kprint("/");
+    kprint_num(ap_slot + 1);
+    kprint("\n");
+}
 
 // --- VARIABEL GLOBAL FRAMEBUFFER ---
 uint32_t* fb_ptr = NULL;
@@ -394,6 +536,7 @@ void kernel_main(void) {
     init_keyboard();
     init_tty(); 
     kfs_init();
+    smp_init();
 
     // 3. AUTO-INSTALL MODUL DARI LIMINE
     kprint("\n--- RADAR AUTO-INSTALL ---\n");

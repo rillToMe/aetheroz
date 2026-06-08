@@ -197,6 +197,7 @@ boot_image.iso: $(TARGET) apps limine.conf kyuzen.png logo.png
 # Tahap 4: Boot up QEMU (Dengan Fitur Debugging 64-bit)
 run: boot_image.iso
 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
+		-smp 4 \
 		-drive file=disk.img,format=raw,index=0,media=disk \
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000

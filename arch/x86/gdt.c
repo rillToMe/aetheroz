@@ -93,3 +93,7 @@ void init_gdt() {
     gdt_flush((uint64_t)&gp);
     tss_flush();
 }
+
+void gdt_load(void) {
+    gdt_flush((uint64_t)&gp);
+}

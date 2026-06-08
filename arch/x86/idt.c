@@ -88,3 +88,7 @@ void init_idt() {
 
     idt_flush((uint64_t)&idtp);
 }
+
+void idt_load(void) {
+    idt_flush((uint64_t)&idtp);
+}
