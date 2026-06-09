@@ -19,6 +19,10 @@
 #include "smp.h"
 #include "spinlock.h"
 
+#ifdef STRESS_TEST
+#include "pmm_stress.h"
+#endif
+
 // ============================================================
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
 // ============================================================
@@ -690,6 +694,11 @@ void kernel_main(void) {
     // dan membutuhkan PIT IRQ untuk drive timer callbacks.
     extern void net_init(void);
     net_init();
+
+#ifdef STRESS_TEST
+    stress_start();
+    while (1) __asm__ volatile("hlt");
+#endif
 
     switch_to_user_mode(user_login);
 

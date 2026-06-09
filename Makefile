@@ -202,11 +202,20 @@ run: boot_image.iso
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
-		
+# Stress test: recursive make with STRESS_TEST flag + debug/ sources
+.PHONY: stress
+stress:
+	$(MAKE) clean
+	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) debug" CFLAGS="$(CFLAGS) -DSTRESS_TEST"
+	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
+		-smp 4 \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000
 
 # Bersihkan file hasil build (kernel + lwIP objects)
 clean:
-	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET)
+	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o
 
 # run: boot_image.iso
 # 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
