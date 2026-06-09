@@ -17,6 +17,7 @@
 #include "pmm.h"
 #include "string.h"
 #include "spinlock.h"
+#include "smp.h"
 #include <stdint.h>
 
 // HHDM offset dari kernel.c: physical P accessible di hhdm_offset + P
@@ -29,6 +30,10 @@ extern uint64_t hhdm_offset;
 
 // Current PML4: disimpan sebagai VIRTUAL address (sudah ditambah HHDM)
 uint64_t* current_pml4 = 0;
+
+// Boot kernel PML4 physical address — saved at init, never changes.
+// Used to restore kernel AS when returning from user processes.
+static phys_addr_t kernel_pml4_phys = PHYS_NULL;
 
 // SMP-safe lock for all page table operations
 static spinlock_t paging_lock = SPINLOCK_INIT;
@@ -67,6 +72,7 @@ void init_paging(uint32_t unused) {
 
     uint64_t phys_pml4 = cr3 & 0xFFFFFFFFFFFFF000ULL;
     current_pml4 = (uint64_t*)PHYS_TO_VIRT(phys_pml4);
+    kernel_pml4_phys = (phys_addr_t)phys_pml4;  // Save boot PML4 forever
 }
 
 // ============================================================
@@ -410,4 +416,56 @@ void vmm_unmap_user_space(void) {
 
     // Destroy user mappings but keep the PML4 page
     vmm_destroy_address_space(pml4_phys, 0);
+}
+
+// ============================================================
+// vmm_switch_pml4 — Switch CR3 + current_pml4 to a given PML4
+// ============================================================
+void vmm_switch_pml4(phys_addr_t pml4_phys) {
+    if (pml4_phys == PHYS_NULL) return;
+
+    current_pml4 = (uint64_t*)PHYS_TO_VIRT(pml4_phys);
+    __asm__ volatile("mov %0, %%cr3" :: "r"((uint64_t)pml4_phys) : "memory");
+
+    uint32_t cpu_id = smp_current_cpu_index();
+    percpu_t *cpu = smp_get_cpu(cpu_id);
+    if (cpu) cpu->current_cr3 = (uint64_t)pml4_phys;
+}
+
+// ============================================================
+// vmm_switch_to_kernel_as — Restore boot kernel PML4
+// ============================================================
+void vmm_switch_to_kernel_as(void) {
+    if (kernel_pml4_phys == PHYS_NULL) return;
+
+    current_pml4 = (uint64_t*)PHYS_TO_VIRT(kernel_pml4_phys);
+    __asm__ volatile("mov %0, %%cr3" :: "r"((uint64_t)kernel_pml4_phys) : "memory");
+
+    uint32_t cpu_id = smp_current_cpu_index();
+    percpu_t *cpu = smp_get_cpu(cpu_id);
+    if (cpu) cpu->current_cr3 = (uint64_t)kernel_pml4_phys;
+}
+
+// ============================================================
+// vmm_get_kernel_pml4_phys — Return boot PML4 physical address
+// ============================================================
+phys_addr_t vmm_get_kernel_pml4_phys(void) {
+    return kernel_pml4_phys;
+}
+
+// ============================================================
+// vmm_destroy_task_as — Destroy a task's AS and restore kernel
+//
+// Safe to call even if current_pml4 points to the task's PML4.
+// Flow: switch to kernel PML4 first → then destroy old PML4.
+// ============================================================
+void vmm_destroy_task_as(phys_addr_t pml4_phys) {
+    if (pml4_phys == PHYS_NULL) return;
+
+    // Switch to kernel PML4 BEFORE destroying (since current_pml4
+    // might point into the PML4 we're about to free)
+    vmm_switch_to_kernel_as();
+
+    // Now safe to destroy the old address space
+    vmm_destroy_address_space(pml4_phys, 1);
 }

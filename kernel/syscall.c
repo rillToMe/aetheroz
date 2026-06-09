@@ -155,6 +155,27 @@ void syscall_handler(registers_t *r) {
         extern void flush_kbd_buffer(void);
         flush_event_queue();
         flush_kbd_buffer();
+
+        // --- PER-PROCESS ISOLATION ---
+        // Create a fresh address space for the new user app.
+        // This gives each app its own PML4 with isolated user pages.
+        phys_addr_t new_pml4 = vmm_create_address_space();
+        if (new_pml4 != PHYS_NULL) {
+            // Clean old user pages if this task had a previous AS
+            task_t *self = NULL;
+            for (int i = 0; i < task_count; i++) {
+                if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
+            }
+            if (self && self->pml4_phys != 0) {
+                vmm_destroy_task_as(self->pml4_phys);
+            }
+
+            // Switch to new AS: CR3 + current_pml4 both updated
+            vmm_switch_pml4(new_pml4);
+
+            if (self) self->pml4_phys = new_pml4;
+        }
+
         ret_val = elf_load_file((char*)r->rbx);
     }
 
@@ -229,41 +250,41 @@ void syscall_handler(registers_t *r) {
             kfname[fi] = '\0';
         }
 
-        // 1. Destroy current address space
-        //    If task has private PML4: destroy it fully and switch back to kernel CR3
-        //    If shared PML4: just unmap user-range pages in global PML4
+        // 1. Destroy current address space and switch back to kernel PML4
         {
-            uint32_t cpu_id = smp_current_cpu_index();
             task_t *self = NULL;
             for (int i = 0; i < task_count; i++) {
-                if (tasks[i].state == TASK_RUNNING) {
-                    self = &tasks[i];
-                    break;
-                }
+                if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
             }
 
             if (self && self->pml4_phys != 0) {
-                // Switch to kernel PML4 first, then destroy private one
-                extern uint64_t* current_pml4;
-                extern uint64_t hhdm_offset;
-                uint64_t kern_phys = (uint64_t)current_pml4 - hhdm_offset;
-                __asm__ volatile("mov %0, %%cr3" :: "r"(kern_phys) : "memory");
-
-                percpu_t *cpu = smp_get_cpu(cpu_id);
-                if (cpu) cpu->current_cr3 = kern_phys;
-
-                vmm_destroy_address_space(self->pml4_phys, 1);
+                vmm_destroy_task_as(self->pml4_phys);
                 self->pml4_phys = 0;
             } else {
                 vmm_unmap_user_space();
             }
         }
 
-        // 2. Flush KEDUA buffer input agar app baru tidak mewarisi keystroke lama
-        extern void flush_event_queue(void);
-        extern void flush_kbd_buffer(void);
-        flush_event_queue();
-        flush_kbd_buffer();
+        // 1b. Flush input buffers so new app doesn't inherit old keystrokes
+        {
+            extern void flush_event_queue(void);
+            extern void flush_kbd_buffer(void);
+            flush_event_queue();
+            flush_kbd_buffer();
+        }
+
+        // 2. Create fresh AS for the new app being exec'd
+        {
+            phys_addr_t new_pml4 = vmm_create_address_space();
+            if (new_pml4 != PHYS_NULL) {
+                vmm_switch_pml4(new_pml4);
+                task_t *self = NULL;
+                for (int i = 0; i < task_count; i++) {
+                    if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
+                }
+                if (self) self->pml4_phys = new_pml4;
+            }
+        }
 
         // 3. Load ELF baru ke slot 0x4000000
 
@@ -292,30 +313,17 @@ void syscall_handler(registers_t *r) {
         }
     }
     else if (syscall_num == 34) { // sys_exit — app selesai, kembali ke shell
-        // Destroy address space: private PML4 or shared user pages
+        // Destroy address space and switch back to kernel PML4
         {
-            uint32_t cpu_id = smp_current_cpu_index();
             task_t *self = NULL;
             for (int i = 0; i < task_count; i++) {
-                if (tasks[i].state == TASK_RUNNING) {
-                    self = &tasks[i];
-                    break;
-                }
+                if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
             }
 
             if (self && self->pml4_phys != 0) {
-                extern uint64_t* current_pml4;
-                extern uint64_t hhdm_offset;
-                uint64_t kern_phys = (uint64_t)current_pml4 - hhdm_offset;
-                __asm__ volatile("mov %0, %%cr3" :: "r"(kern_phys) : "memory");
-
-                percpu_t *cpu = smp_get_cpu(cpu_id);
-                if (cpu) cpu->current_cr3 = kern_phys;
-
-                vmm_destroy_address_space(self->pml4_phys, 1);
+                vmm_destroy_task_as(self->pml4_phys);
                 self->pml4_phys = 0;
             } else {
-                extern void vmm_unmap_user_space(void);
                 vmm_unmap_user_space();
             }
         }

@@ -287,13 +287,8 @@ void task_exit(void) {
         if (cur > 0 && cur < task_count) {
             // If task has a private address space, destroy it
             if (tasks[cur].pml4_phys != PHYS_NULL) {
-                // We're still running on this task's PML4, so switch to kernel first
-                extern uint64_t* current_pml4;
-                uint64_t kern_phys = (uint64_t)current_pml4 - hhdm_offset;
-                __asm__ volatile("mov %0, %%cr3" :: "r"(kern_phys) : "memory");
-
-                percpu_t *cpu = smp_get_cpu(cpu_id);
-                if (cpu) cpu->current_cr3 = kern_phys;
+                // Switch to kernel PML4 (safe — uses saved boot PML4)
+                vmm_switch_to_kernel_as();
 
                 // Must unlock before destroy (it acquires paging_lock)
                 tasks[cur].state = TASK_DEAD;
@@ -390,31 +385,28 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
         current_task = next;
     }
 
-    // ── CR3 SWITCH: Load next task's address space if different ──
-    // pml4_phys == 0 means "use boot/kernel PML4" (already loaded).
-    // Only switch if the task has a private PML4 AND it differs from current CR3.
-    if (tasks[next].pml4_phys != PHYS_NULL) {
-        uint64_t new_cr3 = (uint64_t)tasks[next].pml4_phys;
+    // ── CR3 SWITCH: Load next task's address space ──
+    // Must update BOTH CR3 and current_pml4 so vmm_map_page targets correct PML4.
+    {
         percpu_t *cpu = smp_get_cpu(cpu_id);
-        if (cpu != NULL && cpu->current_cr3 != new_cr3) {
-            __asm__ volatile("mov %0, %%cr3" :: "r"(new_cr3) : "memory");
-            cpu->current_cr3 = new_cr3;
-        }
-    } else {
-        // Task uses kernel PML4 — switch back if we were in a user AS
-        phys_addr_t kernel_cr3 = vmm_read_cr3();
-        percpu_t *cpu = smp_get_cpu(cpu_id);
-        if (cpu != NULL) {
-            // If current CR3 is NOT the kernel PML4, we need to switch back
-            // We use the global current_pml4's physical address as reference
-            extern uint64_t* current_pml4;
-            if (current_pml4) {
-                uint64_t kern_phys = (uint64_t)current_pml4 - hhdm_offset;
-                if (cpu->current_cr3 != kern_phys) {
-                    __asm__ volatile("mov %0, %%cr3" :: "r"(kern_phys) : "memory");
-                    cpu->current_cr3 = kern_phys;
-                }
+        extern uint64_t* current_pml4;
+
+        if (tasks[next].pml4_phys != PHYS_NULL) {
+            // User task: switch to its private PML4
+            uint64_t new_cr3 = (uint64_t)tasks[next].pml4_phys;
+            if (cpu == NULL || cpu->current_cr3 != new_cr3) {
+                __asm__ volatile("mov %0, %%cr3" :: "r"(new_cr3) : "memory");
+                if (cpu) cpu->current_cr3 = new_cr3;
             }
+            current_pml4 = (uint64_t*)((uint64_t)tasks[next].pml4_phys + hhdm_offset);
+        } else {
+            // Kernel task: switch back to boot kernel PML4
+            phys_addr_t kern_phys = vmm_get_kernel_pml4_phys();
+            if (kern_phys != PHYS_NULL && (cpu == NULL || cpu->current_cr3 != (uint64_t)kern_phys)) {
+                __asm__ volatile("mov %0, %%cr3" :: "r"((uint64_t)kern_phys) : "memory");
+                if (cpu) cpu->current_cr3 = (uint64_t)kern_phys;
+            }
+            current_pml4 = (uint64_t*)((uint64_t)kern_phys + hhdm_offset);
         }
     }
 

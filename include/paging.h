@@ -44,6 +44,21 @@ void vmm_destroy_address_space(phys_addr_t pml4_phys, int free_pml4);
 // Does NOT free the PML4 page itself.
 void vmm_unmap_user_space(void);
 
+// Switch CR3 + current_pml4 to a given PML4 physical address.
+// Updates percpu CR3 tracking for the current CPU.
+void vmm_switch_pml4(phys_addr_t pml4_phys);
+
+// Switch back to the boot/kernel PML4 (saved at init_paging time).
+// Always safe — even if current_pml4 was changed to a user PML4.
+void vmm_switch_to_kernel_as(void);
+
+// Get the boot kernel PML4 physical address (saved at init).
+phys_addr_t vmm_get_kernel_pml4_phys(void);
+
+// Destroy a task's address space and switch back to kernel PML4.
+// Handles: save old PML4 → switch to kernel → destroy old → done.
+void vmm_destroy_task_as(phys_addr_t pml4_phys);
+
 // --- TLB MANAGEMENT ---
 
 // Invalidate TLB for a single virtual address (current CPU)
