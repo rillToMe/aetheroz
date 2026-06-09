@@ -1,18 +1,11 @@
 #include "fs.h"
 #include <stdint.h>
 #include "userlib.h"
+#include "task.h"
+#include "paging.h"
+#include "smp.h"
 
-// ========================================================
-// STRUKTUR REGISTER 64-BIT (MURNI)
-// Harus 100% cocok dengan urutan PUSHA64 di isr_macro.inc
-// ========================================================
-typedef struct {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;  // Register x86_64 manual
-    uint64_t int_num, error_code;                // Kode Error
-    uint64_t rip, cs, rflags, rsp, ss;           // Otomatis di-push oleh CPU 64-bit
-} __attribute__((packed)) registers_t;
-
+// registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
 extern fs_node_t tty_node;
 extern uint32_t string_length(const char* str);
@@ -236,9 +229,35 @@ void syscall_handler(registers_t *r) {
             kfname[fi] = '\0';
         }
 
-        // 1. Unmap user space lama
-        extern void vmm_unmap_user_space(void);
-        vmm_unmap_user_space();
+        // 1. Destroy current address space
+        //    If task has private PML4: destroy it fully and switch back to kernel CR3
+        //    If shared PML4: just unmap user-range pages in global PML4
+        {
+            uint32_t cpu_id = smp_current_cpu_index();
+            task_t *self = NULL;
+            for (int i = 0; i < task_count; i++) {
+                if (tasks[i].state == TASK_RUNNING) {
+                    self = &tasks[i];
+                    break;
+                }
+            }
+
+            if (self && self->pml4_phys != 0) {
+                // Switch to kernel PML4 first, then destroy private one
+                extern uint64_t* current_pml4;
+                extern uint64_t hhdm_offset;
+                uint64_t kern_phys = (uint64_t)current_pml4 - hhdm_offset;
+                __asm__ volatile("mov %0, %%cr3" :: "r"(kern_phys) : "memory");
+
+                percpu_t *cpu = smp_get_cpu(cpu_id);
+                if (cpu) cpu->current_cr3 = kern_phys;
+
+                vmm_destroy_address_space(self->pml4_phys, 1);
+                self->pml4_phys = 0;
+            } else {
+                vmm_unmap_user_space();
+            }
+        }
 
         // 2. Flush KEDUA buffer input agar app baru tidak mewarisi keystroke lama
         extern void flush_event_queue(void);
@@ -273,9 +292,33 @@ void syscall_handler(registers_t *r) {
         }
     }
     else if (syscall_num == 34) { // sys_exit — app selesai, kembali ke shell
-        // Bebaskan halaman user app
-        extern void vmm_unmap_user_space(void);
-        vmm_unmap_user_space();
+        // Destroy address space: private PML4 or shared user pages
+        {
+            uint32_t cpu_id = smp_current_cpu_index();
+            task_t *self = NULL;
+            for (int i = 0; i < task_count; i++) {
+                if (tasks[i].state == TASK_RUNNING) {
+                    self = &tasks[i];
+                    break;
+                }
+            }
+
+            if (self && self->pml4_phys != 0) {
+                extern uint64_t* current_pml4;
+                extern uint64_t hhdm_offset;
+                uint64_t kern_phys = (uint64_t)current_pml4 - hhdm_offset;
+                __asm__ volatile("mov %0, %%cr3" :: "r"(kern_phys) : "memory");
+
+                percpu_t *cpu = smp_get_cpu(cpu_id);
+                if (cpu) cpu->current_cr3 = kern_phys;
+
+                vmm_destroy_address_space(self->pml4_phys, 1);
+                self->pml4_phys = 0;
+            } else {
+                extern void vmm_unmap_user_space(void);
+                vmm_unmap_user_space();
+            }
+        }
 
         // Longjmp kembali ke shell: reset RSP dan jump ke user_shell()
         // Ini BYPASS iretq sepenuhnya — langsung ke shell command loop.

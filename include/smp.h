@@ -12,6 +12,7 @@ typedef struct {
     volatile uint32_t reschedule_pending;
     volatile uint64_t idle_ticks;
     volatile uint64_t scheduler_ticks;
+    volatile uint64_t current_cr3;    // Physical CR3 value loaded on this CPU
 } percpu_t;
 
 void smp_register_cpu(uint32_t cpu_id, uint32_t processor_id, uint32_t lapic_id, uint32_t online);

@@ -2,6 +2,7 @@
 #define TASK_H
 
 #include <stdint.h>
+#include "pmm.h"
 
 // ============================================================
 // CPU CONTEXT — Full ISR Frame
@@ -63,6 +64,7 @@ typedef struct {
     uint64_t stack_base;      // Untuk kfree saat task mati
     uint8_t  state;           // TASK_READY / TASK_RUNNING / TASK_DEAD
     char     name[16];        // Nama task untuk debugging
+    phys_addr_t pml4_phys;    // Physical address of this task's PML4 (0 = kernel shared)
 } task_t;
 
 

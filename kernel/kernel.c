@@ -156,6 +156,7 @@ void smp_register_cpu(uint32_t cpu_id, uint32_t processor_id, uint32_t lapic_id,
     smp_percpu[cpu_id].reschedule_pending = 0;
     smp_percpu[cpu_id].idle_ticks = 0;
     smp_percpu[cpu_id].scheduler_ticks = 0;
+    smp_percpu[cpu_id].current_cr3 = 0;  // Will be set when CPU comes online
 }
 
 void smp_set_cpu_online(uint32_t cpu_id) {
@@ -223,6 +224,11 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     gdt_load();
     idt_load();
     lapic_init_ap();
+
+    // Record this AP's current CR3 (inherited from BSP via Limine)
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    smp_percpu[state->cpu_index].current_cr3 = cr3 & 0xFFFFFFFFFFFFF000ULL;
 
     state->online = 1;
     smp_set_cpu_online(state->cpu_index);
