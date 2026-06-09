@@ -1,11 +1,12 @@
-#ifndef DEBUG_PMM_STRESS_H
-#define DEBUG_PMM_STRESS_H
+#ifndef PMM_STRESS_H
+#define PMM_STRESS_H
 
-// SMP PMM stress test — validates alloc/free under concurrent CPU load.
-// Enable via Makefile: make stress
-//   Adds -DSTRESS_TEST to CFLAGS, includes debug/ in build.
+// SMP PMM Stress Test — concurrent alloc/free across CPUs.
+// Validates PMM lock correctness under heavy parallel load.
+//
+// Enable: make stress
 
-void stress_start(void);     // Entry: spawns worker tasks
-void stress_task(void);      // Worker: runs alloc/free cycles
+void stress_start(void);     // Entry: spawns 4 worker tasks
+void stress_task(void);      // Worker function (internal)
 
 #endif

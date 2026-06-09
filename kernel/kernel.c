@@ -21,6 +21,7 @@
 
 #ifdef STRESS_TEST
 #include "pmm_stress.h"
+#include "pmm_valid.h"
 #endif
 
 // ============================================================
@@ -696,6 +697,7 @@ void kernel_main(void) {
     net_init();
 
 #ifdef STRESS_TEST
+    valid_start();
     stress_start();
     while (1) __asm__ volatile("hlt");
 #endif

@@ -215,7 +215,7 @@ stress:
 
 # Bersihkan file hasil build (kernel + lwIP objects)
 clean:
-	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o
+	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o
 
 # run: boot_image.iso
 # 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
