@@ -72,9 +72,13 @@ typedef struct {
 
 void tasking_init(void);
 void create_task(void (*func)(void), const char* name);
+void task_exit(void) __attribute__((noreturn));
+void scheduler_dump(void);
+void scheduler_idle_loop(void) __attribute__((noreturn));
 
-// Preemptive scheduler — dipanggil dari timer_handler setiap 20ms
+// Preemptive scheduler — dipanggil dari timer interrupt
 registers_t* schedule(registers_t* current_regs);
+registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs);
 
 // Yield hint: biarkan CPU idle, timer preempt otomatis via IRQ0
 void yield(void);

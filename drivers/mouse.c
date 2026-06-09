@@ -1,5 +1,6 @@
 #include "mouse.h"
 #include "io.h"
+#include "spinlock.h"
 #include <stdint.h>
 
 // Impor kanvas dan resolusi dari kernel.c
@@ -81,6 +82,8 @@ extern int kwm_process_mouse(int32_t mx, int32_t my, uint8_t left_down, uint8_t 
 static uint8_t last_left_click  = 0;
 static uint8_t last_right_click = 0;
 
+static spinlock_t mouse_state_lock = SPINLOCK_INIT;
+
 void mouse_handler() {
     uint8_t status = inb(0x64);
     if ((status & 0x01) && (status & 0x20)) {
@@ -88,6 +91,8 @@ void mouse_handler() {
         if (mouse_cycle == 3) {
             mouse_cycle = 0;
             if ((mouse_byte[0] & 0x80) || (mouse_byte[0] & 0x40)) goto end_mouse_irq;
+
+            spinlock_lock(&mouse_state_lock);
 
             mouse_x += mouse_byte[1];
             mouse_y -= mouse_byte[2];
@@ -133,6 +138,8 @@ void mouse_handler() {
 
             // Pergerakan mouse selalu dikirim agar Window Manager bisa melacaknya
             push_event(2, mouse_x, mouse_y, 0); // EVENT_MOUSE_MOVE (2)
+
+            spinlock_unlock(&mouse_state_lock);
         }
     } else if (status & 0x01) {
         inb(0x60);

@@ -9,7 +9,9 @@ lapic_timer_isr_stub:
     push 240
     PUSHA64
 
+    mov rdi, rsp
     call lapic_timer_handler
+    mov rsp, rax
 
     POPA64
     add rsp, 16

@@ -16,6 +16,8 @@
 #include "timer.h"
 #include "shell.h"
 #include "lapic.h"
+#include "smp.h"
+#include "spinlock.h"
 
 // ============================================================
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
@@ -84,16 +86,16 @@ void kprint_num(uint64_t num);
 // ============================================================
 // SMP BRING-UP AWAL
 //
-// Tahap awal: AP/core lain hanya dibuat online, log, lalu park di hlt loop.
-// Belum menjalankan scheduler multicore, heap/FS concurrent, atau interrupt
-// routing per-core. Ini sengaja kecil agar baseline SMP bisa diuji dulu.
+// Tahap awal: AP/core lain dibuat online, masuk idle loop scheduler, dan
+// menerima LAPIC timer/IPI reschedule. Subsystem besar masih belum semua
+// SMP-safe, jadi task 0 tetap ditahan di BSP.
 // ============================================================
 
-#define SMP_MAX_CPUS        16
 #define SMP_AP_STACK_SIZE   16384
 
 typedef struct {
     uint64_t stack_top;      // offset 0, dibaca oleh arch/x86/smp_ap_entry.asm
+    uint32_t cpu_index;
     uint32_t processor_id;
     uint32_t lapic_id;
     volatile uint32_t online;
@@ -102,6 +104,7 @@ typedef struct {
 } smp_cpu_state_t;
 
 static smp_cpu_state_t smp_cpu_states[SMP_MAX_CPUS];
+static percpu_t smp_percpu[SMP_MAX_CPUS];
 static volatile uint32_t smp_cpu_online_count = 1; // BSP sudah online
 static volatile uint32_t smp_log_lock = 0;
 
@@ -139,6 +142,76 @@ static uint32_t smp_atomic_inc(volatile uint32_t *value) {
     return old + 1;
 }
 
+void smp_register_cpu(uint32_t cpu_id, uint32_t processor_id, uint32_t lapic_id, uint32_t online) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+
+    smp_percpu[cpu_id].processor_id = processor_id;
+    smp_percpu[cpu_id].lapic_id = lapic_id;
+    smp_percpu[cpu_id].online = online;
+    smp_percpu[cpu_id].reschedule_pending = 0;
+    smp_percpu[cpu_id].idle_ticks = 0;
+    smp_percpu[cpu_id].scheduler_ticks = 0;
+}
+
+void smp_set_cpu_online(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+
+    if (smp_percpu[cpu_id].online == 0) {
+        smp_percpu[cpu_id].online = 1;
+        smp_atomic_inc(&smp_cpu_online_count);
+    }
+}
+
+percpu_t* smp_get_cpu(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return NULL;
+    return &smp_percpu[cpu_id];
+}
+
+percpu_t* smp_current_cpu(void) {
+    return smp_get_cpu(smp_current_cpu_index());
+}
+
+void smp_note_idle_tick(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+    __asm__ volatile("lock incq %0" : "+m"(smp_percpu[cpu_id].idle_ticks) :: "memory");
+}
+
+void smp_note_scheduler_tick(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+    __asm__ volatile("lock incq %0" : "+m"(smp_percpu[cpu_id].scheduler_ticks) :: "memory");
+}
+
+void smp_mark_reschedule(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+    smp_percpu[cpu_id].reschedule_pending = 1;
+}
+
+void smp_clear_reschedule(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return;
+    smp_percpu[cpu_id].reschedule_pending = 0;
+}
+
+int smp_reschedule_pending(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) return 0;
+    return smp_percpu[cpu_id].reschedule_pending != 0;
+}
+
+uint32_t smp_current_cpu_index(void) {
+    uint32_t current_lapic = lapic_id();
+
+    for (uint32_t i = 0; i < SMP_MAX_CPUS; i++) {
+        if (smp_percpu[i].online && smp_percpu[i].lapic_id == current_lapic) {
+            return i;
+        }
+    }
+
+    return 0;
+}
+
+uint32_t smp_online_cpu_count(void) {
+    return smp_cpu_online_count;
+}
+
 void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     __asm__ volatile("cli");
 
@@ -147,7 +220,7 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     lapic_init_ap();
 
     state->online = 1;
-    smp_atomic_inc(&smp_cpu_online_count);
+    smp_set_cpu_online(state->cpu_index);
 
     smp_spin_lock(&smp_log_lock);
     kprint("[smp] CPU #");
@@ -157,12 +230,12 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     kprint(")\n");
     smp_spin_unlock(&smp_log_lock);
 
-    for (;;) {
-        __asm__ volatile("sti; hlt");
-    }
+    scheduler_idle_loop();
 }
 
 static void smp_init(void) {
+    smp_register_cpu(0, 0, lapic_id(), 1);
+
     struct limine_mp_response *mp = mp_request.response;
     if (mp == NULL || mp->cpu_count == 0 || mp->cpus == NULL) {
         kprint("[smp] MP response unavailable; running single-core\n");
@@ -181,18 +254,22 @@ static void smp_init(void) {
         if (cpu == NULL) continue;
 
         if (cpu->lapic_id == mp->bsp_lapic_id) {
+            smp_cpu_states[0].cpu_index = 0;
             smp_cpu_states[0].processor_id = cpu->processor_id;
             smp_cpu_states[0].lapic_id = cpu->lapic_id;
             smp_cpu_states[0].online = 1;
+            smp_register_cpu(0, cpu->processor_id, cpu->lapic_id, 1);
             continue;
         }
 
         ap_slot++;
         smp_cpu_state_t *state = &smp_cpu_states[ap_slot];
+        state->cpu_index = ap_slot;
         state->processor_id = cpu->processor_id;
         state->lapic_id = cpu->lapic_id;
         state->online = 0;
         state->stack_top = ((uint64_t)&state->stack[SMP_AP_STACK_SIZE]) & ~0xFULL;
+        smp_register_cpu(ap_slot, cpu->processor_id, cpu->lapic_id, 0);
 
         cpu->extra_argument = (uint64_t)state;
         __asm__ volatile("" ::: "memory");
@@ -250,8 +327,10 @@ typedef struct {
 
 kwm_window_t kwm_windows[MAX_WINDOWS];
 uint32_t next_z_index = 1;
+static spinlock_t kwm_lock = SPINLOCK_INIT;
 
 int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     for(int i = 0; i < MAX_WINDOWS; i++) {
         if(!kwm_windows[i].active) {
             kwm_windows[i].active = 1;
@@ -261,37 +340,53 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].height = height;
             kwm_windows[i].canvas = (uint32_t*)kmalloc(width * height * 4);
             kwm_windows[i].z_index = next_z_index++;
+            spinlock_unlock_irqrestore(&kwm_lock, flags);
             return i;
         }
     }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
     return -1; 
 }
 
 void kwm_update_window(int win_id, uint32_t* app_buffer) {
-    if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
-    if(!kwm_windows[win_id].canvas || !app_buffer) return; 
+    if(win_id < 0 || win_id >= MAX_WINDOWS) return;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if(!kwm_windows[win_id].active || !kwm_windows[win_id].canvas || !app_buffer) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return;
+    }
 
     uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height; 
     uint32_t* dest = kwm_windows[win_id].canvas;
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
 }
 
 void kwm_destroy_window(int win_id) {
-    if(win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
+    if(win_id < 0 || win_id >= MAX_WINDOWS) return;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if(!kwm_windows[win_id].active) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return;
+    }
     if (kwm_windows[win_id].canvas) kfree(kwm_windows[win_id].canvas);
     kwm_windows[win_id].active = 0;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
 }
 
 // Kembalikan posisi window terkini (setelah drag, dsb) ke app via pointer.
 // App harus panggil ini setiap kali ingin konversi koordinat layar → koordinat lokal window.
 void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y) {
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     if (win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) {
         if (out_x) *out_x = 0;
         if (out_y) *out_y = 0;
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
         return;
     }
     if (out_x) *out_x = kwm_windows[win_id].x;
     if (out_y) *out_y = kwm_windows[win_id].y;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
 }
 
 // ============================================================
@@ -306,7 +401,8 @@ static int32_t drag_offset_y  = 0;
 // Bawa window ke depan (Z-index tertinggi)
 // Dipanggil saat user klik pada window manapun.
 void kwm_bring_to_front(int win_id) {
-    if (win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) return;
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return;
+    // Caller MUST hold kwm_lock
     kwm_windows[win_id].z_index = next_z_index++;
 }
 
@@ -323,9 +419,12 @@ void kwm_bring_to_front(int win_id) {
 int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
                       uint8_t left_down, uint8_t left_up) {
 
+    spinlock_lock(&kwm_lock);
+
     // 1. Mouse Up — akhiri drag session
     if (left_up) {
         dragged_win_id = -1;
+        spinlock_unlock(&kwm_lock);
         return 0; // Kirim event "release" ke app juga
     }
 
@@ -344,6 +443,7 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
 
         kwm_windows[dragged_win_id].x = new_x;
         kwm_windows[dragged_win_id].y = new_y;
+        spinlock_unlock(&kwm_lock);
         return 1; // Konsumsi event — jangan sampai app salah deteksi klik
     }
 
@@ -352,7 +452,6 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         int highest_z  = -1;
         int target_win = -1;
 
-        // Cari window paling atas yang terkena klik (iterasi semua, ambil z_index tertinggi)
         for (int i = 0; i < MAX_WINDOWS; i++) {
             if (!kwm_windows[i].active) continue;
             int32_t wx  = kwm_windows[i].x;
@@ -370,32 +469,26 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         }
 
         if (target_win != -1) {
-            // Angkat window yang diklik ke paling depan
             kwm_bring_to_front(target_win);
 
-            // Zona Close Button: 40px terakhir dari kanan title bar
-            // KWM HARUS membiarkan klik di sini lolos ke app!
             int32_t close_btn_x = kwm_windows[target_win].x
                                   + (int32_t)kwm_windows[target_win].width - 40;
 
-            // Cek apakah klik berada di Drag Zone Title Bar:
-            //   - Vertikal: 24 pixel teratas window
-            //   - Horizontal: BUKAN area close button (kiri dari close_btn_x)
             if (mouse_py >= kwm_windows[target_win].y &&
                 mouse_py <  kwm_windows[target_win].y + 24 &&
                 mouse_px <  close_btn_x) {
-                // Area draggable — mulai drag session
                 dragged_win_id = target_win;
                 drag_offset_x  = mouse_px - kwm_windows[target_win].x;
                 drag_offset_y  = mouse_py - kwm_windows[target_win].y;
-                return 1; // Konsumsi — ini drag, bukan klik
+                spinlock_unlock(&kwm_lock);
+                return 1;
             }
-            // Klik di close button atau body window — teruskan ke app
+            spinlock_unlock(&kwm_lock);
             return 0;
         }
-
     }
 
+    spinlock_unlock(&kwm_lock);
     return 0; // Klik di area kosong — teruskan
 }
 
@@ -413,6 +506,7 @@ void compositor_flush() {
     uint64_t copy_cnt = screen_size; // 64-bit counter (rcx)
     __asm__ volatile ("rep movsl" : "+D" (dst_bg), "+S" (src_bg), "+c" (copy_cnt) : : "memory");
 
+    uint64_t kwm_flags = spinlock_lock_irqsave(&kwm_lock);
     for(uint32_t z = 1; z <= next_z_index; z++) {
         for(int w = 0; w < MAX_WINDOWS; w++) {
             if(kwm_windows[w].active && kwm_windows[w].z_index == z) {
@@ -436,6 +530,7 @@ void compositor_flush() {
             }
         }
     }
+    spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);
 
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 12; x++) {
@@ -534,6 +629,7 @@ void kernel_main(void) {
     
     init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
     timer_callbacks_init();    // Daftarkan subscriber default (visual, cursor, flush)
+    tasking_init();            // Daftarkan kmain sebagai task awal scheduler
 
     init_mouse();
     init_keyboard();

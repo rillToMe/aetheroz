@@ -1,5 +1,8 @@
 #include <stdint.h>
+#include <stddef.h>
 #include "lapic.h"
+#include "task.h"
+#include "smp.h"
 
 extern uint64_t hhdm_offset;
 
@@ -13,6 +16,12 @@ extern uint64_t hhdm_offset;
 #define LAPIC_REG_TIMER_INIT    0x380
 #define LAPIC_REG_TIMER_CURRENT 0x390
 #define LAPIC_REG_TIMER_DIVIDE  0x3E0
+
+#define LAPIC_REG_ICR_LOW       0x300
+#define LAPIC_REG_ICR_HIGH      0x310
+
+#define LAPIC_ICR_FIXED         0x00000000U
+#define LAPIC_ICR_DELIVERY_PEND (1U << 12)
 
 #define LAPIC_SVR_ENABLE        0x100
 #define LAPIC_TIMER_PERIODIC    (1U << 17)
@@ -89,7 +98,27 @@ uint64_t lapic_timer_ticks(void) {
     return lapic_ticks;
 }
 
-void lapic_timer_handler(void) {
+void lapic_send_reschedule(uint32_t cpu_index) {
+    percpu_t *target = smp_get_cpu(cpu_index);
+    if (target == NULL || !target->online) return;
+    if (lapic_mmio == 0) return;
+
+    uint32_t dest_lapic = target->lapic_id;
+
+    // Wait for previous IPI to be delivered
+    uint32_t timeout = 100000;
+    while ((lapic_read(LAPIC_REG_ICR_LOW) & LAPIC_ICR_DELIVERY_PEND) && timeout > 0) {
+        __asm__ volatile("pause");
+        timeout--;
+    }
+
+    // Set destination LAPIC ID in ICR high
+    lapic_write(LAPIC_REG_ICR_HIGH, dest_lapic << 24);
+    // Send fixed IPI with reschedule vector
+    lapic_write(LAPIC_REG_ICR_LOW, LAPIC_ICR_FIXED | LAPIC_RESCHEDULE_VECTOR);
+}
+
+registers_t* lapic_timer_handler(registers_t* regs) {
     __asm__ volatile(
         "lock incq %0"
         : "+m"(lapic_ticks)
@@ -97,4 +126,23 @@ void lapic_timer_handler(void) {
         : "memory"
     );
     lapic_eoi();
+
+    uint32_t cpu_id = smp_current_cpu_index();
+    // BSP uses PIT timer (timer_handler) for scheduling; skip here.
+    if (cpu_id == 0) {
+        return regs;
+    }
+
+    return schedule_on_cpu(cpu_id, regs);
+}
+
+registers_t* lapic_reschedule_handler(registers_t* regs) {
+    lapic_eoi();
+
+    uint32_t cpu_id = smp_current_cpu_index();
+    if (!smp_reschedule_pending(cpu_id)) {
+        return regs;
+    }
+
+    return schedule_on_cpu(cpu_id, regs);
 }

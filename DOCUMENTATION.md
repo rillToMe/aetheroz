@@ -1,8 +1,8 @@
 # Kyuzen OS - Task & Multitasking Documentation
 
-> **Arsitektur**: Preemptive Multitasking via IRQ0 (Timer)  
+> **Arsitektur**: Preemptive Multitasking via PIT IRQ0 (BSP) dan LAPIC timer (AP)
 > **Header**: `include/task.h`  
-> **Implementasi**: `kernel/task.c`, `drivers/timer.c`, `arch/x86/timer_isr.asm`
+> **Implementasi**: `kernel/task.c`, `drivers/timer.c`, `arch/x86/timer_isr.asm`, `arch/x86/lapic.c`
 
 ---
 
@@ -69,7 +69,7 @@ File terkait:
 
 ## Cara Kerja Singkat
 
-Kyuzen OS menggunakan **Preemptive Multitasking**. Timer PIT (IRQ0) default berjalan di **60Hz** (~16.67ms per tick), menyimpan seluruh register CPU dari task yang sedang berjalan, lalu memberi scheduler kesempatan untuk melanjutkan task berikutnya. Tidak ada `switch_task()` manual — semua context switch terjadi otomatis via interrupt.
+Kyuzen OS menggunakan **Preemptive Multitasking**. BSP masih memakai timer PIT (IRQ0), sementara AP memakai LAPIC timer vector `0xF0` untuk tick scheduler awal. Timer menyimpan seluruh register CPU dari task yang sedang berjalan, lalu memberi scheduler kesempatan untuk melanjutkan task berikutnya. Tidak ada `switch_task()` manual — semua context switch terjadi otomatis via interrupt.
 
 ```
 Timer IRQ0 (default 60Hz, bisa 60/100/144)
@@ -81,6 +81,18 @@ Timer IRQ0 (default 60Hz, bisa 60/100/144)
             ├─ mov rsp, rax                   ← GANTI STACK ke task baru
             ├─ POPA64                          ← restore register task baru
             └─ IRETQ                           ← lompat ke RIP task baru
+```
+
+Untuk AP/multicore awal:
+
+```text
+LAPIC timer vector 0xF0
+    └─→ lapic_timer_isr_stub
+            ├─ PUSHA64
+            ├─→ lapic_timer_handler(rsp)
+            │       └─→ schedule_on_cpu(cpu_id, r)
+            ├─ mov rsp, rax
+            └─ IRETQ
 ```
 
 ---
@@ -102,8 +114,7 @@ void my_background_task(void) {
         // Timer akan preempt kita secara otomatis — yield() hanya opsional hint
         yield();
     }
-    // CATATAN: Jangan return! Tidak ada cleanup handler untuk saat ini.
-    // Gunakan loop infinite atau tandai state = TASK_DEAD untuk exit.
+    // Boleh return; trampoline scheduler akan memanggil task_exit().
 }
 ```
 
@@ -159,6 +170,24 @@ create_task(my_task_func, "my-task");
 
 ---
 
+### `task_exit(void)`
+Mengakhiri task saat ini dan menandainya sebagai `TASK_DEAD`. Task yang `return` dari entry point otomatis lewat trampoline dan masuk ke `task_exit()`.
+
+```c
+task_exit(); // tidak kembali
+```
+
+---
+
+### `scheduler_dump(void)`
+Debug helper untuk mencetak task aktif, CPU online, dan mapping CPU → task. Shell menyediakan command:
+
+```text
+sched
+```
+
+---
+
 ### `yield(void)`
 Hint bahwa task sedang idle — CPU di-halt sampai interrupt berikutnya.
 
@@ -172,7 +201,7 @@ yield();  // Hemat CPU, tunggu IRQ berikutnya (timer, keyboard, dll)
 
 ---
 
-### `schedule(registers_t* current_regs)` ← Internal
+### `schedule(registers_t* current_regs)` / `schedule_on_cpu(cpu_id, regs)` ← Internal
 Dipanggil secara otomatis oleh `timer_handler`. **Jangan panggil langsung.**
 
 ---
@@ -191,12 +220,7 @@ Untuk menghentikan task dari dalam task itu sendiri:
 ```c
 void my_task(void) {
     do_work();
-
-    // Tandai task ini sebagai mati — scheduler akan skip slot ini
-    tasks[current_task].state = TASK_DEAD;
-
-    // Yield selamanya — timer tidak akan kembali ke task ini
-    while (1) yield();
+    task_exit();
 }
 ```
 
@@ -207,19 +231,13 @@ void my_task(void) {
 ```c
 #include "task.h"
 
-// Lihat semua task yang aktif
-for (int i = 0; i < task_count; i++) {
-    const char* state_str[] = {"READY", "RUNNING", "SLEEPING", "DEAD"};
-    kprintf("Task %d [%s]: %s\n",
-        tasks[i].id,
-        tasks[i].name,
-        state_str[tasks[i].state]);
-}
+scheduler_dump();
+```
 
-// Lihat task yang sedang berjalan
-kprintf("Current task: %d (%s)\n",
-    current_task,
-    tasks[current_task].name);
+Atau dari shell:
+
+```text
+sched
 ```
 
 ---
@@ -281,10 +299,11 @@ Stack task (tumbuh ke bawah ↓)
 │  RSP        = stack_top     │
 │  RFLAGS     = 0x202 (IF=1)  │ ← CPU akan IRETQ dari sini
 │  CS         = 0x08          │
-│  RIP        = &func         │ ← Entry point task
+│  RIP        = &trampoline   │ ← Wrapper aman untuk return/task_exit
 │  error_code = 0             │
 │  int_num    = 0             │
-│  rax..r15   = 0 (15 regs)  │
+│  rdi        = &func         │ ← Argumen pertama trampoline
+│  rax..r15   = 0/arg (regs) │
 └─────────────────────────────┘ ← task.rsp (RSP yang disimpan di TCB)
 ```
 
@@ -305,8 +324,9 @@ Scheduler memakai quantum **20ms** (bisa diubah di `drivers/timer.c`). Timer IRQ
 | Stack per task | 8 KB | `TASK_STACK_SIZE` di `include/task.h` |
 | Timer refresh | 60 / 100 / 144 Hz | Default 60Hz, bisa diubah via shell `refresh` |
 | Quantum | 20 ms | Scheduler quantum di `drivers/timer.c` |
+| SMP scheduler | Awal | AP bisa mengambil `TASK_READY` ID > 0 via LAPIC timer |
 | Ring 3 (user space) | ⚠️ Belum | Semua task saat ini Ring 0 (kernel) |
-| Task cleanup/join | ⚠️ Belum | Tandai `TASK_DEAD` secara manual |
+| Task cleanup/join | ⚠️ Parsial | Task return masuk `task_exit`; stack lama di-reuse saat slot dipakai ulang |
 | Stack overflow guard | ⚠️ Belum | Jangan allokasi array besar di task |
 
 ---

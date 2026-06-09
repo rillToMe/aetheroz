@@ -2,6 +2,7 @@
 #include "userlib.h"
 #include "zen.h"
 #include "timer.h"   // timer_sleep_ms() — hardware-agnostic sleep
+#include "task.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -121,7 +122,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- sched  : Tampilkan status scheduler/CPU\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {
@@ -223,6 +224,9 @@ void user_shell() {
                         print("Aplikasi app.bin berhasil di-install ke Hard Disk!\n");
                     }
                     else if (strcmp(command, "fetch") == 0) { kyuzen_fetch(); 
+                    }
+                    else if (strcmp(command, "sched") == 0) {
+                        scheduler_dump();
                     }
                     else if (strcmp(command, "refresh") == 0) {
                         if (argument == NULL) {

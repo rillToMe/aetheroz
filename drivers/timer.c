@@ -17,7 +17,8 @@
 #include "io.h"
 #include <stdint.h>
 #include "timer.h"
-#include "task.h"    // registers_t, schedule()
+#include "task.h"    // registers_t, schedule_on_cpu()
+#include "smp.h"     // smp_current_cpu_index()
 
 // ============================================================
 // STATE INTERNAL
@@ -216,7 +217,7 @@ registers_t* timer_handler(registers_t* r) {
     uint64_t now = timer_get_ms();
     if (now >= next_schedule_ms) {
         next_schedule_ms = now + 20; // Quantum = 20ms
-        return schedule(r);          // Minta scheduler untuk memilih task berikutnya
+        return schedule_on_cpu(smp_current_cpu_index(), r);
     }
 
     // Quantum belum habis — kembalikan RSP task saat ini (tidak ada switch)

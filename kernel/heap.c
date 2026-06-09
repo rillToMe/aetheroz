@@ -1,6 +1,7 @@
 #include "heap.h"
 #include "string.h"
 #include "paging.h"  // Untuk memanggil vmm_alloc_page()
+#include "spinlock.h"
 #include <stddef.h>  // size_t
 
 // Zona Heap Virtual — HARUS canonical (bit47=1, bits63-48=0xFFFF)
@@ -13,6 +14,7 @@
 static uint64_t current_heap_end = HEAP_START_VADDR;
 
 heap_block_t* heap_head = NULL;
+static spinlock_t heap_lock = SPINLOCK_INIT;
 
 // 1. Inisialisasi
 void init_heap(void) {
@@ -57,6 +59,8 @@ static heap_block_t* expand_heap(size_t required_size) {
 void* kmalloc(size_t size) {
     if (size == 0) return NULL;
 
+    uint64_t flags = spinlock_lock_irqsave(&heap_lock);
+
     heap_block_t* current = heap_head;
 
     while (current != NULL) {
@@ -72,20 +76,28 @@ void* kmalloc(size_t size) {
                 current->size = size;
             }
             current->is_free = 0;
-            return (void*)((uint8_t*)current + sizeof(heap_block_t));
+            void* result = (void*)((uint8_t*)current + sizeof(heap_block_t));
+            spinlock_unlock_irqrestore(&heap_lock, flags);
+            return result;
         }
         current = current->next;
     }
 
     // Tidak ada blok cocok — ekspansi heap
     heap_block_t* fresh_block = expand_heap(size);
-    if (fresh_block == NULL) return NULL;
+    if (fresh_block == NULL) {
+        spinlock_unlock_irqrestore(&heap_lock, flags);
+        return NULL;
+    }
+    spinlock_unlock_irqrestore(&heap_lock, flags);
     return kmalloc(size);
 }
 
 // 3. Kfree: Bebaskan + Coalesce
 void kfree(void* ptr) {
     if (ptr == NULL) return;
+
+    uint64_t flags = spinlock_lock_irqsave(&heap_lock);
 
     heap_block_t* block = (heap_block_t*)((uint8_t*)ptr - sizeof(heap_block_t));
     block->is_free = 1;
@@ -100,6 +112,8 @@ void kfree(void* ptr) {
             current = current->next;
         }
     }
+
+    spinlock_unlock_irqrestore(&heap_lock, flags);
 }
 
 // 4. Krealloc: Ubah ukuran

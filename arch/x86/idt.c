@@ -4,6 +4,7 @@
 extern void keyboard_isr_stub();
 extern void timer_isr_stub();
 extern void lapic_timer_isr_stub();
+extern void reschedule_isr_stub();
 extern void isr14_stub();
 extern void isr128_stub();
 extern void mouse_isr_stub();
@@ -83,7 +84,8 @@ void init_idt() {
     idt_set_gate(32, (uint64_t)timer_isr_stub,    0x08, 0x8E); // IRQ0  → INT 0x20 = 32 (Timer)
     idt_set_gate(33, (uint64_t)keyboard_isr_stub, 0x08, 0x8E); // IRQ1  → INT 0x21 = 33 (Keyboard)
     idt_set_gate(44, (uint64_t)mouse_isr_stub,    0x08, 0x8E); // IRQ12 → INT 0x2C = 44 (Mouse)
-    idt_set_gate(240, (uint64_t)lapic_timer_isr_stub, 0x08, 0x8E); // LAPIC timer heartbeat
+    idt_set_gate(240, (uint64_t)lapic_timer_isr_stub, 0x08, 0x8E); // LAPIC timer / AP scheduler tick
+    idt_set_gate(253, (uint64_t)reschedule_isr_stub, 0x08, 0x8E); // IPI reschedule
 
     // --- SYSCALL (DPL=3 agar Ring 3 bisa panggil via int 0x80) ---
     idt_set_gate(128, (uint64_t)isr128_stub, 0x08, 0xEE); // int 0x80

@@ -2,18 +2,21 @@
 // kernel/task.c — Preemptive Task Scheduler, Kyuzen OS
 //
 // ARSITEKTUR: Semua context switch via Full ISR Frame.
-//   - Timer IRQ0 adalah SATU-SATUNYA trigger context switch.
+//   - Context switch dipicu oleh PIT IRQ0 di BSP dan LAPIC timer di AP.
 //   - Setiap task punya stack dengan "Fake ISR Frame" sehingga
 //     POPA64 + IRETQ dari timer_isr bisa melanjutkan task tersebut.
 //   - switch_task() (cooperative) DIHAPUS.
 //
 // FLOW:
-//   IRQ0 → timer_isr_stub → timer_handler(rsp) → schedule(r)
+//   Timer ISR → timer_handler/lapic_timer_handler(rsp) → schedule*(r)
 //        → mov rsp, rax → POPA64 → IRETQ → task baru berjalan
 // ============================================================
 
 #include "task.h"
 #include "heap.h"
+#include "spinlock.h"
+#include "smp.h"
+#include "lapic.h"
 #include <stddef.h>
 
 // ============================================================
@@ -23,11 +26,34 @@ task_t tasks[MAX_TASKS];
 int    current_task = 0;
 int    task_count   = 0;
 
+static spinlock_t scheduler_lock = SPINLOCK_INIT;
+static int cpu_current_task[SMP_MAX_CPUS];
+
+extern void kprint(const char* str);
+extern void kprint_num(uint64_t num);
+
 // String copy helper (tidak bisa include string.h di kernel)
 static void task_strncpy(char* dst, const char* src, int n) {
     int i = 0;
     while (i < n - 1 && src[i]) { dst[i] = src[i]; i++; }
     dst[i] = '\0';
+}
+
+static const char* task_state_name(uint8_t state) {
+    switch (state) {
+        case TASK_READY: return "READY";
+        case TASK_RUNNING: return "RUNNING";
+        case TASK_SLEEPING: return "SLEEPING";
+        case TASK_DEAD: return "DEAD";
+        default: return "UNKNOWN";
+    }
+}
+
+static void task_entry_trampoline(void (*func)(void)) {
+    if (func != NULL) {
+        func();
+    }
+    task_exit();
 }
 
 // ============================================================
@@ -39,6 +65,10 @@ void tasking_init(void) {
         tasks[i].rsp   = 0;
     }
 
+    for (int i = 0; i < SMP_MAX_CPUS; i++) {
+        cpu_current_task[i] = -1;
+    }
+
     // Task 0 = kernel main thread yang sedang berjalan
     // RSP-nya akan diisi oleh schedule() pada preemption pertama
     tasks[0].id         = 0;
@@ -48,6 +78,7 @@ void tasking_init(void) {
 
     current_task = 0;
     task_count   = 1;
+    cpu_current_task[0] = 0;
 }
 
 // ============================================================
@@ -63,7 +94,8 @@ void tasking_init(void) {
 //                                                         ↑ RSP task (frame pointer)
 // ============================================================
 void create_task(void (*func)(void), const char* name) {
-    if (task_count >= MAX_TASKS) return;
+    uint32_t kick_cpus[SMP_MAX_CPUS];
+    uint32_t kick_count = 0;
 
     // Alokasi stack baru
     uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
@@ -83,7 +115,7 @@ void create_task(void (*func)(void), const char* name) {
     *(--p) = stack_top;          // RSP = top of this task's stack (setelah iretq)
     *(--p) = 0x202ULL;           // RFLAGS: bit 1 (reserved=1) + IF=1 (interrupt enabled)
     *(--p) = 0x08ULL;            // CS  = kernel code segment
-    *(--p) = (uint64_t)func;    // RIP = entry point fungsi task
+    *(--p) = (uint64_t)task_entry_trampoline; // RIP = wrapper aman untuk task
 
     // ── ISR stub push (2 slot) ──
     *(--p) = 0ULL;               // error_code (stub push 0 PERTAMA = higher addr)
@@ -98,7 +130,7 @@ void create_task(void (*func)(void), const char* name) {
     *(--p) = 0ULL;   // rdx
     *(--p) = 0ULL;   // rbp
     *(--p) = 0ULL;   // rsi
-    *(--p) = 0ULL;   // rdi
+    *(--p) = (uint64_t)func; // rdi = argumen pertama task_entry_trampoline
     *(--p) = 0ULL;   // r8
     *(--p) = 0ULL;   // r9
     *(--p) = 0ULL;   // r10
@@ -108,14 +140,163 @@ void create_task(void (*func)(void), const char* name) {
     *(--p) = 0ULL;   // r14
     *(--p) = 0ULL;   // r15  ← p sekarang = RSP yang akan disimpan di TCB
 
-    // p sekarang menunjuk ke r15, yang adalah RSP "benar" dari ISR frame ini
-    tasks[task_count].id         = (uint32_t)task_count;
-    tasks[task_count].rsp        = (uint64_t)p;      // RSP = pointer ke r15 di fake frame
-    tasks[task_count].stack_base = (uint64_t)stack;  // Untuk cleanup nanti
-    tasks[task_count].state      = TASK_READY;
-    task_strncpy(tasks[task_count].name, name ? name : "task", 16);
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
 
-    task_count++;
+    int slot = -1;
+    for (int i = 1; i < task_count; i++) {
+        if (tasks[i].state == TASK_DEAD) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot < 0 && task_count < MAX_TASKS) {
+        slot = task_count++;
+    }
+
+    if (slot < 0) {
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        kfree(stack);
+        return;
+    }
+
+    if (tasks[slot].stack_base != 0) {
+        kfree((void*)tasks[slot].stack_base);
+    }
+
+    // p sekarang menunjuk ke r15, yang adalah RSP "benar" dari ISR frame ini
+    tasks[slot].id         = (uint32_t)slot;
+    tasks[slot].rsp        = (uint64_t)p;      // RSP = pointer ke r15 di fake frame
+    tasks[slot].stack_base = (uint64_t)stack;  // Untuk cleanup nanti
+    tasks[slot].state      = TASK_READY;
+    task_strncpy(tasks[slot].name, name ? name : "task", 16);
+
+    uint32_t online = smp_online_cpu_count();
+    if (online > SMP_MAX_CPUS) online = SMP_MAX_CPUS;
+    for (uint32_t i = 1; i < online; i++) {
+        if (cpu_current_task[i] < 0) {
+            kick_cpus[kick_count++] = i;
+        }
+    }
+
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    for (uint32_t i = 0; i < kick_count; i++) {
+        smp_mark_reschedule(kick_cpus[i]);
+        lapic_send_reschedule(kick_cpus[i]);
+    }
+}
+
+void scheduler_dump(void) {
+    task_t task_snapshot[MAX_TASKS];
+    int cpu_snapshot[SMP_MAX_CPUS];
+    percpu_t per_cpu_snapshot[SMP_MAX_CPUS];
+    int snapshot_count;
+    int active_count = 0;
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+
+    snapshot_count = task_count;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        task_snapshot[i] = tasks[i];
+    }
+    for (int i = 0; i < SMP_MAX_CPUS; i++) {
+        cpu_snapshot[i] = cpu_current_task[i];
+        percpu_t *cpu = smp_get_cpu((uint32_t)i);
+        if (cpu != NULL) {
+            per_cpu_snapshot[i] = *cpu;
+        }
+    }
+
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    for (int i = 0; i < snapshot_count && i < MAX_TASKS; i++) {
+        if (task_snapshot[i].state != TASK_DEAD) {
+            active_count++;
+        }
+    }
+
+    kprint("[sched] tasks=");
+    kprint_num((uint64_t)active_count);
+    kprint("/");
+    kprint_num((uint64_t)snapshot_count);
+    kprint(", online_cpus=");
+    kprint_num((uint64_t)smp_online_cpu_count());
+    kprint("\n");
+
+    for (int i = 0; i < snapshot_count && i < MAX_TASKS; i++) {
+        kprint("  task ");
+        kprint_num((uint64_t)task_snapshot[i].id);
+        kprint("  ");
+        kprint(task_state_name(task_snapshot[i].state));
+        kprint("  ");
+        kprint(task_snapshot[i].name);
+        kprint("\n");
+    }
+
+    kprint("  cpu map:");
+    uint32_t online = smp_online_cpu_count();
+    if (online > SMP_MAX_CPUS) online = SMP_MAX_CPUS;
+    for (uint32_t i = 0; i < online; i++) {
+        kprint(" cpu");
+        kprint_num((uint64_t)i);
+        kprint("=");
+        if (cpu_snapshot[i] >= 0) {
+            kprint_num((uint64_t)cpu_snapshot[i]);
+        } else {
+            kprint("idle");
+        }
+    }
+    kprint("\n");
+
+    for (uint32_t i = 0; i < online; i++) {
+        kprint("  cpu");
+        kprint_num((uint64_t)i);
+        kprint(" lapic=");
+        kprint_num((uint64_t)per_cpu_snapshot[i].lapic_id);
+        kprint(" sched_ticks=");
+        kprint_num((uint64_t)per_cpu_snapshot[i].scheduler_ticks);
+        kprint(" idle_ticks=");
+        kprint_num((uint64_t)per_cpu_snapshot[i].idle_ticks);
+        if (per_cpu_snapshot[i].reschedule_pending) {
+            kprint(" resched=pending");
+        }
+        kprint("\n");
+    }
+}
+
+void task_exit(void) {
+    uint32_t cpu_id = smp_current_cpu_index();
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+
+    if (cpu_id < SMP_MAX_CPUS) {
+        int cur = cpu_current_task[cpu_id];
+        if (cur > 0 && cur < task_count) {
+            tasks[cur].state = TASK_DEAD;
+            tasks[cur].rsp = 0;
+        }
+        cpu_current_task[cpu_id] = -1;
+    }
+
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    scheduler_idle_loop();
+}
+
+void scheduler_idle_loop(void) {
+    for (;;) {
+        uint32_t cpu_id = smp_current_cpu_index();
+
+        uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+        if (cpu_id < SMP_MAX_CPUS) {
+            cpu_current_task[cpu_id] = -1;
+        }
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+        smp_note_idle_tick(cpu_id);
+        __asm__ volatile("sti; hlt");
+    }
 }
 
 // ============================================================
@@ -127,39 +308,68 @@ void create_task(void (*func)(void), const char* name) {
 // Input : registers_t* = RSP task yang sedang di-interrupt (full ISR frame)
 // Output: registers_t* = RSP task berikutnya (akan di-load ke RSP di ASM)
 // ============================================================
-registers_t* schedule(registers_t* current_regs) {
-    // Jika hanya 1 task, tidak perlu switch
-    if (task_count <= 1) return current_regs;
+registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
+    if (cpu_id >= SMP_MAX_CPUS || current_regs == NULL) return current_regs;
 
-    // 1. Simpan RSP task saat ini
-    tasks[current_task].rsp   = (uint64_t)current_regs;
-    tasks[current_task].state = TASK_READY;
+    smp_note_scheduler_tick(cpu_id);
+    smp_clear_reschedule(cpu_id);
 
-    // 2. Round-robin: cari task READY berikutnya
-    int next     = current_task;
-    int attempts = 0;
-    do {
-        next = (next + 1) % task_count;
-        attempts++;
-        if (attempts > task_count) {
-            // Tidak ada task lain yang READY — lanjutkan task saat ini
-            tasks[current_task].state = TASK_RUNNING;
-            return current_regs;
+    spinlock_lock(&scheduler_lock);
+
+    if (task_count <= 0) {
+        spinlock_unlock(&scheduler_lock);
+        return current_regs;
+    }
+
+    int cur = cpu_current_task[cpu_id];
+
+    if (cur >= 0 && cur < task_count && tasks[cur].state == TASK_RUNNING) {
+        tasks[cur].rsp = (uint64_t)current_regs;
+        tasks[cur].state = TASK_READY;
+    } else {
+        cur = -1;
+        cpu_current_task[cpu_id] = -1;
+    }
+
+    int start = (cur >= 0) ? cur : (int)(cpu_id % (uint32_t)task_count);
+    int next = -1;
+
+    for (int attempts = 0; attempts < task_count; attempts++) {
+        int candidate = (start + 1 + attempts) % task_count;
+        if (tasks[candidate].state == TASK_READY && tasks[candidate].rsp != 0) {
+            next = candidate;
+            break;
         }
-    } while (tasks[next].state != TASK_READY || tasks[next].rsp == 0);
+    }
 
-    // 3. Switch ke task berikutnya
-    current_task              = next;
-    tasks[current_task].state = TASK_RUNNING;
+    if (next < 0) {
+        if (cur >= 0 && cur < task_count) {
+            tasks[cur].state = TASK_RUNNING;
+        }
+        spinlock_unlock(&scheduler_lock);
+        return current_regs;
+    }
 
-    return (registers_t*)tasks[current_task].rsp;
+    tasks[next].state = TASK_RUNNING;
+    cpu_current_task[cpu_id] = next;
+    if (cpu_id == 0) {
+        current_task = next;
+    }
+
+    registers_t *next_regs = (registers_t*)tasks[next].rsp;
+    spinlock_unlock(&scheduler_lock);
+    return next_regs;
+}
+
+registers_t* schedule(registers_t* current_regs) {
+    return schedule_on_cpu(0, current_regs);
 }
 
 // ============================================================
 // yield — Hint bahwa task sedang idle
 //
 // Sejak beralih ke Preemptive, yield() tidak lagi melakukan switch
-// secara langsung. Context switch HANYA terjadi via timer IRQ0.
+// secara langsung. Context switch terjadi via timer interrupt.
 // Fungsi ini sekarang hanya mem-block CPU sampai interrupt berikutnya,
 // membantu cpu_idle_tracker mendeteksi bahwa task sedang menunggu.
 // ============================================================

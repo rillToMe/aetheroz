@@ -1,5 +1,6 @@
 #include "io.h"
 #include <stdint.h>
+#include "spinlock.h"
 
 extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
 
@@ -7,6 +8,7 @@ extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
 volatile uint8_t kbd_buffer[KBD_BUFFER_SIZE];
 volatile uint32_t kbd_head = 0;
 volatile uint32_t kbd_tail = 0;
+static spinlock_t kbd_lock = SPINLOCK_INIT;
 
 // Variabel pelacak status tombol modifier
 static uint8_t shift_pressed = 0;
@@ -66,6 +68,7 @@ void keyboard_handler() {
             }
 
             if (ascii != 0) {
+                spinlock_lock(&kbd_lock);
                 uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
                 if (next_head != kbd_tail) { 
                     kbd_buffer[kbd_head] = ascii;
@@ -73,6 +76,7 @@ void keyboard_handler() {
 
                     push_event(1, ascii, 0, 0); // EVENT_KEY_PRESS (1) -> P1: Kode ASCII
                 }
+                spinlock_unlock(&kbd_lock);
             }
         }
     }
@@ -80,12 +84,14 @@ void keyboard_handler() {
 }
 
 uint32_t keyboard_read(uint8_t *buffer, uint32_t size) {
+    uint64_t flags = spinlock_lock_irqsave(&kbd_lock);
     uint32_t bytes_read = 0;
     while (bytes_read < size && kbd_head != kbd_tail) {
         buffer[bytes_read] = kbd_buffer[kbd_tail];
         kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;
         bytes_read++;
     }
+    spinlock_unlock_irqrestore(&kbd_lock, flags);
     return bytes_read;
 }
 
@@ -93,8 +99,10 @@ uint32_t keyboard_read(uint8_t *buffer, uint32_t size) {
 // Dipanggil bersamaan dengan flush_event_queue() saat ganti app,
 // agar ketikan di app lama tidak bocor ke app berikutnya.
 void flush_kbd_buffer(void) {
+    uint64_t flags = spinlock_lock_irqsave(&kbd_lock);
     kbd_head = 0;
     kbd_tail = 0;
+    spinlock_unlock_irqrestore(&kbd_lock, flags);
 }
 
 
@@ -106,4 +114,4 @@ void init_keyboard() {
     kbd_head = 0;
     kbd_tail = 0;
     shift_pressed = 0;
-}
+}
