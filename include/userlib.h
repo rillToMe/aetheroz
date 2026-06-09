@@ -38,8 +38,8 @@ int sys_create_file(char* filename, char* data, uint32_t size);
 
 uint64_t sys_uptime(void);
 
-uint32_t sys_total_ram(void);
-uint32_t sys_used_ram(void);
+uint64_t sys_total_ram(void);
+uint64_t sys_used_ram(void);
 
 void print_num(uint32_t num);
 extern int strcmp(const char *s1, const char *s2);

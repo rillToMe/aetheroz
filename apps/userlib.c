@@ -33,11 +33,11 @@ int sys_read_file_to_buffer(char* filename, char* buffer) {
 uint64_t sys_uptime() {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(14)); return ret;
 }
-uint32_t sys_total_ram() {
-    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(15)); return (uint32_t)ret;
+uint64_t sys_total_ram() {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(15)); return ret;
 }
-uint32_t sys_used_ram() {
-    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(16)); return (uint32_t)ret;
+uint64_t sys_used_ram() {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(16)); return ret;
 }
 void get_cpu_string(char* buffer) {
     // Kita panggil Syscall 17, biarkan kernel Ring 0 yang membacakan CPUID!
@@ -167,4 +167,4 @@ int sys_ping(const char *host) {
     int64_t ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(41), "b"((uint64_t)host));
     return (int)ret;
-}
+}

@@ -32,8 +32,8 @@ extern int        kfs_create_file(char* filename, char* data, uint32_t size);
 #include "timer.h"    // Unified timer API: timer_get_ms(), timer_sleep_ms(), timer_get_ticks()
 
 
-extern uint32_t   pmm_get_total_ram(void);
-extern uint32_t   pmm_get_used_ram(void);
+extern uint64_t   pmm_get_total_ram(void);
+extern uint64_t   pmm_get_used_ram(void);
 
 extern int        current_uid;
 
@@ -102,8 +102,8 @@ void*    sys_realloc(void* ptr, size_t old_sz, size_t new_sz){ return krealloc(p
 
 // --- Info Sistem ---
 uint64_t sys_uptime(void)    { return timer_get_ms(); }        // ms sejak boot (uint64_t, tidak overflow)
-uint32_t sys_total_ram(void) { return pmm_get_total_ram(); }
-uint32_t sys_used_ram(void)  { return pmm_get_used_ram(); }
+uint64_t sys_total_ram(void) { return pmm_get_total_ram(); }
+uint64_t sys_used_ram(void)  { return pmm_get_used_ram(); }
 
 
 void sys_get_time(uint32_t* time_array) {

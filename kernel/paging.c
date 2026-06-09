@@ -26,8 +26,8 @@ void init_paging(uint32_t unused) {
 
 // Helper: alokasi page fisik dan kembalikan virtual address-nya (via HHDM)
 static uint64_t* alloc_page_virt(void) {
-    void* phys = pmm_alloc_page();
-    if (!phys) return 0;
+    phys_addr_t phys = pmm_alloc_page();
+    if (phys == PHYS_NULL) return 0;
     uint64_t* virt = (uint64_t*)PHYS_TO_VIRT(phys);
     memset(virt, 0, 4096);
     return virt;
@@ -82,9 +82,9 @@ void vmm_map_page(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
 
 // Wrapper: alokasi halaman fisik dari PMM dan map ke vaddr
 int vmm_alloc_page(uint64_t vaddr, uint64_t flags) {
-    void* paddr = pmm_alloc_page();
-    if (!paddr) return 0;
-    vmm_map_page(vaddr, (uint64_t)paddr, flags);
+    phys_addr_t paddr = pmm_alloc_page();
+    if (paddr == PHYS_NULL) return 0;
+    vmm_map_page(vaddr, paddr, flags);
     return 1;
 }
 
@@ -126,7 +126,7 @@ int paging_is_mapped(uint64_t vaddr) {
 // ===================================================================
 void vmm_unmap_user_space(void) {
     if (!current_pml4) return;
-    extern void pmm_free_page(void* page);
+    extern void pmm_free_page(phys_addr_t addr);
 
     // App virtual range: 0x4000000 – 0x4FFFFFF (16MB slot)
     // PML4[0] → PDPT[0] → PD[32..39] → PT[0..511]
@@ -163,12 +163,12 @@ void vmm_unmap_user_space(void) {
         for (int p1 = 0; p1 < 512; p1++) {
             if (!(pt[p1] & 1)) continue;
             uint64_t page_phys = pt[p1] & 0xFFFFFFFFFFFFF000ULL;
-            pmm_free_page((void*)page_phys);
+            pmm_free_page(page_phys);
             pt[p1] = 0;
         }
 
         // Free PT page sendiri
-        pmm_free_page((void*)pt_phys);
+        pmm_free_page(pt_phys);
         pd[p2] = 0;
     }
 

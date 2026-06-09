@@ -44,7 +44,7 @@
 extern uint64_t hhdm_offset;
 
 /* Dari kernel/pmm.c — physical page allocator untuk DMA memory */
-extern void *pmm_alloc_page(void);
+extern uint64_t pmm_alloc_page(void);  /* returns phys_addr_t (uint64_t) */
 
 /* Dari kernel/kernel.c — kernel log output */
 extern void kprint(const char *str);
@@ -156,10 +156,9 @@ static inline void e1000_reg_write(uint32_t offset, uint32_t val) {
 }
 
 static void *e1000_dma_alloc_page(uint64_t *phys_out) {
-    void *phys = pmm_alloc_page();
-    if (phys == NULL) return NULL;
+    uint64_t paddr = pmm_alloc_page();
+    if (paddr == 0) return NULL;
 
-    uint64_t paddr = (uint64_t)phys;
     void *virt = (void *)(paddr + hhdm_offset);
     memset(virt, 0, E1000_DMA_PAGE_SIZE);
 

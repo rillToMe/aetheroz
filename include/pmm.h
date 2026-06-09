@@ -3,19 +3,28 @@
 
 #include <stdint.h>
 
-#define PAGE_SIZE 4096            // 1 Page = 4 Kilobytes
-#define MAX_MEM_SIZE 0x100000000ULL   // 4GB (Max 32bit architecture)
-#define PMM_BITMAP_SIZE (MAX_MEM_SIZE / PAGE_SIZE / 8) // Ukuran array bitmap
+// ============================================================
+// Physical address type — distinct from virtual pointers.
+// pmm_alloc_page() returns a PHYSICAL address, not a kernel pointer.
+// Callers MUST add hhdm_offset to get a virtual (HHDM) address.
+// ============================================================
+typedef uint64_t phys_addr_t;
 
-// Kontrak fungsi Manajemen Memori Fisik
-void pmm_init(void);
-void* pmm_alloc_page(void);
-void pmm_free_page(void* ptr);
+#define PHYS_NULL ((phys_addr_t)0)
 
-uint32_t pmm_get_used_ram(void);
-uint32_t pmm_get_total_ram(void);
+#define PAGE_SIZE 4096
 
-void pmm_set_total_ram(uint32_t size);
+// Contracts
+void         pmm_init_dynamic(void* memmap_entries, uint64_t entry_count);
+phys_addr_t  pmm_alloc_page(void);
+void         pmm_free_page(phys_addr_t addr);
 
-void pmm_init_dynamic(void* memmap_entries, uint64_t entry_count);
+uint64_t     pmm_get_used_ram(void);
+uint64_t     pmm_get_total_ram(void);
+uint64_t     pmm_get_free_ram(void);
+uint64_t     pmm_get_used_pages(void);
+uint64_t     pmm_get_total_pages(void);
+
+void         pmm_set_total_ram(uint64_t size);
+
 #endif

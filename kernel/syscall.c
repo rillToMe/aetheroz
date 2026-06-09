@@ -37,8 +37,8 @@ extern int kfs_get_file_list(void* buffer, int max_entries);
 extern uint32_t elf_load_file(char* filename);
 
 extern void get_cpu_string(char* buffer);
-extern uint32_t pmm_get_used_ram(void);
-extern uint32_t pmm_get_total_ram(void);
+extern uint64_t pmm_get_used_ram(void);
+extern uint64_t pmm_get_total_ram(void);
 extern uint32_t kfs_get_total_space(void);
 extern uint32_t kfs_get_used_space(void);
 extern uint32_t get_cpu_usage(void);
@@ -333,4 +333,4 @@ void syscall_handler(registers_t *r) {
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;
-}
+}
