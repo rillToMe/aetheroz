@@ -16,7 +16,6 @@ Example:
 
 clang
 
-(or any project-specific environment required)
 
 3. Build the project.
 

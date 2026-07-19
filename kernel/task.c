@@ -27,8 +27,116 @@ task_t tasks[MAX_TASKS];
 int    current_task = 0;
 int    task_count   = 0;
 
+// Guards TCB slot allocation, task_count, and per-task metadata teardown.
+// NOT taken on the scheduling hot path — see cpu_current_task note below.
 static spinlock_t scheduler_lock = SPINLOCK_INIT;
+
+// Per-CPU "currently running task" id (-1 = idle). Each entry is written only
+// by its own CPU (schedule_on_cpu / task_exit / idle loop) plus one-time init,
+// so it needs no cross-CPU lock. Remote reads (dump, panic) are advisory.
 static int cpu_current_task[SMP_MAX_CPUS];
+
+// ============================================================
+// PER-CPU RUN QUEUES (SMP load balancing)
+//
+// Each CPU owns a FIFO of READY task ids. A READY task is present in EXACTLY
+// ONE run queue; a RUNNING task is in none (tracked by cpu_current_task).
+// This single-membership invariant is what prevents a task from being run on
+// two CPUs at once: a task can only be scheduled by first dequeuing it under
+// the owning queue's lock, which removes it from every queue atomically.
+//
+// Balancing has two halves:
+//   - Placement: create_task enqueues onto the least-loaded CPU (pick_target_cpu).
+//   - Work-stealing: an idle CPU pulls a task from the busiest remote queue.
+//
+// Locking: every queue has its own lock and we never hold two queue locks at
+// once (stealing dequeues the victim, then enqueues to self as separate critical
+// sections), so the run queues cannot deadlock against each other.
+// ============================================================
+#define RUNQ_CAPACITY MAX_TASKS   // Never more than MAX_TASKS tasks system-wide.
+
+typedef struct {
+    spinlock_t       lock;
+    volatile uint32_t count;      // Advisory load metric; aligned 32-bit read is atomic on x86.
+    uint32_t         head;
+    uint32_t         tail;
+    int              entries[RUNQ_CAPACITY];
+} run_queue_t;
+
+static run_queue_t cpu_runqueues[SMP_MAX_CPUS];
+
+static int runq_push(uint32_t cpu_id, int task_id) {
+    run_queue_t *rq = &cpu_runqueues[cpu_id];
+    uint64_t flags = spinlock_lock_irqsave(&rq->lock);
+    if (rq->count >= RUNQ_CAPACITY) {   // Should never happen; fail safe rather than corrupt.
+        spinlock_unlock_irqrestore(&rq->lock, flags);
+        return -1;
+    }
+    rq->entries[rq->tail] = task_id;
+    rq->tail = (rq->tail + 1) % RUNQ_CAPACITY;
+    rq->count++;
+    spinlock_unlock_irqrestore(&rq->lock, flags);
+    return 0;
+}
+
+static int runq_pop(uint32_t cpu_id) {
+    run_queue_t *rq = &cpu_runqueues[cpu_id];
+    uint64_t flags = spinlock_lock_irqsave(&rq->lock);
+    if (rq->count == 0) {
+        spinlock_unlock_irqrestore(&rq->lock, flags);
+        return -1;
+    }
+    int task_id = rq->entries[rq->head];
+    rq->head = (rq->head + 1) % RUNQ_CAPACITY;
+    rq->count--;
+    spinlock_unlock_irqrestore(&rq->lock, flags);
+    return task_id;
+}
+
+// Pick the least-loaded online CPU for a newly-ready task. Load = queued tasks
+// plus one if the CPU is currently running something. A fully idle CPU wins
+// immediately so fresh work lands where it can start without waiting a quantum.
+static uint32_t pick_target_cpu(void) {
+    uint32_t online = smp_online_cpu_count();
+    if (online > SMP_MAX_CPUS) online = SMP_MAX_CPUS;
+    if (online == 0) return 0;
+
+    uint32_t best_cpu  = 0;
+    uint32_t best_load = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < online; i++) {
+        if (cpu_current_task[i] < 0 && cpu_runqueues[i].count == 0) {
+            return i;   // Idle core: schedule here right away.
+        }
+        uint32_t load = cpu_runqueues[i].count + (cpu_current_task[i] >= 0 ? 1u : 0u);
+        if (load < best_load) {
+            best_load = load;
+            best_cpu  = i;
+        }
+    }
+    return best_cpu;
+}
+
+// Work-stealing: pull one task from the busiest remote run queue. Only steals a
+// genuinely waiting task (queue length >= 1); the victim's running task is never
+// touched. Returns a task id, or -1 if no remote CPU has waiting work.
+static int steal_task(uint32_t self_cpu) {
+    uint32_t online = smp_online_cpu_count();
+    if (online > SMP_MAX_CPUS) online = SMP_MAX_CPUS;
+
+    int      victim = -1;
+    uint32_t best   = 0;
+    for (uint32_t i = 0; i < online; i++) {
+        if (i == self_cpu) continue;
+        uint32_t c = cpu_runqueues[i].count;   // Advisory: victim may change before we lock.
+        if (c > best) {
+            best   = c;
+            victim = (int)i;
+        }
+    }
+    if (victim < 0) return -1;
+
+    return runq_pop((uint32_t)victim);   // -1 if the queue emptied out before we locked it.
+}
 
 extern void kprint(const char* str);
 extern void kprint_num(uint64_t num);
@@ -71,6 +179,12 @@ void tasking_init(void) {
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
         cpu_current_task[i] = -1;
+
+        run_queue_t *rq = &cpu_runqueues[i];
+        rq->lock.locked = 0;
+        rq->count = 0;
+        rq->head  = 0;
+        rq->tail  = 0;
     }
 
     // Task 0 = kernel main thread yang sedang berjalan
@@ -186,15 +300,27 @@ void create_task(void (*func)(void), const char* name) {
     tasks[slot].cookie     = 0;
     task_strncpy(tasks[slot].name, name ? name : "task", 16);
 
-    uint32_t online = smp_online_cpu_count();
-    if (online > SMP_MAX_CPUS) online = SMP_MAX_CPUS;
-    for (uint32_t i = 1; i < online; i++) {
-        if (cpu_current_task[i] < 0) {
-            kick_cpus[kick_count++] = i;
-        }
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    // Place the new task on the least-loaded CPU and wake only that one CPU.
+    // This replaces the old broadcast-to-all-idle-cores wakeup, which made
+    // every idle AP spin on the scheduler lock only for one to win the task.
+    uint32_t target = pick_target_cpu();
+    if (runq_push(target, slot) != 0) {
+        // Queue full (only possible under MAX_TASKS overflow). Reclaim the slot.
+        uint64_t reclaim = spinlock_lock_irqsave(&scheduler_lock);
+        tasks[slot].state = TASK_DEAD;
+        tasks[slot].rsp   = 0;
+        spinlock_unlock_irqrestore(&scheduler_lock, reclaim);
+        kfree(stack);
+        return;
     }
 
-    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+    // Only a remote CPU needs an IPI to preempt promptly; CPU 0 (BSP) picks the
+    // task up on its own next PIT tick, and the local AP does so on its LAPIC tick.
+    if (target != smp_current_cpu_index()) {
+        kick_cpus[kick_count++] = target;
+    }
 
     for (uint32_t i = 0; i < kick_count; i++) {
         smp_mark_reschedule(kick_cpus[i]);
@@ -261,6 +387,9 @@ void scheduler_dump(void) {
         } else {
             kprint("idle");
         }
+        kprint("(q=");
+        kprint_num((uint64_t)cpu_runqueues[i].count);
+        kprint(")");
     }
     kprint("\n");
 
@@ -332,10 +461,20 @@ void scheduler_idle_loop(void) {
 }
 
 // ============================================================
-// schedule — Round-Robin Preemptive Scheduler
+// schedule_on_cpu — Per-CPU Run Queue Scheduler with Work-Stealing
 //
-// Dipanggil dari timer_handler setiap ~20ms.
-// Menyimpan konteks task saat ini dan memuat konteks task berikutnya.
+// Dipanggil dari PIT (BSP) atau LAPIC timer (AP) setiap ~20ms, dan dari
+// reschedule IPI saat CPU lain menaruh pekerjaan baru untuk CPU ini.
+//
+// Pemilihan task berikutnya (urutan prioritas):
+//   1. Run queue lokal CPU ini (FIFO round-robin di dalam satu core).
+//   2. Work-stealing: ambil satu task dari run queue remote yang paling sibuk.
+//
+// Urutan operasi menjaga invarian "satu task hanya di satu queue" dan mencegah
+// sebuah task berjalan di dua CPU sekaligus:
+//   - `next` di-POP lebih dulu (dihapus dari queue → kepemilikan eksklusif).
+//   - Baru setelah `next` aman, task keluar (`cur`) disimpan konteksnya dan
+//     di-PUSH kembali ke queue lokal supaya CPU lain boleh mencurinya.
 //
 // Input : registers_t* = RSP task yang sedang di-interrupt (full ISR frame)
 // Output: registers_t* = RSP task berikutnya (akan di-load ke RSP di ASM)
@@ -354,30 +493,46 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     }
 
     int cur = cpu_current_task[cpu_id];
-
-    if (cur >= 0 && cur < task_count && tasks[cur].state == TASK_RUNNING) {
-        tasks[cur].rsp = (uint64_t)current_regs;
-        tasks[cur].state = TASK_READY;
-    } else {
+    int cur_running = (cur >= 0 && cur < task_count && tasks[cur].state == TASK_RUNNING);
+    if (!cur_running) {
         cur = -1;
         cpu_current_task[cpu_id] = -1;
     }
 
-    int start = (cur >= 0) ? cur : (int)(cpu_id % (uint32_t)task_count);
-    int next = -1;
-
-    for (int attempts = 0; attempts < task_count; attempts++) {
-        int candidate = (start + 1 + attempts) % task_count;
-        if (tasks[candidate].state == TASK_READY && tasks[candidate].rsp != 0) {
-            next = candidate;
-            break;
-        }
+    // Secure the next task BEFORE releasing the current one. Popping removes the
+    // task from its queue, giving this CPU exclusive ownership — no other CPU
+    // can select it, so it can never run on two cores at once.
+    int next = runq_pop(cpu_id);
+    if (next < 0) {
+        next = steal_task(cpu_id);
     }
 
     if (next < 0) {
-        if (cur >= 0 && cur < task_count) {
+        // Nothing else is runnable anywhere. Leave the current task on-CPU
+        // untouched (still RUNNING, still owned here) — no double-run risk.
+        spinlock_unlock(&scheduler_lock);
+        return current_regs;
+    }
+
+    // A replacement is secured; now hand the outgoing task back to a run queue.
+    // Publish its saved context and READY state so a stealing CPU sees them.
+    if (cur_running) {
+        tasks[cur].rsp   = (uint64_t)current_regs;
+        tasks[cur].state = TASK_READY;
+        if (runq_push(cpu_id, cur) != 0) {
+            // The local queue always has room for the outgoing task here (total
+            // live tasks <= MAX_TASKS and `next` is currently out of every
+            // queue), so this is unreachable. Fail safe: keep the current task
+            // running and defer the switch rather than drop a runnable task.
             tasks[cur].state = TASK_RUNNING;
+            (void)runq_push(cpu_id, next);
+            spinlock_unlock(&scheduler_lock);
+            return current_regs;
         }
+    }
+
+    if (next >= task_count || tasks[next].state != TASK_READY || tasks[next].rsp == 0) {
+        // Stale queue entry (task died between enqueue and now). Skip the switch.
         spinlock_unlock(&scheduler_lock);
         return current_regs;
     }

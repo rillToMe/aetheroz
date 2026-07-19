@@ -97,6 +97,41 @@ LAPIC timer vector 0xF0
 
 ---
 
+## SMP Load Balancing (Per-CPU Run Queue + Work-Stealing)
+
+Scheduler memakai **satu run queue per CPU**, bukan satu antrian global. Setiap
+run queue adalah FIFO berisi id task `TASK_READY` dan punya lock sendiri, jadi
+CPU yang berbeda tidak saling menunggu di satu lock global pada jalur cepat.
+
+Invarian inti: **sebuah task `TASK_READY` hanya ada di TEPAT satu run queue**, dan
+task `TASK_RUNNING` tidak ada di queue mana pun (dilacak oleh `cpu_current_task`).
+Inilah yang mencegah satu task berjalan di dua core sekaligus — untuk menjalankan
+task, CPU harus men-`pop` task dari queue lebih dulu (menghapusnya dari semua
+queue secara atomik di bawah lock queue).
+
+Penyeimbangan beban punya dua sisi:
+
+- **Placement** — `create_task` menaruh task baru ke CPU paling ringan
+  (`pick_target_cpu`: core idle menang langsung, selain itu pilih beban terkecil),
+  lalu hanya membangunkan CPU itu saja dengan satu IPI reschedule. Ini
+  menggantikan pola lama yang membangunkan **semua** core idle untuk satu task
+  (thundering herd) sehingga semua berebut lock hanya untuk satu yang menang.
+- **Work-stealing** — saat run queue lokal kosong, `schedule_on_cpu` mencuri satu
+  task dari run queue remote yang paling sibuk (`steal_task`). Task yang sedang
+  `TASK_RUNNING` di core lain tidak pernah disentuh — hanya task yang menunggu.
+
+Urutan operasi di `schedule_on_cpu` menjaga invarian di atas: `next` di-`pop`
+lebih dulu (kepemilikan eksklusif diamankan), baru task keluar (`cur`) disimpan
+konteksnya dan di-`push` kembali ke queue lokal agar core lain boleh mencurinya.
+
+Aturan lock (bebas deadlock): `scheduler_lock` selalu lock terluar, lock per-queue
+selalu di dalamnya, dan tidak pernah dua lock queue dipegang bersamaan (stealing
+mem-`pop` korban lalu mem-`push` ke diri sendiri sebagai dua critical section
+terpisah). Command shell `sched` (`scheduler_dump`) menampilkan panjang run queue
+tiap CPU (`cpuN=...(q=M)`) untuk memantau keseimbangan beban.
+
+---
+
 ## Quick Start — Membuat Task Baru
 
 ### 1. Tulis fungsi task kamu
@@ -202,7 +237,7 @@ yield();  // Hemat CPU, tunggu IRQ berikutnya (timer, keyboard, dll)
 ---
 
 ### `schedule(registers_t* current_regs)` / `schedule_on_cpu(cpu_id, regs)` ← Internal
-Dipanggil secara otomatis oleh `timer_handler`. **Jangan panggil langsung.**
+Dipanggil secara otomatis oleh `timer_handler` (BSP) dan `lapic_timer_handler`/`lapic_reschedule_handler` (AP). **Jangan panggil langsung.** Memilih task berikutnya dari run queue lokal CPU, lalu work-stealing dari queue remote paling sibuk bila lokal kosong. Lihat [SMP Load Balancing](#smp-load-balancing-per-cpu-run-queue--work-stealing).
 
 ---
 
@@ -324,7 +359,7 @@ Scheduler memakai quantum **20ms** (bisa diubah di `drivers/timer.c`). Timer IRQ
 | Stack per task | 8 KB | `TASK_STACK_SIZE` di `include/task.h` |
 | Timer refresh | 60 / 100 / 144 Hz | Default 60Hz, bisa diubah via shell `refresh` |
 | Quantum | 20 ms | Scheduler quantum di `drivers/timer.c` |
-| SMP scheduler | Awal | AP bisa mengambil `TASK_READY` ID > 0 via LAPIC timer |
+| SMP scheduler | Per-CPU run queue | Load balancing: placement least-loaded + work-stealing (lihat "SMP Load Balancing") |
 | Ring 3 (user space) | ⚠️ Belum | Semua task saat ini Ring 0 (kernel) |
 | Task cleanup/join | ⚠️ Parsial | Task return masuk `task_exit`; stack lama di-reuse saat slot dipakai ulang |
 | Stack overflow guard | ⚠️ Belum | Jangan allokasi array besar di task |

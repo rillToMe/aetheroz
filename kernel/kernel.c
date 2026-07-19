@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "timer.h"  // Unified timer API
-#include "limine.h" // <-- Kembali menggunakan Limine Native!
+#include "limine.h"
 #define FONT8x16_IMPLEMENTATION 
 #include "font8x16.h"
 #include "fs.h"
@@ -530,24 +530,40 @@ void compositor_flush() {
     uint64_t copy_cnt = screen_size; // 64-bit counter (rcx)
     __asm__ volatile ("rep movsl" : "+D" (dst_bg), "+S" (src_bg), "+c" (copy_cnt) : : "memory");
 
+    // Screen geometry hoisted out of the per-pixel path. fb_pitch/4 (the stride
+    // in pixels) was previously recomputed for every pixel via a division inside
+    // the inner loop — the dominant cost when compositing a large window such as
+    // a full-size image. Compute it once here.
+    const int pitch4 = (int)(fb_pitch / 4);
+    const int scr_w  = (int)fb_width;
+    const int scr_h  = (int)fb_height;
+
     uint64_t kwm_flags = spinlock_lock_irqsave(&kwm_lock);
     for(uint32_t z = 1; z <= next_z_index; z++) {
         for(int w = 0; w < MAX_WINDOWS; w++) {
-            if(kwm_windows[w].active && kwm_windows[w].z_index == z) {
-                uint32_t win_w = kwm_windows[w].width;
-                uint32_t win_h = kwm_windows[w].height;
+            if(kwm_windows[w].active && kwm_windows[w].z_index == z && kwm_windows[w].canvas) {
+                const int win_x = kwm_windows[w].x;
+                const int win_y = kwm_windows[w].y;
+                const int win_w = (int)kwm_windows[w].width;
+                const int win_h = (int)kwm_windows[w].height;
                 uint32_t* canvas = kwm_windows[w].canvas;
 
-                for(uint32_t wy = 0; wy < win_h; wy++) {
-                    for(uint32_t wx = 0; wx < win_w; wx++) {
-                        int screen_x = kwm_windows[w].x + wx;
-                        int screen_y = kwm_windows[w].y + wy;
-                        
-                        if(screen_x >= 0 && screen_x < (int)fb_width && screen_y >= 0 && screen_y < (int)fb_height) {
-                            uint32_t pixel = canvas[(wy * win_w) + wx];
-                            if (pixel >> 24) {
-                                backbuffer[(screen_y * (fb_pitch / 4)) + screen_x] = pixel & 0xFFFFFF;
-                            }
+                // Clip the window to the screen ONCE instead of testing every
+                // pixel. wx/wy iterate only over the visible sub-rectangle, so
+                // the inner loop needs no per-pixel bounds check.
+                int wx_start = win_x < 0 ? -win_x : 0;
+                int wy_start = win_y < 0 ? -win_y : 0;
+                int wx_end   = win_x + win_w > scr_w ? scr_w - win_x : win_w;
+                int wy_end   = win_y + win_h > scr_h ? scr_h - win_y : win_h;
+
+                for(int wy = wy_start; wy < wy_end; wy++) {
+                    const uint32_t* src = canvas + (uint32_t)wy * (uint32_t)win_w;
+                    uint32_t* dst = backbuffer + (uint32_t)(win_y + wy) * (uint32_t)pitch4 + win_x;
+                    for(int wx = wx_start; wx < wx_end; wx++) {
+                        uint32_t pixel = src[wx];
+                        // Alpha byte acts as a per-pixel mask: 0 = transparent.
+                        if (pixel >> 24) {
+                            dst[wx] = pixel & 0xFFFFFF;
                         }
                     }
                 }

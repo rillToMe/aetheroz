@@ -30,17 +30,21 @@ Write code that is maintainable.
 
 # 2. Comments
 
-Comments should explain WHY.
+Code must speak for itself. Prefer clear naming and structure over comments.
 
-Never explain WHAT.
+Keep comments minimal. Do not comment to save tokens or padding — every comment must earn its place.
+
+Never explain WHAT. Never comment obvious code.
 
 Bad:
 
 // increment i
 
-Good:
+Only comment non-obvious WHY, and keep it to one short line:
 
 // Skip reserved kernel pages to prevent allocator corruption.
+
+If an explanation needs more than one line, it does not belong in the code. Put it in `DOCUMENTATION.md` instead and, if needed, leave a short pointer comment referencing it.
 
 ---
 

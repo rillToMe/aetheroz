@@ -187,17 +187,21 @@ void syscall_handler(registers_t *r) {
                 self->cookie = ++as_cookie_counter;
                 current_as_cookie = self->cookie;
             }
+
+            // Switch CR3 to the user PML4 BEFORE loading. elf_load_file copies
+            // segment bytes directly to user virtual addresses (e.g. 0x4000000)
+            // via memcpy, which the CPU translates through the *current* CR3.
+            // The freshly-allocated pages are mapped into new_pml4, so CR3 must
+            // already point there or the copy faults on an unmapped address.
+            // Kernel higher-half (code/stack/heap/HHDM) is cloned into new_pml4,
+            // so kernel execution continues safely after the switch.
+            vmm_switch_pml4(new_pml4);
         }
 
         ret_val = elf_load_file((char*)r->rbx);
 
         // Done loading ELF — stop routing to user PML4
         vmm_user_pml4 = PHYS_NULL;
-
-        // Now switch CR3 to the user PML4 for process isolation
-        if (new_pml4 != PHYS_NULL) {
-            vmm_switch_pml4(new_pml4);
-        }
     }
 
     else if (syscall_num == 26) { // sys_draw_string
@@ -311,20 +315,23 @@ void syscall_handler(registers_t *r) {
                     if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
                 }
                 if (self) self->pml4_phys = new_pml4;
+
+                // Switch CR3 to the user PML4 BEFORE loading — elf_load_file
+                // copies segment bytes to user virtual addresses via memcpy,
+                // translated through the current CR3. The target pages live in
+                // new_pml4, so CR3 must point there or the copy page-faults.
+                vmm_switch_pml4(new_pml4);
             }
         }
 
         // 3. Load ELF baru ke slot 0x4000000
         uint64_t entry = elf_load_file(kfname);
 
-        // Done loading — clear routing and switch CR3
+        // Done loading — stop routing user-range mappings to the new PML4.
+        // CR3 already points at the user PML4 (switched before load).
         {
             extern phys_addr_t vmm_user_pml4;
-            phys_addr_t user_pml4 = vmm_user_pml4;
             vmm_user_pml4 = PHYS_NULL;
-            if (user_pml4 != PHYS_NULL) {
-                vmm_switch_pml4(user_pml4);
-            }
         }
 
 
