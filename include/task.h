@@ -65,6 +65,7 @@ typedef struct {
     uint8_t  state;           // TASK_READY / TASK_RUNNING / TASK_DEAD
     char     name[16];        // Nama task untuk debugging
     phys_addr_t pml4_phys;    // Physical address of this task's PML4 (0 = kernel shared)
+    uint32_t cookie;          // Unique per-address-space ID (assigned dynamically by OS)
 } task_t;
 
 
@@ -85,8 +86,11 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs);
 // Yield hint: biarkan CPU idle, timer preempt otomatis via IRQ0
 void yield(void);
 
+// Per-CPU current task ID (SMP-safe). Returns -1 if idle.
+int smp_current_task_id(void);
+
 extern int    task_count;
-extern int    current_task;
+extern int    current_task;    // DEPRECATED: only tracks CPU 0. Use smp_current_task_id().
 extern task_t tasks[MAX_TASKS];
 
 #endif // TASK_H

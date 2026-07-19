@@ -61,6 +61,14 @@ void render_notepad(gui_window_t* win) {
 }
 
 void main(void) {
+    // === ISOLATION TEST (dynamic — OS assigns unique PID per address space) ===
+    print("[notepad] CR3=");
+    print_num((uint32_t)(sys_get_cr3() >> 12));
+    print(" pid=");
+    print_num(sys_get_pid());
+    print("\n");
+    // === END TEST ===
+
     if (sys_file_exists("edit.tmp")) {
         uint32_t tmp_size = sys_file_size("edit.tmp");
         if (tmp_size > 0 && tmp_size < 64) {

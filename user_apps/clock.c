@@ -127,6 +127,14 @@ void clock_render(gui_window_t* win) {
 }
 
 void main(void) {
+    // === ISOLATION TEST (dynamic — OS assigns unique PID per address space) ===
+    print("[clock] CR3=");
+    print_num((uint32_t)(sys_get_cr3() >> 12));
+    print(" pid=");
+    print_num(sys_get_pid());
+    print("\n");
+    // === END TEST ===
+
     gui_window_t* app = gui_create_window("Clock", 300, 160);
     if (!app) { sys_exit(); return; }
 

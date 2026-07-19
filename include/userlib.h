@@ -106,4 +106,10 @@ uint32_t sys_get_cpu_usage(void);
 // Output ping dicetak langsung oleh kernel (kprint) ke TTY.
 int sys_ping(const char *host);
 
+// Diagnostic: process isolation testing
+uint64_t sys_get_cr3(void);   // Return CR3 physical address (PML4 pointer)
+int sys_get_task_id(void);    // Return current task ID (-1 if idle)
+int sys_is_mapped(void* addr); // Return 1 if addr is mapped, 0 if not (safe probe)
+uint32_t sys_get_pid(void);   // Return per-AS unique cookie (OS-generated)
+
 #endif

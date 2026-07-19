@@ -168,3 +168,37 @@ int sys_ping(const char *host) {
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(41), "b"((uint64_t)host));
     return (int)ret;
 }
+
+// sys_get_cr3: Syscall 42 — Read CR3 (PML4 physical address)
+// For process isolation testing: different apps should see different CR3 values.
+uint64_t sys_get_cr3(void) {
+    uint64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(42));
+    return ret;
+}
+
+// sys_get_task_id: Syscall 43 — Get current task ID
+// Returns -1 if CPU is idle, or the task slot index.
+int sys_get_task_id(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(43));
+    return (int)ret;
+}
+
+// sys_is_mapped: Syscall 44 — Check if virtual address is mapped
+// Returns 1 if the page is present in current PML4, 0 if not.
+// Safe: does NOT dereference the address.
+int sys_is_mapped(void* addr) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(44), "b"((uint64_t)addr));
+    return (int)ret;
+}
+
+// sys_get_pid: Syscall 45 — Get per-address-space unique cookie
+// Returns a unique ID assigned by the OS when the address space was created.
+// Different apps running sequentially will get different values.
+uint32_t sys_get_pid(void) {
+    uint64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(45));
+    return (uint32_t)ret;
+}

@@ -52,6 +52,12 @@ int current_uid = 0; // Definisi global — UID proses yang sedang berjalan
 // HANDLER SYSCALL 64-BIT
 // (Dipanggil oleh isr128_stub saat aplikasi melempar int 0x80)
 // ========================================================
+// Per-address-space cookie generator: increments for each new AS.
+static uint32_t as_cookie_counter = 0;
+// Current address space cookie (readable by apps via sys_get_pid).
+// Updated by sys_load_elf when creating a new AS.
+static uint32_t current_as_cookie = 0;
+
 void syscall_handler(registers_t *r) {
     // Nomor Syscall selalu ada di RAX
     uint64_t syscall_num = r->rax;
@@ -158,7 +164,10 @@ void syscall_handler(registers_t *r) {
 
         // --- PER-PROCESS ISOLATION ---
         // Create a fresh address space for the new user app.
-        // This gives each app its own PML4 with isolated user pages.
+        // current_pml4 ALWAYS stays as kernel PML4. We route ELF pages
+        // into the user PML4 via vmm_user_pml4, then switch CR3.
+        extern phys_addr_t vmm_user_pml4;
+
         phys_addr_t new_pml4 = vmm_create_address_space();
         if (new_pml4 != PHYS_NULL) {
             // Clean old user pages if this task had a previous AS
@@ -170,13 +179,25 @@ void syscall_handler(registers_t *r) {
                 vmm_destroy_task_as(self->pml4_phys);
             }
 
-            // Switch to new AS: CR3 + current_pml4 both updated
-            vmm_switch_pml4(new_pml4);
+            // Route user-range mappings into the new PML4 during ELF load
+            vmm_user_pml4 = new_pml4;
 
-            if (self) self->pml4_phys = new_pml4;
+            if (self) {
+                self->pml4_phys = new_pml4;
+                self->cookie = ++as_cookie_counter;
+                current_as_cookie = self->cookie;
+            }
         }
 
         ret_val = elf_load_file((char*)r->rbx);
+
+        // Done loading ELF — stop routing to user PML4
+        vmm_user_pml4 = PHYS_NULL;
+
+        // Now switch CR3 to the user PML4 for process isolation
+        if (new_pml4 != PHYS_NULL) {
+            vmm_switch_pml4(new_pml4);
+        }
     }
 
     else if (syscall_num == 26) { // sys_draw_string
@@ -250,6 +271,11 @@ void syscall_handler(registers_t *r) {
             kfname[fi] = '\0';
         }
 
+        // 0. Destroy all KWM windows FIRST — prevents compositor from
+        //    accessing freed canvas memory after AS cleanup.
+        extern void kwm_destroy_all_windows(void);
+        kwm_destroy_all_windows();
+
         // 1. Destroy current address space and switch back to kernel PML4
         {
             task_t *self = NULL;
@@ -275,9 +301,11 @@ void syscall_handler(registers_t *r) {
 
         // 2. Create fresh AS for the new app being exec'd
         {
+            extern phys_addr_t vmm_user_pml4;
             phys_addr_t new_pml4 = vmm_create_address_space();
             if (new_pml4 != PHYS_NULL) {
-                vmm_switch_pml4(new_pml4);
+                // Route ELF pages into the new PML4
+                vmm_user_pml4 = new_pml4;
                 task_t *self = NULL;
                 for (int i = 0; i < task_count; i++) {
                     if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
@@ -287,8 +315,17 @@ void syscall_handler(registers_t *r) {
         }
 
         // 3. Load ELF baru ke slot 0x4000000
-
         uint64_t entry = elf_load_file(kfname);
+
+        // Done loading — clear routing and switch CR3
+        {
+            extern phys_addr_t vmm_user_pml4;
+            phys_addr_t user_pml4 = vmm_user_pml4;
+            vmm_user_pml4 = PHYS_NULL;
+            if (user_pml4 != PHYS_NULL) {
+                vmm_switch_pml4(user_pml4);
+            }
+        }
 
 
         // 3. Set RIP & RSP untuk IRETQ
@@ -313,6 +350,10 @@ void syscall_handler(registers_t *r) {
         }
     }
     else if (syscall_num == 34) { // sys_exit — app selesai, kembali ke shell
+        // Destroy all KWM windows FIRST — prevents dangling canvas pointers
+        extern void kwm_destroy_all_windows(void);
+        kwm_destroy_all_windows();
+
         // Destroy address space and switch back to kernel PML4
         {
             task_t *self = NULL;
@@ -380,6 +421,23 @@ void syscall_handler(registers_t *r) {
         const char *host = (const char *)r->rbx;
         int rtt = kernel_ping(host);
         ret_val = (uint64_t)(int64_t)rtt; // sign-extend -1 dengan benar
+    }
+    else if (syscall_num == 42) { // sys_get_cr3 — return current CR3 physical address
+        // Diagnostic syscall for process isolation testing.
+        // Returns the physical address of the current PML4 (CR3 value).
+        ret_val = (uint64_t)vmm_read_cr3();
+    }
+    else if (syscall_num == 43) { // sys_get_task_id — return current task ID
+        ret_val = (uint64_t)(int64_t)smp_current_task_id();
+    }
+    else if (syscall_num == 44) { // sys_is_mapped — check if vaddr is mapped
+        // Returns 1 if the page containing vaddr is present in current PML4.
+        // Safe: does NOT dereference the address, only walks page tables.
+        ret_val = (uint64_t)paging_is_mapped((uint64_t)r->rbx);
+    }
+    else if (syscall_num == 45) { // sys_get_pid — return per-AS cookie
+        // Returns the unique cookie of the current address space.
+        ret_val = (uint64_t)current_as_cookie;
     }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)

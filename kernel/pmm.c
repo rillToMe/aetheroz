@@ -290,6 +290,21 @@ void pmm_free_page(phys_addr_t addr) {
 }
 
 // ============================================================
+// pmm_owns_page — Check if PMM tracks and allocated this page
+//
+// Returns 1 if the address is within bitmap range AND marked used.
+// Returns 0 if out-of-range or free (not ours to free).
+// Lock-free: reads bitmap without lock (safe for diagnostic use).
+// ============================================================
+int pmm_owns_page(phys_addr_t addr) {
+    if (addr == PHYS_NULL || (addr & ((phys_addr_t)PAGE_SIZE - 1))) return 0;
+    if (pmm_bitmap == NULL) return 0;
+    uint64_t bit = addr / PAGE_SIZE;
+    if (bit >= bitmap_pages) return 0;
+    return bitmap_test(bit) ? 1 : 0;
+}
+
+// ============================================================
 // Statistics — O(1) via used_pages counter
 // ============================================================
 

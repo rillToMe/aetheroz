@@ -385,6 +385,19 @@ void kwm_destroy_window(int win_id) {
     spinlock_unlock_irqrestore(&kwm_lock, flags);
 }
 
+// Destroy ALL KWM windows — called on app exit to prevent dangling canvas pointers.
+// Without this, the compositor would read freed memory when rendering.
+void kwm_destroy_all_windows(void) {
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (kwm_windows[i].active) {
+            if (kwm_windows[i].canvas) kfree(kwm_windows[i].canvas);
+            kwm_windows[i].active = 0;
+        }
+    }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+}
+
 // Kembalikan posisi window terkini (setelah drag, dsb) ke app via pointer.
 // App harus panggil ini setiap kali ingin konversi koordinat layar → koordinat lokal window.
 void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y) {

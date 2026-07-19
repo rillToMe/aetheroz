@@ -59,6 +59,18 @@ phys_addr_t vmm_get_kernel_pml4_phys(void);
 // Handles: save old PML4 → switch to kernel → destroy old → done.
 void vmm_destroy_task_as(phys_addr_t pml4_phys);
 
+// Map a page into the KERNEL PML4 (not current PML4).
+// Used by heap expansion to ensure kernel heap pages persist across AS switches.
+int  vmm_map_page_kernel(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+
+// Map a page into a SPECIFIC PML4 (used for ELF loading into user AS).
+int  vmm_map_page_into(uint64_t vaddr, uint64_t paddr, uint64_t flags,
+                        phys_addr_t target_pml4_phys);
+
+// When non-zero, vmm_alloc_page routes user-range addresses into this PML4.
+// Set by sys_load_elf before loading, cleared after.
+extern phys_addr_t vmm_user_pml4;
+
 // --- TLB MANAGEMENT ---
 
 // Invalidate TLB for a single virtual address (current CPU)

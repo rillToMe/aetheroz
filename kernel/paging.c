@@ -28,8 +28,13 @@ extern uint64_t hhdm_offset;
 // Inverse: virtual (HHDM) → physical
 #define VIRT_TO_PHYS(virt) ((uint64_t)(virt) - hhdm_offset)
 
-// Current PML4: disimpan sebagai VIRTUAL address (sudah ditambah HHDM)
+// Current PML4: ALWAYS the kernel PML4. Never changes after init.
 uint64_t* current_pml4 = 0;
+
+// User PML4: when non-zero, vmm_alloc_page maps USER-range addresses
+// (PML4 index < 256) into this PML4 instead of the kernel PML4.
+// Set by sys_load_elf before loading an app, cleared after.
+phys_addr_t vmm_user_pml4 = PHYS_NULL;
 
 // Boot kernel PML4 physical address — saved at init, never changes.
 // Used to restore kernel AS when returning from user processes.
@@ -95,7 +100,75 @@ static uint64_t* alloc_page_virt(void) {
 #define PAGE_MASK     0xFFFFFFFFFFFFF000ULL
 
 // ============================================================
-// vmm_map_page — Map vaddr → paddr with flags
+// vmm_map_page_into — Map vaddr → paddr in a SPECIFIC PML4
+//
+// Used to map ELF pages into a user PML4 without changing
+// current_pml4 (which always stays as the kernel PML4).
+//
+// Returns: 1 = success, 0 = failure
+// ============================================================
+int vmm_map_page_into(uint64_t vaddr, uint64_t paddr, uint64_t flags,
+                       phys_addr_t target_pml4_phys) {
+    if (target_pml4_phys == PHYS_NULL) return 0;
+
+    uint64_t* target_pml4 = (uint64_t*)PHYS_TO_VIRT(target_pml4_phys);
+    uint64_t pml4_idx = PML4_IDX(vaddr);
+    uint64_t pdpt_idx = PDPT_IDX(vaddr);
+    uint64_t pd_idx   = PD_IDX(vaddr);
+    uint64_t pt_idx   = PT_IDX(vaddr);
+
+    uint64_t irq = spinlock_lock_irqsave(&paging_lock);
+
+    // Level 4 (PML4) → Level 3 (PDPT)
+    if (!(target_pml4[pml4_idx] & 1)) {
+        uint64_t* new_pdpt = alloc_page_virt();
+        if (!new_pdpt) {
+            spinlock_unlock_irqrestore(&paging_lock, irq);
+            return 0;
+        }
+        target_pml4[pml4_idx] = VIRT_TO_PHYS(new_pdpt) | 7;
+    }
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(target_pml4[pml4_idx] & PAGE_MASK);
+
+    // Level 3 (PDPT) → Level 2 (PD)
+    if (pdpt[pdpt_idx] & (1ULL << 7)) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return 0;
+    }
+    if (!(pdpt[pdpt_idx] & 1)) {
+        uint64_t* new_pd = alloc_page_virt();
+        if (!new_pd) {
+            spinlock_unlock_irqrestore(&paging_lock, irq);
+            return 0;
+        }
+        pdpt[pdpt_idx] = VIRT_TO_PHYS(new_pd) | 7;
+    }
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[pdpt_idx] & PAGE_MASK);
+
+    // Level 2 (PD) → Level 1 (PT)
+    if (pd[pd_idx] & (1ULL << 7)) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return 0;
+    }
+    if (!(pd[pd_idx] & 1)) {
+        uint64_t* new_pt = alloc_page_virt();
+        if (!new_pt) {
+            spinlock_unlock_irqrestore(&paging_lock, irq);
+            return 0;
+        }
+        pd[pd_idx] = VIRT_TO_PHYS(new_pt) | 7;
+    }
+    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[pd_idx] & PAGE_MASK);
+
+    // Install the mapping
+    pt[pt_idx] = (paddr & PAGE_MASK) | flags;
+
+    spinlock_unlock_irqrestore(&paging_lock, irq);
+    return 1;
+}
+
+// ============================================================
+// vmm_map_page — Map vaddr → paddr in current_pml4 (always kernel)
 //
 // Returns: 1 = success, 0 = failure (OOM or huge page collision)
 // Caller MUST NOT hold paging_lock (we acquire it here).
@@ -218,11 +291,25 @@ int vmm_unmap_page(uint64_t vaddr) {
 
 // ============================================================
 // vmm_alloc_page — Allocate physical page + map to vaddr
+//
+// When vmm_user_pml4 is set AND vaddr is in user range (PML4 < 256),
+// the mapping goes into the user PML4 instead of the kernel PML4.
+// This allows ELF loading to target the per-process AS without
+// ever changing current_pml4 (which stays as kernel PML4).
 // ============================================================
 int vmm_alloc_page(uint64_t vaddr, uint64_t flags) {
     phys_addr_t paddr = pmm_alloc_page();
     if (paddr == PHYS_NULL) return 0;
-    if (!vmm_map_page(vaddr, paddr, flags)) {
+
+    // Route user-range addresses to user PML4 if active
+    int ok;
+    if (vmm_user_pml4 != PHYS_NULL && PML4_IDX(vaddr) < 256) {
+        ok = vmm_map_page_into(vaddr, paddr, flags, vmm_user_pml4);
+    } else {
+        ok = vmm_map_page(vaddr, paddr, flags);
+    }
+
+    if (!ok) {
         pmm_free_page(paddr);
         return 0;
     }
@@ -235,18 +322,26 @@ int paging_map_region(uint64_t vaddr) {
 
 // ============================================================
 // paging_is_mapped — Check if vaddr has a mapping (SMP-safe)
+//
+// When vmm_user_pml4 is set and vaddr is in user range, checks
+// the user PML4 instead of the kernel PML4.
 // ============================================================
 int paging_is_mapped(uint64_t vaddr) {
-    if (!current_pml4) return 0;
+    // Pick the right PML4: user PML4 for user-range when active
+    uint64_t* check_pml4 = current_pml4;
+    if (vmm_user_pml4 != PHYS_NULL && PML4_IDX(vaddr) < 256) {
+        check_pml4 = (uint64_t*)PHYS_TO_VIRT(vmm_user_pml4);
+    }
+    if (!check_pml4) return 0;
 
     uint64_t irq = spinlock_lock_irqsave(&paging_lock);
 
     uint64_t pml4_idx = PML4_IDX(vaddr);
-    if (!(current_pml4[pml4_idx] & 1)) {
+    if (!(check_pml4[pml4_idx] & 1)) {
         spinlock_unlock_irqrestore(&paging_lock, irq);
         return 0;
     }
-    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(current_pml4[pml4_idx] & PAGE_MASK);
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(check_pml4[pml4_idx] & PAGE_MASK);
 
     uint64_t pdpt_idx = PDPT_IDX(vaddr);
     if (!(pdpt[pdpt_idx] & 1)) {
@@ -368,25 +463,27 @@ void vmm_destroy_address_space(phys_addr_t pml4_phys, int free_pml4) {
                 uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pt_phys);
 
                 // Free every 4KB data page in this PT
+                // Guard: only free pages that PMM actually allocated.
+                // Limine boot mappings (identity maps, framebuffer) are NOT ours.
                 for (int p1 = 0; p1 < 512; p1++) {
                     if (!(pt[p1] & 1)) continue;
                     phys_addr_t page_phys = pt[p1] & PAGE_MASK;
-                    pmm_free_page(page_phys);
+                    if (pmm_owns_page(page_phys)) pmm_free_page(page_phys);
                     pt[p1] = 0;
                 }
 
                 // Free the PT page itself
-                pmm_free_page(pt_phys);
+                if (pmm_owns_page(pt_phys)) pmm_free_page(pt_phys);
                 pd[p2] = 0;
             }
 
             // Free the PD page itself
-            pmm_free_page(pd_phys);
+            if (pmm_owns_page(pd_phys)) pmm_free_page(pd_phys);
             pdpt[p3] = 0;
         }
 
         // Free the PDPT page itself
-        pmm_free_page(pdpt_phys);
+        if (pmm_owns_page(pdpt_phys)) pmm_free_page(pdpt_phys);
         pml4[p4] = 0;
     }
 
@@ -394,7 +491,7 @@ void vmm_destroy_address_space(phys_addr_t pml4_phys, int free_pml4) {
 
     // Optionally free the PML4 page
     if (free_pml4) {
-        pmm_free_page(pml4_phys);
+        if (pmm_owns_page(pml4_phys)) pmm_free_page(pml4_phys);
     }
 
     // Flush TLB since we just nuked mappings
@@ -419,12 +516,14 @@ void vmm_unmap_user_space(void) {
 }
 
 // ============================================================
-// vmm_switch_pml4 — Switch CR3 + current_pml4 to a given PML4
+// vmm_switch_pml4 — Switch CR3 to a given PML4 (for isolation)
+//
+// Does NOT change current_pml4 — it always stays as kernel PML4.
+// Only CR3 is switched so the CPU uses the user PML4 for translations.
 // ============================================================
 void vmm_switch_pml4(phys_addr_t pml4_phys) {
     if (pml4_phys == PHYS_NULL) return;
 
-    current_pml4 = (uint64_t*)PHYS_TO_VIRT(pml4_phys);
     __asm__ volatile("mov %0, %%cr3" :: "r"((uint64_t)pml4_phys) : "memory");
 
     uint32_t cpu_id = smp_current_cpu_index();
@@ -433,12 +532,11 @@ void vmm_switch_pml4(phys_addr_t pml4_phys) {
 }
 
 // ============================================================
-// vmm_switch_to_kernel_as — Restore boot kernel PML4
+// vmm_switch_to_kernel_as — Restore kernel CR3
 // ============================================================
 void vmm_switch_to_kernel_as(void) {
     if (kernel_pml4_phys == PHYS_NULL) return;
 
-    current_pml4 = (uint64_t*)PHYS_TO_VIRT(kernel_pml4_phys);
     __asm__ volatile("mov %0, %%cr3" :: "r"((uint64_t)kernel_pml4_phys) : "memory");
 
     uint32_t cpu_id = smp_current_cpu_index();
@@ -468,4 +566,27 @@ void vmm_destroy_task_as(phys_addr_t pml4_phys) {
 
     // Now safe to destroy the old address space
     vmm_destroy_address_space(pml4_phys, 1);
+}
+
+// ============================================================
+// vmm_map_page_kernel — Map a page into the KERNEL PML4
+//
+// Used by expand_heap() to ensure kernel heap pages are always
+// in the kernel PML4, regardless of which AS is currently active.
+// Without this, heap expansion during an app would map pages into
+// the app's PML4 — lost when the app exits.
+// ============================================================
+int vmm_map_page_kernel(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
+    if (kernel_pml4_phys == PHYS_NULL) return 0;
+
+    // Temporarily redirect current_pml4 to the kernel PML4
+    uint64_t* saved_pml4 = current_pml4;
+    current_pml4 = (uint64_t*)PHYS_TO_VIRT(kernel_pml4_phys);
+
+    int result = vmm_map_page(vaddr, paddr, flags);
+
+    // Restore original current_pml4
+    current_pml4 = saved_pml4;
+
+    return result;
 }

@@ -19,6 +19,10 @@ void         pmm_init_dynamic(void* memmap_entries, uint64_t entry_count);
 phys_addr_t  pmm_alloc_page(void);
 void         pmm_free_page(phys_addr_t addr);
 
+// Check if address is within PMM bitmap range AND currently marked as allocated.
+// Used by VMM to skip Limine/boot pages that PMM never allocated.
+int          pmm_owns_page(phys_addr_t addr);
+
 uint64_t     pmm_get_used_ram(void);
 uint64_t     pmm_get_total_ram(void);
 uint64_t     pmm_get_free_ram(void);

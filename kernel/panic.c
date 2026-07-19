@@ -1,15 +1,7 @@
 #include <stdint.h>
+#include "task.h"
 
-// ========================================================
-// STRUKTUR REGISTER 64-BIT (MURNI)
-// Harus cocok dengan PUSHA64 di isr_macro.inc
-// ========================================================
-typedef struct {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;  
-    uint64_t int_num, error_code;                
-    uint64_t rip, cs, rflags, rsp, ss;           
-} __attribute__((packed)) registers_t;
+// registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
 extern uint32_t* fb_ptr;
 extern uint32_t fb_width;
@@ -29,7 +21,6 @@ extern uint64_t pmm_get_used_pages(void);
 extern uint64_t pmm_get_total_pages(void);
 
 // Task diagnostics
-extern int current_task;
 extern int task_count;
 
 // =======================================================================
@@ -275,7 +266,11 @@ void exception_handler(registers_t *r) {
     p_newline(BG);
 
     p_str("TASK:       ", DIM, BG);
-    p_dec("#", (uint64_t)current_task, WARN, BG);
+    int panic_task = smp_current_task_id();
+    if (panic_task >= 0)
+        p_dec("#", (uint64_t)panic_task, WARN, BG);
+    else
+        p_str("idle", WARN, BG);
     p_str(" of ", DIM, BG);
     p_dec("", (uint64_t)task_count, FG, BG);
     p_str(" total", DIM, BG);

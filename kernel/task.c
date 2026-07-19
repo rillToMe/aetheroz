@@ -66,6 +66,7 @@ void tasking_init(void) {
         tasks[i].state = TASK_DEAD;
         tasks[i].rsp   = 0;
         tasks[i].pml4_phys = PHYS_NULL;
+        tasks[i].cookie = 0;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -78,6 +79,7 @@ void tasking_init(void) {
     tasks[0].state      = TASK_RUNNING;
     tasks[0].stack_base = 0;   // Kernel stack, jangan di-free
     tasks[0].pml4_phys  = PHYS_NULL;  // Uses boot PML4
+    tasks[0].cookie     = 0;          // Kernel task: no cookie
     task_strncpy(tasks[0].name, "kmain", 16);
 
     current_task = 0;
@@ -181,6 +183,7 @@ void create_task(void (*func)(void), const char* name) {
     tasks[slot].stack_base = (uint64_t)stack;  // Untuk cleanup nanti
     tasks[slot].state      = TASK_READY;
     tasks[slot].pml4_phys  = PHYS_NULL;        // Kernel task: shared PML4
+    tasks[slot].cookie     = 0;
     task_strncpy(tasks[slot].name, name ? name : "task", 16);
 
     uint32_t online = smp_online_cpu_count();
@@ -386,27 +389,25 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     }
 
     // ── CR3 SWITCH: Load next task's address space ──
-    // Must update BOTH CR3 and current_pml4 so vmm_map_page targets correct PML4.
+    // Only CR3 changes. current_pml4 ALWAYS stays as kernel PML4.
+    // User-range isolation is handled by the per-process PML4 loaded into CR3.
     {
         percpu_t *cpu = smp_get_cpu(cpu_id);
-        extern uint64_t* current_pml4;
 
         if (tasks[next].pml4_phys != PHYS_NULL) {
-            // User task: switch to its private PML4
+            // User task: load its private PML4 into CR3
             uint64_t new_cr3 = (uint64_t)tasks[next].pml4_phys;
             if (cpu == NULL || cpu->current_cr3 != new_cr3) {
                 __asm__ volatile("mov %0, %%cr3" :: "r"(new_cr3) : "memory");
                 if (cpu) cpu->current_cr3 = new_cr3;
             }
-            current_pml4 = (uint64_t*)((uint64_t)tasks[next].pml4_phys + hhdm_offset);
         } else {
-            // Kernel task: switch back to boot kernel PML4
+            // Kernel task: ensure kernel PML4 is in CR3
             phys_addr_t kern_phys = vmm_get_kernel_pml4_phys();
             if (kern_phys != PHYS_NULL && (cpu == NULL || cpu->current_cr3 != (uint64_t)kern_phys)) {
                 __asm__ volatile("mov %0, %%cr3" :: "r"((uint64_t)kern_phys) : "memory");
                 if (cpu) cpu->current_cr3 = (uint64_t)kern_phys;
             }
-            current_pml4 = (uint64_t*)((uint64_t)kern_phys + hhdm_offset);
         }
     }
 
@@ -417,6 +418,19 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
 
 registers_t* schedule(registers_t* current_regs) {
     return schedule_on_cpu(0, current_regs);
+}
+
+// ============================================================
+// smp_current_task_id — Per-CPU current task ID
+//
+// Returns the task ID running on the CURRENT CPU.
+// Returns -1 if the CPU is idle (no task scheduled).
+// SMP-safe: reads per-CPU state, not the global current_task.
+// ============================================================
+int smp_current_task_id(void) {
+    uint32_t cpu_id = smp_current_cpu_index();
+    if (cpu_id >= SMP_MAX_CPUS) return -1;
+    return cpu_current_task[cpu_id];
 }
 
 // ============================================================
