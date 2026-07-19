@@ -6,8 +6,8 @@
  * Toolchain: Clang/LLVM (x86_64), -ffreestanding, -mcmodel=kernel
  *
  * This header is included by every lwIP source file via <lwip/arch.h>
- * as #include "arch/cc.h". With -I drivers/net/lwip/port in LWIP_CFLAGS,
- * the compiler resolves this to: drivers/net/lwip/port/arch/cc.h (this file).
+ * as #include "arch/cc.h". With -I drivers/net/port in LWIP_CFLAGS,
+ * the compiler resolves this to: drivers/net/port/arch/cc.h (this file).
  *
  * It maps all primitive types and platform macros to their freestanding
  * equivalents. No hosted libc (stdio, string, stdlib) is used here.
@@ -43,9 +43,9 @@ typedef unsigned long long  uint64_t;   /* may already exist, but #ifndef guard 
 /*
  * Pull in Kyuzen OS's own memory/string utilities.
  * These provide memcpy, memset, strcmp — required by the lwIP core.
- * Path: drivers/net/lwip/port/arch/ → ../../../../../include/string.h
+ * Path: drivers/net/port/arch/ → ../../../../include/string.h
  */
-#include "../../../../../include/string.h"
+#include "../../../../include/string.h"
 
 /*
  * ---------------------------------------------------------------------------

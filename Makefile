@@ -26,10 +26,10 @@ SRC_DIRS = arch/x86 drivers kernel fs apps
 # Semua file .c dari lwIP core, netif, dan port driver kita.
 # File port/sys_arch.c TIDAK diperlukan saat NO_SYS=1 — hanya sys_now()
 # yang perlu diimplementasikan di kernel/timer.c atau sejenisnya.
-LWIP_CORE_DIR  = drivers/net/lwip/src/core
-LWIP_NETIF_DIR = drivers/net/lwip/src/netif
-LWIP_PORT_DIR  = drivers/net/lwip/port
-LWIP_INC_DIR   = drivers/net/lwip/src/include
+LWIP_CORE_DIR  = third_party/net/lwip/src/core
+LWIP_NETIF_DIR = third_party/net/lwip/src/netif
+LWIP_PORT_DIR  = drivers/net/port
+LWIP_INC_DIR   = third_party/net/lwip/src/include
 
 # Kumpulkan semua source lwIP secara otomatis
 LWIP_CORE_SRCS = $(wildcard $(LWIP_CORE_DIR)/*.c)       \
@@ -145,6 +145,15 @@ kernel/net_ping.o: kernel/net_ping.c
 # Tahap 1: Compile Assembly
 %.o: %.asm
 	$(AS) $(ASFLAGS) $< -o $@
+
+# --- compile_commands.json untuk IntelliSense VS Code ---
+# Menangkap flag compile PERSIS dari build sungguhan (via dry-run) sehingga
+# IntelliSense tidak pernah out-of-sync dengan Makefile. Jalankan ulang setiap
+# kali menambah file .c baru atau mengubah -I path.
+#   Butuh: python -m pip install compiledb
+.PHONY: compile_commands
+compile_commands:
+	python -m compiledb -n make clean all
 
 # --- USER APPS (ELF Terpisah, dimuat oleh Kernel via sys_load_elf) ---
 # Panggil Makefile di dalam user_apps/ untuk mengompilasi fileman & viewer

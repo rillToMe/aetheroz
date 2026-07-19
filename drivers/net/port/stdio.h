@@ -4,7 +4,7 @@
  *
  * lwIP's mem.c unconditionally includes <stdio.h> for snprintf().
  * In a freestanding kernel, <stdio.h> does not exist. This stub is
- * placed in drivers/net/lwip/port/ so the -I path finds it before
+ * placed in drivers/net/port/ so the -I path finds it before
  * any system include directory, satisfying the #include without pulling
  * in the hosted libc.
  *

@@ -2,9 +2,12 @@
     "configurations": [
         {
             "name": "MSYS2 Clang64",
+            "compileCommands": "${workspaceFolder}/compile_commands.json",
             "includePath": [
                 "${workspaceFolder}/**",
-                "${workspaceFolder}/include"
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/third_party/net/lwip/src/include",
+                "${workspaceFolder}/drivers/net/port"
             ],
             "defines": [],
             "compilerPath": "E:/Tools/msys2/clang64/bin/clang.exe",

@@ -32,7 +32,7 @@ File terkait:
 | File | Fungsi |
 |------|--------|
 | [`drivers/net/e1000/e1000.c`](drivers/net/e1000/e1000.c) | Driver Intel e1000, DMA descriptor ring, TX/RX poll |
-| [`drivers/net/lwip/port/kyuzen_netif.c`](drivers/net/lwip/port/kyuzen_netif.c) | Glue layer e1000 ↔ lwIP |
+| [`drivers/net/port/kyuzen_netif.c`](drivers/net/port/kyuzen_netif.c) | Glue layer e1000 ↔ lwIP |
 | [`kernel/net_init.c`](kernel/net_init.c) | Init lwIP, netif, DHCP/static fallback, DNS |
 | [`kernel/net_ping.c`](kernel/net_ping.c) | ICMP Echo Request/Reply implementation |
 | [`apps/shell.c`](apps/shell.c) | Command shell `ping [host]` |
@@ -377,3 +377,74 @@ Scheduler memakai quantum **20ms** (bisa diubah di `drivers/timer.c`). Timer IRQ
 | [`kernel/timer_callbacks.c`](kernel/timer_callbacks.c) | Timer subscribers: visual, cursor, screen flush, network poll |
 | [`arch/x86/timer_isr.asm`](arch/x86/timer_isr.asm) | ISR stub — inti dari context switch |
 | [`arch/x86/isr_macro.inc`](arch/x86/isr_macro.inc) | `PUSHA64`/`POPA64` — layout stack frame |
+
+---
+
+## VS Code IntelliSense Setup (untuk Kontributor)
+
+Build (`make`) sudah tahu semua `-I` path lewat Makefile, tapi IntelliSense
+VS Code **tidak membaca Makefile**. Tanpa setup, ia gagal menemukan header
+seperti `#include "lwip/init.h"` walau build-nya sukses.
+
+Solusinya: `compile_commands.json` — database yang berisi flag compile **persis**
+dari build sungguhan, jadi IntelliSense tidak pernah out-of-sync dengan Makefile.
+
+### File yang di-ignore
+
+Dua file berikut **tidak ikut di repo** (lihat `.gitignore`) karena berisi
+path absolut yang spesifik per-mesin — tiap orang generate sendiri:
+
+- `compile_commands.json`
+- `.vscode/` (termasuk `c_cpp_properties.json`)
+
+### Cara pakai setelah clone
+
+1. Install generator (sekali saja, butuh Python 3):
+
+   ```bash
+   python -m pip install compiledb
+   ```
+
+2. Generate database dari build dry-run (ulangi tiap tambah file `.c` baru
+   atau ubah `-I` path — **tidak otomatis**):
+
+   ```bash
+   make compile_commands
+   ```
+
+   Ini menjalankan `make` mode dry-run (`-n`): mencetak perintah compile tanpa
+   benar-benar build, lalu compiledb menangkap flag-nya. Pastikan hasilnya
+   tidak kosong (`[]`) — harusnya puluhan entri.
+
+3. Buat `.vscode/c_cpp_properties.json` yang menunjuk ke database itu:
+
+   ```json
+   {
+       "configurations": [
+           {
+               "name": "MSYS2 Clang64",
+               "compileCommands": "${workspaceFolder}/compile_commands.json",
+               "includePath": [
+                   "${workspaceFolder}/**",
+                   "${workspaceFolder}/include",
+                   "${workspaceFolder}/third_party/net/lwip/src/include",
+                   "${workspaceFolder}/drivers/net/port"
+               ],
+               "defines": [],
+               "compilerPath": "E:/Tools/msys2/clang64/bin/clang.exe",
+               "cStandard": "c11",
+               "cppStandard": "c++17",
+               "intelliSenseMode": "windows-clang-x64",
+               "compilerArgs": ["-ffreestanding"]
+           }
+       ],
+       "version": 4
+   }
+   ```
+
+   > `compileCommands` dipakai untuk file yang ada di database; `includePath`
+   > jadi fallback untuk file baru yang belum tertangkap. Sesuaikan
+   > `compilerPath` dengan lokasi clang di mesin masing-masing.
+
+4. Command Palette (Ctrl+Shift+P) → **`C/C++: Reset IntelliSense Database`**
+   untuk membuang cache lama.

@@ -28,11 +28,11 @@
 #include <stddef.h>
 
 /* Kyuzen OS freestanding string utilities */
-#include "../../../../include/string.h"
+#include "../../../include/string.h"
 
 /* e1000 NIC driver
- * Path: drivers/net/lwip/port/ → ../../ → drivers/net/ → e1000/e1000.h */
-#include "../../e1000/e1000.h"
+ * Path: drivers/net/port/ → ../ → drivers/net/ → e1000/e1000.h */
+#include "../e1000/e1000.h"
 
 /* lwIP core headers */
 #include "lwip/opt.h"

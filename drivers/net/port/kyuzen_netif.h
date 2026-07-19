@@ -7,7 +7,7 @@
  *
  * Typical usage di kernel.c:
  *
- *   #include "drivers/net/lwip/port/kyuzen_netif.h"
+ *   #include "drivers/net/port/kyuzen_netif.h"
  *   #include "lwip/init.h"
  *   #include "lwip/dhcp.h"
  *   #include "lwip/timeouts.h"

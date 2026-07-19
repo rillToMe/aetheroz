@@ -4,8 +4,8 @@
  *
  * When NO_SYS = 1, lwIP does NOT use threading, semaphores, or mailboxes.
  * This header still needs to exist because <lwip/sys.h> unconditionally
- * includes <arch/sys_arch.h>. With -I drivers/net/lwip/port in LWIP_CFLAGS,
- * the compiler resolves this to: drivers/net/lwip/port/arch/sys_arch.h.
+ * includes <arch/sys_arch.h>. With -I drivers/net/port in LWIP_CFLAGS,
+ * the compiler resolves this to: drivers/net/port/arch/sys_arch.h.
  *
  * In NO_SYS mode we only need:
  *   1. sys_prot_t type  (for SYS_ARCH_PROTECT in arch/cc.h)

@@ -3,7 +3,7 @@
  * @brief Freestanding stub for <string.h> — Kyuzen OS lwIP porting layer.
  *
  * lwIP's mem.c includes <string.h> for memcpy/memset/memcmp.
- * This stub is placed in drivers/net/lwip/port/ so the -I search path
+ * This stub is placed in drivers/net/port/ so the -I search path
  * resolves it before any system include, then re-exports the kernel's own
  * freestanding string utilities.
  *
@@ -19,7 +19,7 @@
 #define KYUZEN_LWIP_STRING_STUB_H
 
 /* Re-export the kernel's own freestanding string utilities.
- * Path from drivers/net/lwip/port/ to the kernel include directory: */
-#include "../../../../include/string.h"
+ * Path from drivers/net/port/ to the kernel include directory: */
+#include "../../../include/string.h"
 
 #endif /* KYUZEN_LWIP_STRING_STUB_H */

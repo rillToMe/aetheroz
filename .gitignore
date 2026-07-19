@@ -11,6 +11,10 @@
 # Dependency tracking
 *.d
 
+# IntelliSense compilation database (machine-specific absolute paths;
+# regenerate locally with `make compile_commands`)
+compile_commands.json
+
 # Editor and IDE settings
 .vscode/
 .idea/
