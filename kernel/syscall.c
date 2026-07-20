@@ -446,6 +446,10 @@ void syscall_handler(registers_t *r) {
         // Returns the unique cookie of the current address space.
         ret_val = (uint64_t)current_as_cookie;
     }
+    else if (syscall_num == 46) { // sys_sleep — non-busy sleep RBX ms
+        // Task masuk sleep queue (TASK_SLEEPING); CPU bebas jalankan task lain.
+        task_sleep_ms((uint32_t)r->rbx);
+    }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)
     r->rax = ret_val;

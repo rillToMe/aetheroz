@@ -202,3 +202,10 @@ uint32_t sys_get_pid(void) {
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(45));
     return (uint32_t)ret;
 }
+
+// sys_sleep: Syscall 46 — Non-busy sleep selama `ms` milidetik.
+// Task masuk state TASK_SLEEPING; CPU bebas menjalankan task lain sampai
+// timer membangunkan task ini. Bukan busy-wait.
+void sys_sleep(uint32_t ms) {
+    __asm__ volatile("int $0x80" : : "a"(46), "b"((uint64_t)ms));
+}

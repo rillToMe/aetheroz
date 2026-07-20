@@ -53,11 +53,11 @@ uint64_t timer_get_ms(void) {
     return timer_ms;
 }
 
+// Non-busy sleep. Delegasi ke sleep queue scheduler (task_sleep_ms): task
+// masuk state TASK_SLEEPING dan CPU bebas menjalankan task lain, bukan spin.
+// Untuk konteks tanpa task (early boot), task_sleep_ms fallback ke halt-wait.
 void timer_sleep_ms(uint32_t ms) {
-    uint64_t target = timer_get_ms() + ms;
-    while (timer_get_ms() < target) {
-        __asm__ volatile("sti; hlt");
-    }
+    task_sleep_ms(ms);
 }
 
 // ============================================================
@@ -213,8 +213,13 @@ registers_t* timer_handler(registers_t* r) {
     //    Sehingga task baru bisa langsung menerima interrupt berikutnya
     outb(0x20, 0x20);
 
-    // 5. Preemptive scheduling — cek apakah quantum sudah habis
+    // 5. Sleep queue: bangunkan task tidur yang wake_at_ms-nya sudah lewat.
+    //    Dilakukan sebelum scheduling agar task yang baru bangun langsung
+    //    runnable pada pass scheduler di bawah.
     uint64_t now = timer_get_ms();
+    sleepq_check_wakeups(now);
+
+    // 6. Preemptive scheduling — cek apakah quantum sudah habis
     if (now >= next_schedule_ms) {
         next_schedule_ms = now + 20; // Quantum = 20ms
         return schedule_on_cpu(smp_current_cpu_index(), r);

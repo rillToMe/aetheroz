@@ -18,6 +18,7 @@
 #include "smp.h"
 #include "lapic.h"
 #include "paging.h"
+#include "timer.h"
 #include <stddef.h>
 
 // ============================================================
@@ -155,6 +156,7 @@ static const char* task_state_name(uint8_t state) {
         case TASK_RUNNING: return "RUNNING";
         case TASK_SLEEPING: return "SLEEPING";
         case TASK_DEAD: return "DEAD";
+        case TASK_BLOCKED: return "BLOCKED";
         default: return "UNKNOWN";
     }
 }
@@ -175,6 +177,7 @@ void tasking_init(void) {
         tasks[i].rsp   = 0;
         tasks[i].pml4_phys = PHYS_NULL;
         tasks[i].cookie = 0;
+        tasks[i].wake_at_ms = 0;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -194,6 +197,7 @@ void tasking_init(void) {
     tasks[0].stack_base = 0;   // Kernel stack, jangan di-free
     tasks[0].pml4_phys  = PHYS_NULL;  // Uses boot PML4
     tasks[0].cookie     = 0;          // Kernel task: no cookie
+    tasks[0].wake_at_ms = 0;
     task_strncpy(tasks[0].name, "kmain", 16);
 
     current_task = 0;
@@ -298,6 +302,7 @@ void create_task(void (*func)(void), const char* name) {
     tasks[slot].state      = TASK_READY;
     tasks[slot].pml4_phys  = PHYS_NULL;        // Kernel task: shared PML4
     tasks[slot].cookie     = 0;
+    tasks[slot].wake_at_ms = 0;
     task_strncpy(tasks[slot].name, name ? name : "task", 16);
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
@@ -493,8 +498,14 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     }
 
     int cur = cpu_current_task[cpu_id];
-    int cur_running = (cur >= 0 && cur < task_count && tasks[cur].state == TASK_RUNNING);
-    if (!cur_running) {
+    int cur_live    = (cur >= 0 && cur < task_count);
+    uint8_t cur_st  = cur_live ? tasks[cur].state : (uint8_t)TASK_DEAD;
+    int cur_running = cur_live && (cur_st == TASK_RUNNING);
+    // Voluntarily blocked (task_sleep_ms / block_current_task): its frame must be
+    // preserved so unblock can resume it, but it must NOT go back on a run queue.
+    int cur_blocked = cur_live && (cur_st == TASK_SLEEPING || cur_st == TASK_BLOCKED);
+    if (!cur_running && !cur_blocked) {
+        // Dead or invalid: relinquish the slot entirely.
         cur = -1;
         cpu_current_task[cpu_id] = -1;
     }
@@ -508,14 +519,24 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     }
 
     if (next < 0) {
-        // Nothing else is runnable anywhere. Leave the current task on-CPU
-        // untouched (still RUNNING, still owned here) — no double-run risk.
+        // Nothing else is runnable anywhere.
+        //  - If current is a blocked task, save its resume frame and keep it as
+        //    this CPU's current: it will hlt-loop in block_current_task until
+        //    unblock flips it back to RUNNING (no double-run — it's in no queue).
+        //  - If current is still RUNNING, leave it on-CPU untouched.
+        if (cur_blocked) {
+            tasks[cur].rsp = (uint64_t)current_regs;
+        }
         spinlock_unlock(&scheduler_lock);
         return current_regs;
     }
 
-    // A replacement is secured; now hand the outgoing task back to a run queue.
-    // Publish its saved context and READY state so a stealing CPU sees them.
+    // A replacement is secured. Save the outgoing task's context. A RUNNING task
+    // goes back on a run queue (stealable); a blocked task keeps its frame but is
+    // left off every queue (only unblock_task may make it runnable again).
+    if (cur_blocked) {
+        tasks[cur].rsp = (uint64_t)current_regs;
+    }
     if (cur_running) {
         tasks[cur].rsp   = (uint64_t)current_regs;
         tasks[cur].state = TASK_READY;
@@ -573,6 +594,177 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
 
 registers_t* schedule(registers_t* current_regs) {
     return schedule_on_cpu(0, current_regs);
+}
+
+// ============================================================
+// VOLUNTARY BLOCKING (Fase 1) — block_current_task / unblock_task
+//
+// Model: task menandai dirinya non-runnable (TASK_SLEEPING/TASK_BLOCKED) lalu
+// memicu reschedule pass. schedule_on_cpu() menyimpan frame-nya (titik resume)
+// tapi TIDAK mengembalikannya ke run queue. Task tetap non-runnable sampai
+// unblock_task() membuatnya READY/RUNNING lagi.
+//
+// KEBENARAN TIDAK BERGANTUNG PADA IPI: timer tick periodik juga menjalankan
+// scheduler, jadi IPI yang hilang hanya menambah latensi, bukan menggantung.
+//
+// State machine (di bawah scheduler_lock):
+//   RUNNING --block--> SLEEPING/BLOCKED --unblock--> READY (enqueue) / RUNNING (parked)
+// ============================================================
+
+// Volatile read of a task's state — dipakai loop block tanpa memegang lock.
+// Byte-aligned read atomic di x86; barrier mencegah compiler meng-cache-nya.
+static inline uint8_t task_state_volatile(int id) {
+    return *(volatile uint8_t*)&tasks[id].state;
+}
+
+// block_prepare — mark the current task non-runnable, WITHOUT parking yet.
+// Returns the task id on success, or -1 if there is no schedulable task context
+// or the caller is not actually the running task.
+//
+// Split from block_park so a wait queue can atomically (under ITS lock, with
+// interrupts disabled) enqueue the waiter AND mark it blocked before releasing
+// the lock — closing the lost-wakeup window. The caller MUST keep interrupts
+// disabled between block_prepare and releasing its object lock, otherwise a
+// timer tick could deschedule the task while it still holds that lock.
+int block_prepare(uint8_t new_state) {
+    if (new_state != TASK_SLEEPING && new_state != TASK_BLOCKED) return -1;
+
+    uint32_t cpu_id = smp_current_cpu_index();
+    int self = (cpu_id < SMP_MAX_CPUS) ? cpu_current_task[cpu_id] : -1;
+    if (self < 0 || self >= task_count) {
+        return -1;   // No schedulable task context (idle/boot).
+    }
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+    if (tasks[self].state != TASK_RUNNING) {
+        // Not the running task (already blocked/woken). Caller should not park.
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        return -1;
+    }
+    tasks[self].state = new_state;
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+    return self;
+}
+
+// block_park — spin until unblock flips this task back to RUNNING. Each iteration
+// forces a reschedule on this CPU: the first pass switches us away (frame saved);
+// once descheduled the loop body is frozen and only resumes after we are made
+// runnable and re-selected — at which point state is already RUNNING.
+// `self` must be the id returned by a preceding block_prepare().
+void block_park(int self) {
+    if (self < 0 || self >= MAX_TASKS) return;
+    uint32_t cpu_id = smp_current_cpu_index();
+    while (task_state_volatile(self) != TASK_RUNNING) {
+        smp_mark_reschedule(cpu_id);
+        lapic_send_reschedule(cpu_id);
+        __asm__ volatile("sti; hlt" ::: "memory");
+    }
+}
+
+void block_current_task(uint8_t new_state) {
+    int self = block_prepare(new_state);
+    if (self < 0) return;   // couldn't block (no context, or already woken)
+    block_park(self);
+}
+
+void unblock_task(int task_id) {
+    if (task_id < 0 || task_id >= MAX_TASKS) return;
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+    uint8_t st = tasks[task_id].state;
+    if (st != TASK_SLEEPING && st != TASK_BLOCKED) {
+        // Not blocked (already running/ready/dead). No-op keeps unblock idempotent
+        // and race-safe against a concurrent wakeup.
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        return;
+    }
+
+    // Is the task still parked on a CPU (spinning its own block loop, off every
+    // run queue)? If so we must NOT enqueue it — that would let a second CPU run
+    // the same stack. Just flip it RUNNING and kick that CPU out of hlt.
+    int on_cpu = -1;
+    for (uint32_t i = 0; i < SMP_MAX_CPUS; i++) {
+        if (cpu_current_task[i] == task_id) { on_cpu = (int)i; break; }
+    }
+
+    tasks[task_id].wake_at_ms = 0;
+
+    if (on_cpu >= 0) {
+        tasks[task_id].state = TASK_RUNNING;   // parked CPU resumes & exits its loop
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        smp_mark_reschedule((uint32_t)on_cpu);
+        lapic_send_reschedule((uint32_t)on_cpu);
+        return;
+    }
+
+    // Fully descheduled: mark READY and hand to a run queue. The scheduler sets it
+    // RUNNING before resuming its frame, so its block loop sees RUNNING and exits.
+    tasks[task_id].state = TASK_READY;
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    uint32_t target = pick_target_cpu();
+    if (runq_push(target, task_id) != 0) {
+        // Queue full (MAX_TASKS overflow, unreachable in practice). Re-park as
+        // BLOCKED so a later unblock/timer retry can pick it up rather than lose it.
+        uint64_t re = spinlock_lock_irqsave(&scheduler_lock);
+        if (tasks[task_id].state == TASK_READY) tasks[task_id].state = TASK_BLOCKED;
+        spinlock_unlock_irqrestore(&scheduler_lock, re);
+        return;
+    }
+    if (target != smp_current_cpu_index()) {
+        smp_mark_reschedule(target);
+        lapic_send_reschedule(target);
+    }
+}
+
+// ============================================================
+// SLEEP QUEUE — task_sleep_ms / sleepq_check_wakeups
+//
+// Implementasi ringan: state per-task (wake_at_ms) + scan O(MAX_TASKS) di timer
+// tick. MAX_TASKS kecil (8) sehingga scan lebih murah & sederhana daripada
+// linked list terurut, tanpa alokasi.
+// ============================================================
+void task_sleep_ms(uint32_t ms) {
+    if (ms == 0) { yield(); return; }
+
+    uint64_t target = timer_get_ms() + ms;
+
+    uint32_t cpu_id = smp_current_cpu_index();
+    int self = (cpu_id < SMP_MAX_CPUS) ? cpu_current_task[cpu_id] : -1;
+    if (self < 0 || self >= task_count) {
+        // No descheduable task context (early boot / pure idle): fall back to a
+        // non-busy halt-wait. Still not a spin — CPU sleeps between interrupts.
+        while (timer_get_ms() < target) __asm__ volatile("sti; hlt");
+        return;
+    }
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+    tasks[self].wake_at_ms = target;
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    block_current_task(TASK_SLEEPING);
+}
+
+void sleepq_check_wakeups(uint64_t now_ms) {
+    // Runs in timer-interrupt context. Collect due sleepers under the scheduler
+    // lock, then unblock them OUTSIDE the lock (unblock_task takes scheduler_lock
+    // and run-queue locks — must not nest here).
+    int wake[MAX_TASKS];
+    int n = 0;
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+    for (int i = 0; i < MAX_TASKS && i < task_count; i++) {
+        if (tasks[i].state == TASK_SLEEPING &&
+            tasks[i].wake_at_ms != 0 &&
+            now_ms >= tasks[i].wake_at_ms) {
+            wake[n++] = i;
+        }
+    }
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    for (int i = 0; i < n; i++) {
+        unblock_task(wake[i]);   // re-validates state under lock; safe if it raced
+    }
 }
 
 // ============================================================

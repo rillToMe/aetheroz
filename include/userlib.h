@@ -22,6 +22,7 @@ void print(char* text);
 void clear_screen(void);
 uint32_t read_keyboard(char* buffer, uint32_t size);
 void sys_yield(void);
+void sys_sleep(uint32_t ms);   // Non-busy sleep (Syscall 46)
 
 void fs_format(void);
 void fs_list(void);
