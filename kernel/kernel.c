@@ -24,6 +24,14 @@
 #include "pmm_valid.h"
 #endif
 
+#ifdef CONC_TEST
+#include "conc_test.h"
+#endif
+
+#ifdef CONC_TEST
+#include "conc_test.h"
+#endif
+
 // ============================================================
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
 // ============================================================
@@ -734,6 +742,11 @@ void kernel_main(void) {
 #ifdef STRESS_TEST
     valid_start();
     stress_start();
+    while (1) __asm__ volatile("hlt");
+#endif
+
+#ifdef CONC_TEST
+    conc_test_run();
     while (1) __asm__ volatile("hlt");
 #endif
 

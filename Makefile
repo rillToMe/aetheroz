@@ -222,9 +222,20 @@ stress:
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
+# Concurrency test: sleep/mutex/semaphore/condvar (Fase 1-3) + test/ sources
+.PHONY: conc
+conc:
+	$(MAKE) clean
+	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) test" CFLAGS="$(CFLAGS) -DCONC_TEST -Itest"
+	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
+		-smp 4 \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000
+
 # Bersihkan file hasil build (kernel + lwIP objects)
 clean:
-	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o
+	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o test/conc_test.o
 
 # run: boot_image.iso
 # 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
