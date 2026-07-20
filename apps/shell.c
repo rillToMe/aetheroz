@@ -17,6 +17,38 @@ int sys_ping(const char *host) {
     return (int)ret;
 }
 
+// TCP socket wrappers (syscall 52-56). Weak: kernel shell links these; ELF apps
+// use the strong versions in apps/userlib.c. int 0x80 works from Ring 0 too.
+__attribute__((weak))
+int sys_socket(void) {
+    int64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(52ULL));
+    return (int)ret;
+}
+__attribute__((weak))
+int sys_connect(int s, uint32_t ip_be, uint16_t port) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(53ULL), "b"((uint64_t)s), "c"((uint64_t)ip_be), "d"((uint64_t)port));
+    return (int)ret;
+}
+__attribute__((weak))
+int sys_send(int s, const void *buf, uint32_t len) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(54ULL), "b"((uint64_t)s), "c"((uint64_t)buf), "d"((uint64_t)len));
+    return (int)ret;
+}
+__attribute__((weak))
+int sys_recv(int s, void *buf, uint32_t len) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(55ULL), "b"((uint64_t)s), "c"((uint64_t)buf), "d"((uint64_t)len));
+    return (int)ret;
+}
+__attribute__((weak))
+int sys_sock_close(int s) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(56ULL), "b"((uint64_t)s));
+    return (int)ret;
+}
+
 // Global: RSP yang disimpan SEBELUM shell memanggil app via CALL.
 // Digunakan oleh sys_exec (syscall 33) untuk me-reset stack sehingga
 // app baru bisa `ret` kembali ke shell dengan benar.
@@ -80,6 +112,24 @@ int parse_uint(const char* str, uint32_t* out) {
     return 1;
 }
 
+// Parse "a.b.c.d" into network-byte-order uint32 (byte0=a at lowest addr).
+// Returns 1 on success. Advances *str past the address.
+static int parse_ipv4(const char** str, uint32_t* out) {
+    uint32_t octets[4];
+    const char* p = *str;
+    for (int i = 0; i < 4; i++) {
+        uint32_t v = 0;
+        if (*p < '0' || *p > '9') return 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (uint32_t)(*p - '0'); p++; }
+        if (v > 255) return 0;
+        octets[i] = v;
+        if (i < 3) { if (*p != '.') return 0; p++; }
+    }
+    *out = octets[0] | (octets[1] << 8) | (octets[2] << 16) | (octets[3] << 24);
+    *str = p;
+    return 1;
+}
+
 void user_shell() {
     char cmd_buffer[256];
     int cmd_index = 0;
@@ -122,7 +172,7 @@ void user_shell() {
 
                     // --- DAFTAR PERINTAH ---
                     if (strcmp(command, "help") == 0) {
-                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- sched  : Tampilkan status scheduler/CPU\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n");
+                        print("Perintah User Space:\n- help   : Info ini\n- clear  : Bersihkan layar\n- adduse  : Menambahkan User baru(khusus root)\n- logout  : Kembali ke halaman Login\n- echo   : Cetak teks\n- format : Format disk ke KZFS\n- ls     : Daftar file\n- zen    : Buka teks editor\n- baca   : Baca isi file\n- hapus  : Hapus file\n- fetch  : Tampilkan spek OS\n- sched  : Tampilkan status scheduler/CPU\n- refresh : Atur refresh rate (refresh 60 / 100 / 144)\n- shutdown   : Mematikan Os\n- Restart   : Merestart Os\n- Sleep   : Sleep Os\n- view   : Tampilkan gambar PNG\n- install_app : Instal app.bin\n- run    : Jalankan .bin\n- jam    : Lihat waktu sekarang\n- kalk   : Buka kalkulator\n- ping   : Ping host (ping google.com / ping 8.8.8.8)\n- nettest : Tes TCP socket (nettest 10.0.2.2 7777)\n");
                     } 
                     else if (strcmp(command, "clear") == 0) { clear_screen(); }
                     else if (strcmp(command, "adduser") == 0) {
@@ -290,6 +340,57 @@ void user_shell() {
                             // Output ping (Reply/Timeout/Statistik) dicetak oleh kernel
                             // via kprint() ke TTY — kita hanya perlu trigger syscall.
                             sys_ping(argument);
+                        }
+                    }
+                    else if (strcmp(command, "nettest") == 0) {
+                        // nettest <ip> <port> — TCP connect, kirim pesan, cetak balasan (echo test)
+                        if (argument == NULL) {
+                            print("Penggunaan: nettest [ip] [port]\n");
+                            print("Contoh  : nettest 10.0.2.2 7\n");
+                        } else {
+                            const char* p = argument;
+                            uint32_t ip_be = 0, port = 0;
+                            if (!parse_ipv4(&p, &ip_be)) {
+                                print("nettest: IP tidak valid (format: a.b.c.d)\n");
+                            } else {
+                                while (*p == ' ') p++;
+                                if (!parse_uint(p, &port) || port == 0 || port > 65535) {
+                                    print("nettest: port tidak valid (1..65535)\n");
+                                } else {
+                                    int s = sys_socket();
+                                    if (s < 0) { print("nettest: gagal buat socket\n"); }
+                                    else {
+                                        print("nettest: connecting...\n");
+                                        if (sys_connect(s, ip_be, (uint16_t)port) != 0) {
+                                            print("nettest: connect GAGAL (timeout/refused)\n");
+                                            sys_sock_close(s);
+                                        } else {
+                                            print("nettest: connected. Mengirim pesan...\n");
+                                            const char* msg = "halo dari kyuzen\n";
+                                            uint32_t mlen = 0; while (msg[mlen]) mlen++;
+                                            int sent = sys_send(s, msg, mlen);
+                                            if (sent < 0) {
+                                                print("nettest: send GAGAL\n");
+                                            } else {
+                                                char rbuf[128];
+                                                int n = sys_recv(s, rbuf, sizeof(rbuf) - 1);
+                                                if (n > 0) {
+                                                    rbuf[n] = '\0';
+                                                    print("nettest: diterima: ");
+                                                    print(rbuf);
+                                                    print("\n");
+                                                } else if (n == 0) {
+                                                    print("nettest: peer menutup koneksi\n");
+                                                } else {
+                                                    print("nettest: recv GAGAL/timeout\n");
+                                                }
+                                            }
+                                            sys_sock_close(s);
+                                            print("nettest: selesai\n");
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     // else if (strcmp(command, "jam") == 0) {
