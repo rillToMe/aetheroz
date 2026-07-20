@@ -12,6 +12,7 @@
 #include "string.h"
 #include "ata.h"
 #include "kyuzenfs.h"
+#include "vfs.h"
 #include "task.h"
 #include "timer.h"
 #include "shell.h"
@@ -683,6 +684,7 @@ void kernel_main(void) {
     init_keyboard();
     init_tty(); 
     kfs_init();
+    vfs_init();
     smp_init();
 
     // 3. AUTO-INSTALL MODUL DARI LIMINE
@@ -738,6 +740,9 @@ void kernel_main(void) {
     // dan membutuhkan PIT IRQ untuk drive timer callbacks.
     extern void net_init(void);
     net_init();
+
+    extern void ksock_init(void);
+    ksock_init();
 
 #ifdef STRESS_TEST
     valid_start();

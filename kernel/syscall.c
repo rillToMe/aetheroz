@@ -4,6 +4,8 @@
 #include "task.h"
 #include "paging.h"
 #include "smp.h"
+#include "vfs.h"
+#include "net_socket.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -449,6 +451,36 @@ void syscall_handler(registers_t *r) {
     else if (syscall_num == 46) { // sys_sleep — non-busy sleep RBX ms
         // Task masuk sleep queue (TASK_SLEEPING); CPU bebas jalankan task lain.
         task_sleep_ms((uint32_t)r->rbx);
+    }
+    else if (syscall_num == 47) { // sys_open(path, flags) -> fd
+        ret_val = (uint64_t)(int64_t)vfs_open((const char*)r->rbx, (uint32_t)r->rcx);
+    }
+    else if (syscall_num == 48) { // sys_read(fd, buf, count) -> bytes
+        ret_val = (uint64_t)(int64_t)vfs_read((int)r->rbx, (void*)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 49) { // sys_write(fd, buf, count) -> bytes
+        ret_val = (uint64_t)(int64_t)vfs_write((int)r->rbx, (const void*)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 50) { // sys_lseek(fd, offset, whence) -> pos
+        ret_val = (uint64_t)(int64_t)vfs_lseek((int)r->rbx, (int32_t)r->rcx, (int)r->rdx);
+    }
+    else if (syscall_num == 51) { // sys_close(fd) -> 0/-1
+        ret_val = (uint64_t)(int64_t)vfs_close((int)r->rbx);
+    }
+    else if (syscall_num == 52) { // sys_socket() -> sockfd
+        ret_val = (uint64_t)(int64_t)ksock_socket();
+    }
+    else if (syscall_num == 53) { // sys_connect(sockfd, ip_be, port)
+        ret_val = (uint64_t)(int64_t)ksock_connect((int)r->rbx, (uint32_t)r->rcx, (uint16_t)r->rdx);
+    }
+    else if (syscall_num == 54) { // sys_sock_send(sockfd, buf, len)
+        ret_val = (uint64_t)(int64_t)ksock_send((int)r->rbx, (const void*)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 55) { // sys_sock_recv(sockfd, buf, len)
+        ret_val = (uint64_t)(int64_t)ksock_recv((int)r->rbx, (void*)r->rcx, (uint32_t)r->rdx);
+    }
+    else if (syscall_num == 56) { // sys_sock_close(sockfd)
+        ret_val = (uint64_t)(int64_t)ksock_close((int)r->rbx);
     }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)

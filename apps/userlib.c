@@ -209,3 +209,79 @@ uint32_t sys_get_pid(void) {
 void sys_sleep(uint32_t ms) {
     __asm__ volatile("int $0x80" : : "a"(46), "b"((uint64_t)ms));
 }
+
+// ===== fd layer (Fase 5) — file descriptors over KyuzenFS =====
+// fd valid hanya untuk task yang membuka. Return negatif = error.
+
+// sys_open: Syscall 47 — open(path, flags) -> fd (>=0) atau -1.
+int sys_open(const char* path, uint32_t flags) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(47), "b"((uint64_t)path), "c"((uint64_t)flags));
+    return (int)ret;
+}
+
+// sys_read_fd: Syscall 48 — read(fd, buf, count) -> jumlah byte terbaca.
+int sys_read_fd(int fd, void* buf, uint32_t count) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(48), "b"((uint64_t)fd), "c"((uint64_t)buf), "d"((uint64_t)count));
+    return (int)ret;
+}
+
+// sys_write_fd: Syscall 49 — write(fd, buf, count) -> jumlah byte tertulis.
+int sys_write_fd(int fd, const void* buf, uint32_t count) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(49), "b"((uint64_t)fd), "c"((uint64_t)buf), "d"((uint64_t)count));
+    return (int)ret;
+}
+
+// sys_lseek: Syscall 50 — lseek(fd, offset, whence) -> posisi baru.
+int sys_lseek(int fd, int32_t offset, int whence) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(50), "b"((uint64_t)fd), "c"((uint64_t)(int64_t)offset), "d"((uint64_t)whence));
+    return (int)ret;
+}
+
+// sys_close: Syscall 51 — close(fd) -> 0 sukses, -1 error.
+int sys_close(int fd) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(51), "b"((uint64_t)fd));
+    return (int)ret;
+}
+
+// ===== TCP client sockets (Fase 6) over lwIP =====
+
+// sys_socket: Syscall 52 — buat TCP socket -> sockfd (>=0) atau -1.
+int sys_socket(void) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(52));
+    return (int)ret;
+}
+
+// sys_connect: Syscall 53 — connect(sock, ip_be, port). ip_be = network byte
+// order (mis. dari sys_ip helper). Blocking; 0 sukses, -1 gagal.
+int sys_connect(int sock, uint32_t ip_be, uint16_t port) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(53), "b"((uint64_t)sock), "c"((uint64_t)ip_be), "d"((uint64_t)port));
+    return (int)ret;
+}
+
+// sys_send: Syscall 54 — send(sock, buf, len) -> byte terkirim atau -1.
+int sys_send(int sock, const void* buf, uint32_t len) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(54), "b"((uint64_t)sock), "c"((uint64_t)buf), "d"((uint64_t)len));
+    return (int)ret;
+}
+
+// sys_recv: Syscall 55 — recv(sock, buf, len) -> byte, 0 = peer close, -1 err.
+int sys_recv(int sock, void* buf, uint32_t len) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(55), "b"((uint64_t)sock), "c"((uint64_t)buf), "d"((uint64_t)len));
+    return (int)ret;
+}
+
+// sys_sock_close: Syscall 56 — tutup TCP socket.
+int sys_sock_close(int sock) {
+    int64_t ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(56), "b"((uint64_t)sock));
+    return (int)ret;
+}

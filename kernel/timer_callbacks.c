@@ -129,18 +129,27 @@ static void cb_flush(uint32_t tick) {
 // ============================================================
 static uint64_t next_lwip_tick = 0; // ms target untuk sys_check_timeouts
 
+// net_lock serializes ALL lwIP entry (socket calls on any CPU + this poll).
+// TCP callbacks fire from inside e1000_poll/sys_check_timeouts, so the poll
+// must hold the lock too. Held only briefly here — never across a wait.
+extern void net_lock_acquire(uint64_t *saved);
+extern void net_lock_release(uint64_t saved);
+
 static void cb_network(uint32_t tick) {
     (void)tick;
 
-    // A. Poll NIC untuk paket masuk — setiap timer tick
+    uint64_t saved;
+    net_lock_acquire(&saved);
+
     e1000_poll();
 
-    // B. Drive lwIP timers — setiap 1ms (sesuai kontrak sys_check_timeouts)
     uint64_t now = timer_get_ms();
     if (now >= next_lwip_tick) {
-        next_lwip_tick = now + 1; // target berikutnya = 1ms dari sekarang
+        next_lwip_tick = now + 1;
         sys_check_timeouts();
     }
+
+    net_lock_release(saved);
 }
 
 // ============================================================

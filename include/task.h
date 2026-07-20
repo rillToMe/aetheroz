@@ -68,7 +68,16 @@ typedef struct task {
     phys_addr_t pml4_phys;    // Physical address of this task's PML4 (0 = kernel shared)
     uint32_t cookie;          // Unique per-address-space ID (assigned dynamically by OS)
     uint64_t wake_at_ms;      // TASK_SLEEPING: absolute timer_get_ms() at which to wake (0 = n/a)
+    uint8_t  priority;        // Base priority, higher = more important (PRIO_*)
+    uint64_t enqueue_ms;      // When this task last entered a run queue (for aging)
 } task_t;
+
+// Priority levels: higher value = scheduled first. Aging boosts long-waiting
+// READY tasks so low-priority work cannot starve indefinitely.
+#define PRIO_LOW     0
+#define PRIO_NORMAL  1
+#define PRIO_HIGH    2
+#define PRIO_MAX     3
 
 
 // ============================================================
@@ -77,6 +86,7 @@ typedef struct task {
 
 void tasking_init(void);
 void create_task(void (*func)(void), const char* name);
+void create_task_prio(void (*func)(void), const char* name, uint8_t priority);
 void task_exit(void) __attribute__((noreturn));
 void scheduler_dump(void);
 void scheduler_idle_loop(void) __attribute__((noreturn));

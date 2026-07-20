@@ -142,6 +142,10 @@ kernel/net_init.o: kernel/net_init.c
 kernel/net_ping.o: kernel/net_ping.c
 	$(CC) $(LWIP_CFLAGS) -c $< -o $@
 
+# net_socket.c: butuh LWIP_CFLAGS karena include lwIP tcp headers
+kernel/net_socket.o: kernel/net_socket.c
+	$(CC) $(LWIP_CFLAGS) -c $< -o $@
+
 # Tahap 1: Compile Assembly
 %.o: %.asm
 	$(AS) $(ASFLAGS) $< -o $@

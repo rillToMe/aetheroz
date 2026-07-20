@@ -19,6 +19,7 @@
 #include "lapic.h"
 #include "paging.h"
 #include "timer.h"
+#include "vfs.h"
 #include <stddef.h>
 
 // ============================================================
@@ -59,12 +60,27 @@ static int cpu_current_task[SMP_MAX_CPUS];
 typedef struct {
     spinlock_t       lock;
     volatile uint32_t count;      // Advisory load metric; aligned 32-bit read is atomic on x86.
-    uint32_t         head;
-    uint32_t         tail;
     int              entries[RUNQ_CAPACITY];
 } run_queue_t;
 
 static run_queue_t cpu_runqueues[SMP_MAX_CPUS];
+
+// Aging: every AGE_STEP_MS a READY task waits adds +1 to its effective priority,
+// capped at AGE_MAX_BONUS, so low-priority tasks cannot starve.
+#define AGE_STEP_MS    100
+#define AGE_MAX_BONUS  8
+
+extern uint64_t timer_get_ms(void);
+
+// Effective priority = base priority + aging bonus from time spent waiting.
+static uint32_t effective_prio(int task_id, uint64_t now_ms) {
+    uint32_t base = tasks[task_id].priority;
+    uint64_t enq  = tasks[task_id].enqueue_ms;
+    uint64_t waited = (now_ms > enq) ? (now_ms - enq) : 0;
+    uint32_t bonus = (uint32_t)(waited / AGE_STEP_MS);
+    if (bonus > AGE_MAX_BONUS) bonus = AGE_MAX_BONUS;
+    return base + bonus;
+}
 
 static int runq_push(uint32_t cpu_id, int task_id) {
     run_queue_t *rq = &cpu_runqueues[cpu_id];
@@ -73,13 +89,14 @@ static int runq_push(uint32_t cpu_id, int task_id) {
         spinlock_unlock_irqrestore(&rq->lock, flags);
         return -1;
     }
-    rq->entries[rq->tail] = task_id;
-    rq->tail = (rq->tail + 1) % RUNQ_CAPACITY;
-    rq->count++;
+    tasks[task_id].enqueue_ms = timer_get_ms();   // stamp for aging
+    rq->entries[rq->count++] = task_id;
     spinlock_unlock_irqrestore(&rq->lock, flags);
     return 0;
 }
 
+// Pop the highest effective-priority task; ties break by longest wait (oldest
+// enqueue). O(RUNQ_CAPACITY) scan — trivial at MAX_TASKS=8.
 static int runq_pop(uint32_t cpu_id) {
     run_queue_t *rq = &cpu_runqueues[cpu_id];
     uint64_t flags = spinlock_lock_irqsave(&rq->lock);
@@ -87,9 +104,22 @@ static int runq_pop(uint32_t cpu_id) {
         spinlock_unlock_irqrestore(&rq->lock, flags);
         return -1;
     }
-    int task_id = rq->entries[rq->head];
-    rq->head = (rq->head + 1) % RUNQ_CAPACITY;
-    rq->count--;
+
+    uint64_t now = timer_get_ms();
+    uint32_t best_i = 0;
+    uint32_t best_prio = effective_prio(rq->entries[0], now);
+    for (uint32_t i = 1; i < rq->count; i++) {
+        uint32_t p = effective_prio(rq->entries[i], now);
+        if (p > best_prio ||
+            (p == best_prio &&
+             tasks[rq->entries[i]].enqueue_ms < tasks[rq->entries[best_i]].enqueue_ms)) {
+            best_prio = p;
+            best_i = i;
+        }
+    }
+
+    int task_id = rq->entries[best_i];
+    rq->entries[best_i] = rq->entries[--rq->count];   // compact: fill gap with last
     spinlock_unlock_irqrestore(&rq->lock, flags);
     return task_id;
 }
@@ -178,6 +208,8 @@ void tasking_init(void) {
         tasks[i].pml4_phys = PHYS_NULL;
         tasks[i].cookie = 0;
         tasks[i].wake_at_ms = 0;
+        tasks[i].priority = PRIO_NORMAL;
+        tasks[i].enqueue_ms = 0;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -186,8 +218,6 @@ void tasking_init(void) {
         run_queue_t *rq = &cpu_runqueues[i];
         rq->lock.locked = 0;
         rq->count = 0;
-        rq->head  = 0;
-        rq->tail  = 0;
     }
 
     // Task 0 = kernel main thread yang sedang berjalan
@@ -198,6 +228,8 @@ void tasking_init(void) {
     tasks[0].pml4_phys  = PHYS_NULL;  // Uses boot PML4
     tasks[0].cookie     = 0;          // Kernel task: no cookie
     tasks[0].wake_at_ms = 0;
+    tasks[0].priority   = PRIO_NORMAL;
+    tasks[0].enqueue_ms = 0;
     task_strncpy(tasks[0].name, "kmain", 16);
 
     current_task = 0;
@@ -225,6 +257,10 @@ void tasking_init(void) {
 //                                                         ↑ RSP task (frame pointer)
 // ============================================================
 void create_task(void (*func)(void), const char* name) {
+    create_task_prio(func, name, PRIO_NORMAL);
+}
+
+void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     uint32_t kick_cpus[SMP_MAX_CPUS];
     uint32_t kick_count = 0;
 
@@ -303,6 +339,7 @@ void create_task(void (*func)(void), const char* name) {
     tasks[slot].pml4_phys  = PHYS_NULL;        // Kernel task: shared PML4
     tasks[slot].cookie     = 0;
     tasks[slot].wake_at_ms = 0;
+    tasks[slot].priority   = priority;
     task_strncpy(tasks[slot].name, name ? name : "task", 16);
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
@@ -375,6 +412,8 @@ void scheduler_dump(void) {
         kprint_num((uint64_t)task_snapshot[i].id);
         kprint("  ");
         kprint(task_state_name(task_snapshot[i].state));
+        kprint("  prio=");
+        kprint_num((uint64_t)task_snapshot[i].priority);
         kprint("  ");
         kprint(task_snapshot[i].name);
         kprint("\n");
@@ -416,6 +455,10 @@ void scheduler_dump(void) {
 
 void task_exit(void) {
     uint32_t cpu_id = smp_current_cpu_index();
+
+    // Flush and release any open fds before tearing the task down. Done outside
+    // scheduler_lock: vfs has its own lock and must not nest under it.
+    vfs_close_all(smp_current_task_id());
 
     uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
 
@@ -767,6 +810,7 @@ void sleepq_check_wakeups(uint64_t now_ms) {
     }
 }
 
+
 // ============================================================
 // smp_current_task_id — Per-CPU current task ID
 //
@@ -793,3 +837,6 @@ void yield(void) {
     // sti: pastikan interrupt enabled dulu sebelum hlt
     __asm__ volatile("sti; hlt");
 }
+
+
+

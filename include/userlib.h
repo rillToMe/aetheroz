@@ -113,4 +113,30 @@ int sys_get_task_id(void);    // Return current task ID (-1 if idle)
 int sys_is_mapped(void* addr); // Return 1 if addr is mapped, 0 if not (safe probe)
 uint32_t sys_get_pid(void);   // Return per-AS unique cookie (OS-generated)
 
+// fd layer (Fase 5) — file descriptors over KyuzenFS. fd valid per-task.
+// open flags
+#define O_RDONLY  0x0
+#define O_WRONLY  0x1
+#define O_RDWR    0x2
+#define O_CREAT   0x4
+#define O_TRUNC   0x8
+#define O_APPEND  0x10
+// lseek whence
+#define SEEK_SET  0
+#define SEEK_CUR  1
+#define SEEK_END  2
+
+int sys_open(const char* path, uint32_t flags);        // -> fd (>=0) or -1
+int sys_read_fd(int fd, void* buf, uint32_t count);     // -> bytes read
+int sys_write_fd(int fd, const void* buf, uint32_t count); // -> bytes written
+int sys_lseek(int fd, int32_t offset, int whence);      // -> new position
+int sys_close(int fd);                                  // -> 0 or -1
+
+// TCP client sockets (Fase 6). ip_be = IPv4 in network byte order.
+int sys_socket(void);                                   // -> sockfd or -1
+int sys_connect(int s, uint32_t ip_be, uint16_t port);  // 0 ok, -1 fail
+int sys_send(int s, const void* buf, uint32_t len);     // bytes sent or -1
+int sys_recv(int s, void* buf, uint32_t len);           // bytes, 0=closed, -1=err
+int sys_sock_close(int s);                              // -> 0 or -1
+
 #endif
