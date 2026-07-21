@@ -1,0 +1,102 @@
+#ifndef DISPLAY_H
+#define DISPLAY_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+// ============================================================
+// Display System — Phase 3 (Display System Rewrite)
+//
+// Generic, pixel-based buffer. Knows nothing about windows, text, or scroll.
+// Higher layers (Line Buffer, Window Manager surfaces) build on top of this.
+// ============================================================
+
+// --- Locked design decisions (GUI_ROADMAP Phase 3 / "Design Decisions to Lock") ---
+//
+// Color format: XRGB8888. Low 24 bits = 0xRRGGBB. High byte = opacity mask:
+//   0x00 = transparent, non-zero = opaque. This matches every existing layer
+//   (base_canvas, backbuffer, window canvas, compositor) so no conversion ever
+//   happens mid-pipeline — the roadmap flags mid-pipeline conversion as a bug source.
+//
+// Ownership: display_buffer_create() allocates pixels — the DisplayBuffer OWNS
+//   them and frees them in display_buffer_destroy(). display_buffer_wrap() borrows
+//   caller-owned memory — destroy() never frees it. Window Manager (Phase 5) uses
+//   create() to request one owned buffer per window.
+
+typedef uint32_t Color;
+
+typedef enum {
+    COLOR_FORMAT_XRGB8888 = 0
+} ColorFormat;
+
+typedef struct {
+    int32_t x, y;
+    uint32_t width, height;
+} Rect;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;       // pixels per row (>= width)
+    ColorFormat format;
+    uint32_t* pixels;
+    uint8_t owns_pixels;   // 1 = destroy() frees pixels, 0 = borrowed
+} DisplayBuffer;
+
+// Allocates pixels (System-owned). Returns NULL on failure.
+DisplayBuffer* display_buffer_create(uint32_t width, uint32_t height, ColorFormat format);
+
+// Borrows caller-owned pixels. stride is pixels per row. Returns NULL on failure.
+DisplayBuffer* display_buffer_wrap(uint32_t* pixels, uint32_t width, uint32_t height,
+                                   uint32_t stride, ColorFormat format);
+
+void display_buffer_destroy(DisplayBuffer* buffer);
+
+void display_buffer_write_pixel(DisplayBuffer* buffer, int32_t x, int32_t y, Color color);
+void display_buffer_fill_rect(DisplayBuffer* buffer, Rect area, Color color);
+
+// --- Rect helpers ---
+// Intersection of a and b written to *out. Returns 0 when empty (out untouched).
+int rect_intersect(Rect a, Rect b, Rect* out);
+// Smallest rect containing both a and b.
+Rect rect_union(Rect a, Rect b);
+
+// ============================================================
+// Dirty region tracking (Phase 3B)
+//
+// Only touched screen areas are recomposited/presented each frame. When more
+// than MAX_DIRTY_REGIONS distinct rects accumulate, the list collapses to a
+// single bounding box — always a correct superset of what changed, never less.
+// ============================================================
+
+#define MAX_DIRTY_REGIONS 64
+
+typedef struct {
+    Rect regions[MAX_DIRTY_REGIONS];
+    uint32_t count;
+    uint8_t collapsed;   // 1 = regions[0] is the bounding box of everything marked
+} DirtyRegionList;
+
+void dirty_region_clear(DirtyRegionList* list);
+void dirty_region_mark(DirtyRegionList* list, Rect r);
+
+// ============================================================
+// Viewport (Phase 3C)
+//
+// A scrollable window onto a source DisplayBuffer. Knows only how to cut and
+// shift a region of pixels — nothing about text or history. Phase 5 (Window
+// Manager) reuses this to clip window surfaces onto the screen.
+// ============================================================
+
+typedef struct {
+    Rect bounds;          // where on the target the viewport is drawn
+    int32_t scroll_x;
+    int32_t scroll_y;
+    DisplayBuffer* source;
+} Viewport;
+
+void viewport_scroll(Viewport* vp, int32_t dx, int32_t dy);
+// Blit the scrolled region of vp->source into target at vp->bounds.
+void viewport_render(Viewport* vp, DisplayBuffer* target);
+
+#endif

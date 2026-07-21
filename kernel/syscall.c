@@ -43,6 +43,7 @@ volatile uint32_t yield_counter = 0;
 
 // Impor dari KWM (Kyuzen Window Manager)
 extern void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
+extern void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height);
 extern void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 
@@ -150,6 +151,7 @@ void syscall_handler(registers_t *r) {
     }
     else if (syscall_num == 22) { // sys_draw_pixel
         draw_pixel((uint32_t)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
+        screen_mark_dirty((int32_t)r->rbx, (int32_t)r->rcx, 1, 1);
     }
     else if (syscall_num == 23) { // sys_draw_image
         draw_image((int)r->rbx, (int)r->rcx, (int)r->rdx, (int)r->rsi, (uint32_t*)r->rdi);

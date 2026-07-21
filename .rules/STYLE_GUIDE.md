@@ -46,6 +46,8 @@ Only comment non-obvious WHY, and keep it to one short line:
 
 If an explanation needs more than one line, it does not belong in the code. Put it in `DOCUMENTATION.md` instead and, if needed, leave a short pointer comment referencing it.
 
+**Above all: keep comments short and to the point.** No long sentences, no multi-line comments, no elaboration inside the code. One short line, straight to the point, or no comment at all.
+
 ---
 
 # 3. Naming

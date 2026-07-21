@@ -19,6 +19,7 @@
 #include "lapic.h"
 #include "smp.h"
 #include "spinlock.h"
+#include "display.h"
 
 #ifdef STRESS_TEST
 #include "pmm_stress.h"
@@ -335,6 +336,8 @@ void draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
     base_canvas[(y * (fb_pitch / 4)) + x] = color;
 }
 
+void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height);
+
 // --- KYUZEN WINDOW MANAGER (KWM) ---
 #define MAX_WINDOWS 16
 typedef struct {
@@ -361,6 +364,7 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].canvas = (uint32_t*)kmalloc(width * height * 4);
             kwm_windows[i].z_index = next_z_index++;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
+            screen_mark_dirty(x, y, width, height);
             return i;
         }
     }
@@ -376,10 +380,13 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
         return;
     }
 
-    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height; 
+    uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height;
     uint32_t* dest = kwm_windows[win_id].canvas;
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
+    int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
+    uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
+    screen_mark_dirty(mx, my, mw, mh);
 }
 
 void kwm_destroy_window(int win_id) {
@@ -389,9 +396,12 @@ void kwm_destroy_window(int win_id) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
         return;
     }
+    int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
+    uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
     if (kwm_windows[win_id].canvas) kfree(kwm_windows[win_id].canvas);
     kwm_windows[win_id].active = 0;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
+    screen_mark_dirty(mx, my, mw, mh);
 }
 
 // Destroy ALL KWM windows — called on app exit to prevent dangling canvas pointers.
@@ -405,6 +415,7 @@ void kwm_destroy_all_windows(void) {
         }
     }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
+    screen_mark_dirty(0, 0, fb_width, fb_height);
 }
 
 // Kembalikan posisi window terkini (setelah drag, dsb) ke app via pointer.
@@ -474,9 +485,15 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         if (new_y + (int32_t)kwm_windows[dragged_win_id].height > (int32_t)fb_height)
             new_y = (int32_t)fb_height - (int32_t)kwm_windows[dragged_win_id].height;
 
+        int32_t old_x = kwm_windows[dragged_win_id].x;
+        int32_t old_y = kwm_windows[dragged_win_id].y;
+        uint32_t dw = kwm_windows[dragged_win_id].width;
+        uint32_t dh = kwm_windows[dragged_win_id].height;
         kwm_windows[dragged_win_id].x = new_x;
         kwm_windows[dragged_win_id].y = new_y;
         spinlock_unlock(&kwm_lock);
+        screen_mark_dirty(old_x, old_y, dw, dh);
+        screen_mark_dirty(new_x, new_y, dw, dh);
         return 1; // Konsumsi event — jangan sampai app salah deteksi klik
     }
 
@@ -504,6 +521,9 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         if (target_win != -1) {
             kwm_bring_to_front(target_win);
 
+            int32_t tx = kwm_windows[target_win].x, ty = kwm_windows[target_win].y;
+            uint32_t tw = kwm_windows[target_win].width, th = kwm_windows[target_win].height;
+
             int32_t close_btn_x = kwm_windows[target_win].x
                                   + (int32_t)kwm_windows[target_win].width - 40;
 
@@ -514,9 +534,11 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
                 drag_offset_x  = mouse_px - kwm_windows[target_win].x;
                 drag_offset_y  = mouse_py - kwm_windows[target_win].y;
                 spinlock_unlock(&kwm_lock);
+                screen_mark_dirty(tx, ty, tw, th);
                 return 1;
             }
             spinlock_unlock(&kwm_lock);
+            screen_mark_dirty(tx, ty, tw, th);
             return 0;
         }
     }
@@ -529,71 +551,113 @@ extern int32_t mouse_x;
 extern int32_t mouse_y;
 extern const uint8_t cursor_bitmap[16][12];
 
+#define CURSOR_WIDTH  12
+#define CURSOR_HEIGHT 16
 
-void compositor_flush() {
-    if (fb_width == 0) return;
-    uint32_t screen_size = (fb_pitch / 4) * fb_height;
+// Dirty-region state (Phase 3B). Every draw into base_canvas and every window
+// move marks the touched rect here; compositor_flush recomposites and presents
+// only these rects instead of the whole screen. Idle frames are near no-ops.
+static DirtyRegionList g_screen_dirty;
+static spinlock_t g_dirty_lock = SPINLOCK_INIT;
+static int32_t g_last_cursor_x = -1;
+static int32_t g_last_cursor_y = -1;
 
-    uint32_t* dst_bg = backbuffer;
-    uint32_t* src_bg = base_canvas;
-    uint64_t copy_cnt = screen_size; // 64-bit counter (rcx)
-    __asm__ volatile ("rep movsl" : "+D" (dst_bg), "+S" (src_bg), "+c" (copy_cnt) : : "memory");
+void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height) {
+    Rect r = { x, y, width, height };
+    uint64_t flags = spinlock_lock_irqsave(&g_dirty_lock);
+    dirty_region_mark(&g_screen_dirty, r);
+    spinlock_unlock_irqrestore(&g_dirty_lock, flags);
+}
 
-    // Screen geometry hoisted out of the per-pixel path. fb_pitch/4 (the stride
-    // in pixels) was previously recomputed for every pixel via a division inside
-    // the inner loop — the dominant cost when compositing a large window such as
-    // a full-size image. Compute it once here.
-    const int pitch4 = (int)(fb_pitch / 4);
-    const int scr_w  = (int)fb_width;
-    const int scr_h  = (int)fb_height;
+// Copy a screen-space rect between two full-screen buffers, row by row.
+static void blit_rect(uint32_t* dst, const uint32_t* src, Rect r, int pitch4) {
+    for (uint32_t row = 0; row < r.height; row++) {
+        uint32_t off = ((uint32_t)r.y + row) * (uint32_t)pitch4 + (uint32_t)r.x;
+        uint32_t* d = dst + off;
+        const uint32_t* s = src + off;
+        for (uint32_t col = 0; col < r.width; col++) d[col] = s[col];
+    }
+}
 
-    uint64_t kwm_flags = spinlock_lock_irqsave(&kwm_lock);
-    for(uint32_t z = 1; z <= next_z_index; z++) {
-        for(int w = 0; w < MAX_WINDOWS; w++) {
-            if(kwm_windows[w].active && kwm_windows[w].z_index == z && kwm_windows[w].canvas) {
-                const int win_x = kwm_windows[w].x;
-                const int win_y = kwm_windows[w].y;
-                const int win_w = (int)kwm_windows[w].width;
-                const int win_h = (int)kwm_windows[w].height;
-                uint32_t* canvas = kwm_windows[w].canvas;
+// Composite every window overlapping `r` (z-order low→high) onto the backbuffer.
+// Caller must hold kwm_lock.
+static void composite_windows_in_rect(Rect r, int pitch4) {
+    for (uint32_t z = 1; z <= next_z_index; z++) {
+        for (int w = 0; w < MAX_WINDOWS; w++) {
+            if (!(kwm_windows[w].active && kwm_windows[w].z_index == z && kwm_windows[w].canvas))
+                continue;
 
-                // Clip the window to the screen ONCE instead of testing every
-                // pixel. wx/wy iterate only over the visible sub-rectangle, so
-                // the inner loop needs no per-pixel bounds check.
-                int wx_start = win_x < 0 ? -win_x : 0;
-                int wy_start = win_y < 0 ? -win_y : 0;
-                int wx_end   = win_x + win_w > scr_w ? scr_w - win_x : win_w;
-                int wy_end   = win_y + win_h > scr_h ? scr_h - win_y : win_h;
+            Rect wrect = { kwm_windows[w].x, kwm_windows[w].y,
+                           kwm_windows[w].width, kwm_windows[w].height };
+            Rect clip;
+            if (!rect_intersect(wrect, r, &clip)) continue;
 
-                for(int wy = wy_start; wy < wy_end; wy++) {
-                    const uint32_t* src = canvas + (uint32_t)wy * (uint32_t)win_w;
-                    uint32_t* dst = backbuffer + (uint32_t)(win_y + wy) * (uint32_t)pitch4 + win_x;
-                    for(int wx = wx_start; wx < wx_end; wx++) {
-                        uint32_t pixel = src[wx];
-                        // Alpha byte acts as a per-pixel mask: 0 = transparent.
-                        if (pixel >> 24) {
-                            dst[wx] = pixel & 0xFFFFFF;
-                        }
-                    }
+            const int32_t win_x = kwm_windows[w].x;
+            const int32_t win_y = kwm_windows[w].y;
+            const int win_w = (int)kwm_windows[w].width;
+            uint32_t* canvas = kwm_windows[w].canvas;
+
+            for (uint32_t yy = 0; yy < clip.height; yy++) {
+                int32_t sy = clip.y + (int32_t)yy - win_y;
+                const uint32_t* src = canvas + (uint32_t)sy * (uint32_t)win_w + (uint32_t)(clip.x - win_x);
+                uint32_t* dst = backbuffer + ((uint32_t)clip.y + yy) * (uint32_t)pitch4 + (uint32_t)clip.x;
+                for (uint32_t xx = 0; xx < clip.width; xx++) {
+                    uint32_t pixel = src[xx];
+                    // Alpha byte acts as a per-pixel mask: 0 = transparent.
+                    if (pixel >> 24) dst[xx] = pixel & 0xFFFFFF;
                 }
             }
         }
     }
+}
+
+void compositor_flush() {
+    if (fb_width == 0) return;
+    const int pitch4 = (int)(fb_pitch / 4);
+    Rect screen = { 0, 0, fb_width, fb_height };
+
+    uint64_t flags = spinlock_lock_irqsave(&g_dirty_lock);
+    DirtyRegionList dirty = g_screen_dirty;
+    dirty_region_clear(&g_screen_dirty);
+    spinlock_unlock_irqrestore(&g_dirty_lock, flags);
+
+    // Cursor moves every frame it's dragged; both the vacated and the new cell
+    // must repaint, so fold them into the dirty set.
+    int32_t cx = mouse_x, cy = mouse_y;
+    if (g_last_cursor_x >= 0) {
+        Rect old = { g_last_cursor_x, g_last_cursor_y, CURSOR_WIDTH, CURSOR_HEIGHT };
+        dirty_region_mark(&dirty, old);
+    }
+    Rect cur = { cx, cy, CURSOR_WIDTH, CURSOR_HEIGHT };
+    dirty_region_mark(&dirty, cur);
+
+    if (dirty.count == 0) return;
+
+    uint64_t kwm_flags = spinlock_lock_irqsave(&kwm_lock);
+    for (uint32_t i = 0; i < dirty.count; i++) {
+        Rect r;
+        if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
+        blit_rect(backbuffer, base_canvas, r, pitch4);
+        composite_windows_in_rect(r, pitch4);
+    }
     spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);
 
-    for (int y = 0; y < 16; y++) {
-        for (int x = 0; x < 12; x++) {
-            if (mouse_y + y >= (int32_t)fb_height || mouse_x + x >= (int32_t)fb_width) continue;
-            uint32_t offset = ((mouse_y + y) * (fb_pitch / 4)) + (mouse_x + x);
-            if (cursor_bitmap[y][x] == 1) backbuffer[offset] = 0xFFFFFF; 
-            else if (cursor_bitmap[y][x] == 2) backbuffer[offset] = 0x000000; 
+    for (int y = 0; y < CURSOR_HEIGHT; y++) {
+        for (int x = 0; x < CURSOR_WIDTH; x++) {
+            if (cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
+            uint32_t offset = ((cy + y) * pitch4) + (cx + x);
+            if (cursor_bitmap[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
+            else if (cursor_bitmap[y][x] == 2) backbuffer[offset] = 0x000000;
         }
     }
+    g_last_cursor_x = cx;
+    g_last_cursor_y = cy;
 
-    uint32_t* dest_mon = fb_ptr;
-    uint32_t* src_mon  = backbuffer;
-    uint64_t count_mon = screen_size;
-    __asm__ volatile ("rep movsl" : "+D" (dest_mon), "+S" (src_mon), "+c" (count_mon) : : "memory");
+    for (uint32_t i = 0; i < dirty.count; i++) {
+        Rect r;
+        if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
+        blit_rect(fb_ptr, backbuffer, r, pitch4);
+    }
 }
 
 void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t height, uint32_t color) {
@@ -602,6 +666,7 @@ void draw_rect(uint32_t start_x, uint32_t start_y, uint32_t width, uint32_t heig
             draw_pixel(x, y, color);
         }
     }
+    screen_mark_dirty((int32_t)start_x, (int32_t)start_y, width, height);
 }
 
 void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer) {
@@ -615,16 +680,18 @@ void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffe
             }
         }
     }
+    screen_mark_dirty(start_x, start_y, (uint32_t)width, (uint32_t)height);
 }
 
 void draw_char(char c, uint32_t x, uint32_t y, uint32_t color) {
     if (c < 0 || c > 127) return;
     const unsigned char* bitmap = font8x16[(int)c];
-    for (int row = 0; row < 16; row++) { 
+    for (int row = 0; row < 16; row++) {
         for (int col = 0; col < 8; col++) {
             if (bitmap[row] & (0x80 >> col)) draw_pixel(x + col, y + row, color);
         }
     }
+    screen_mark_dirty((int32_t)x, (int32_t)y, 8, 16);
 }
 
 void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color) {

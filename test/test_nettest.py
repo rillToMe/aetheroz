@@ -1,6 +1,6 @@
 import socket
 
-HOST = "0.0.0.0"   # dengar di semua interface (WAJIB, bukan 127.0.0.1)
+HOST = "0.0.0.0"  
 PORT = 7777
 
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -15,5 +15,5 @@ while True:
     data = conn.recv(1024)
     if data:
         print("recv:", data)
-        conn.sendall(data)   # echo balik
+        conn.sendall(data)   
     conn.close()
