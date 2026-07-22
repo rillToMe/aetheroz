@@ -26,7 +26,7 @@ extern void       kfs_read_file(char* filename);
 extern void       kfs_delete_file(char* filename);
 extern int        kfs_exists(char* filename);
 extern uint32_t   kfs_get_file_size(char* filename);
-extern int        kfs_read_to_buffer(char* filename, char* out_buffer);
+extern int        kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 extern int        kfs_create_file(char* filename, char* data, uint32_t size);
 
 #include "timer.h"    // Unified timer API: timer_get_ms(), timer_sleep_ms(), timer_get_ticks()
@@ -92,7 +92,7 @@ void     fs_delete(char* filename)      { kfs_delete_file(filename); }
 
 int      sys_file_exists(char* fn)      { return kfs_exists(fn); }
 uint32_t sys_file_size(char* fn)        { return kfs_get_file_size(fn); }
-int      sys_read_file_to_buffer(char* fn, char* buf) { return kfs_read_to_buffer(fn, buf); }
+int      sys_read_file_to_buffer(char* fn, char* buf, uint32_t cap) { return kfs_read_to_buffer(fn, buf, cap); }
 int      sys_create_file(char* fn, char* data, uint32_t size) { return kfs_create_file(fn, data, size); }
 
 // --- Memori (size_t agar cocok dengan heap.h) ---

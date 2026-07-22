@@ -237,9 +237,21 @@ conc:
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
+# Heap stress test: overflow guard + canary corruption detection (test/ sources)
+.PHONY: heap-stress
+heap-stress:
+	$(MAKE) clean
+	$(MAKE) boot_image.iso SRC_DIRS="$(SRC_DIRS) test" \
+		CFLAGS="$(CFLAGS) -g -DHEAP_STRESS_TEST -Itest"
+	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
+		-smp 4 \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000
+
 # Bersihkan file hasil build (kernel + lwIP objects)
 clean:
-	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o test/conc_test.o
+	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o test/conc_test.o test/heap_stress_test.o
 
 # run: boot_image.iso
 # 	qemu-system-x86_64.exe -cpu max -m 512M -boot d \

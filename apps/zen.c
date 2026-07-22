@@ -10,7 +10,7 @@ extern void sys_free(void* ptr);
 extern void* sys_realloc(void* ptr, uint32_t old_size, uint32_t new_size);
 extern int sys_file_exists(char* filename);
 extern uint32_t sys_file_size(char* filename);
-extern int sys_read_file_to_buffer(char* filename, char* buffer);
+extern int sys_read_file_to_buffer(char* filename, char* buffer, uint32_t buffer_capacity);
 extern int sys_create_file(char* filename, char* data, uint32_t size);
 
 // Fungsi utilitas lokal (Aman di Ring 3)
@@ -46,7 +46,7 @@ void zen_main(char* filename) {
     uint32_t cursor = 0;
 
     if (sys_file_exists(filename)) {
-        sys_read_file_to_buffer(filename, text_buffer);
+        sys_read_file_to_buffer(filename, text_buffer, current_capacity);
         cursor = zen_strlen(text_buffer);
         print(text_buffer);
     }

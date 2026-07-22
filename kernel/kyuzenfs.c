@@ -295,10 +295,14 @@ static uint32_t kfs_get_file_size_nolock(char* filename) {
     return 0;
 }
 
-int kfs_read_to_buffer(char* filename, char* out_buffer) {
+int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity) {
     uint64_t flags = spinlock_lock_irqsave(&fs_lock);
     kfs_file_entry_t entry;
     if (!find_file_entry(filename, &entry, NULL, NULL)) {
+        spinlock_unlock_irqrestore(&fs_lock, flags);
+        return 0;
+    }
+    if (entry.size_bytes > buffer_capacity) {
         spinlock_unlock_irqrestore(&fs_lock, flags);
         return 0;
     }

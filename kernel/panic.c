@@ -104,6 +104,7 @@ static void p_dec(const char* label, uint64_t val, uint32_t fg, uint32_t bg) {
     if (val == 0) { buf[i] = '0'; i--; }
     else { while (val > 0 && i >= 0) { buf[i--] = '0' + (val % 10); val /= 10; } }
     panic_draw_string(&buf[i + 1], panic_cursor_x, panic_cursor_y, fg, bg);
+    panic_cursor_x += 8 * (uint32_t)__builtin_strlen(&buf[i + 1]);
 }
 
 static void fill_screen(uint32_t color) {
@@ -302,6 +303,7 @@ void exception_handler(registers_t *r) {
 // =======================================================================
 // GENERIC KERNEL PANIC (called manually from kernel code)
 // =======================================================================
+__attribute__((weak))
 void kernel_panic(const char* title, const char* desc, uint64_t code) {
     __asm__ volatile("cli");
     if (!fb_ptr) { while(1) { __asm__ volatile("hlt"); } }

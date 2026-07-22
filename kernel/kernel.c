@@ -1,6 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "timer.h"  // Unified timer API
+#include "timer.h" 
 #include "limine.h"
 #define FONT8x16_IMPLEMENTATION 
 #include "font8x16.h"
@@ -34,9 +34,11 @@
 #include "conc_test.h"
 #endif
 
-// ============================================================
+#ifdef HEAP_STRESS_TEST
+#include "heap_stress_test.h"
+#endif
+
 // LIMINE REQUESTS — Harus di section .requests agar bootloader bisa scan
-// ============================================================
 __attribute__((used, section(".requests_start_marker")))
 static volatile uint64_t __limine_requests_start[] = LIMINE_REQUESTS_START_MARKER;
 
@@ -51,7 +53,7 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST_ID,
-    .revision = 0
+    .revision = 0\
 };
 
 __attribute__((used, section(".requests")))
@@ -819,6 +821,11 @@ void kernel_main(void) {
 
 #ifdef CONC_TEST
     conc_test_run();
+    while (1) __asm__ volatile("hlt");
+#endif
+
+#ifdef HEAP_STRESS_TEST
+    test_heap_stress_run_all();
     while (1) __asm__ volatile("hlt");
 #endif
 

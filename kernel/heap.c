@@ -4,6 +4,10 @@
 #include "spinlock.h"
 #include <stddef.h>  // size_t
 
+#define HEAP_MAGIC 0xDEADC0DE
+
+extern void kernel_panic(const char* title, const char* desc, uint64_t code);
+
 // Zona Heap Virtual — HARUS canonical (bit47=1, bits63-48=0xFFFF)
 // dan di luar HHDM Limine (0xFFFF800000000000 + RAM size, biasanya < 0xFFFF810000000000)
 //
@@ -40,6 +44,7 @@ static heap_block_t* expand_heap(size_t required_size) {
 
     // Jadikan halaman baru sebagai blok bebas
     heap_block_t* new_block = (heap_block_t*)start_expansion_addr;
+    new_block->magic   = HEAP_MAGIC;
     new_block->size    = (size_t)(pages_needed * 4096) - sizeof(heap_block_t);
     new_block->is_free = 1;
     new_block->next    = NULL;
@@ -64,10 +69,16 @@ void* kmalloc(size_t size) {
     heap_block_t* current = heap_head;
 
     while (current != NULL) {
+        if (current->magic != HEAP_MAGIC) {
+            kernel_panic("HEAP CORRUPTION",
+                         "heap_block_t magic mismatch - header corrupt",
+                         (uint64_t)current);
+        }
         if (current->is_free && current->size >= size) {
             // Splitting: potong jika blok terlalu besar
             if (current->size > size + sizeof(heap_block_t) + 1) {
                 heap_block_t* new_block = (heap_block_t*)((uint8_t*)current + sizeof(heap_block_t) + size);
+                new_block->magic   = HEAP_MAGIC;
                 new_block->is_free = 1;
                 new_block->size    = current->size - size - sizeof(heap_block_t);
                 new_block->next    = current->next;
@@ -100,11 +111,21 @@ void kfree(void* ptr) {
     uint64_t flags = spinlock_lock_irqsave(&heap_lock);
 
     heap_block_t* block = (heap_block_t*)((uint8_t*)ptr - sizeof(heap_block_t));
+    if (block->magic != HEAP_MAGIC) {
+        kernel_panic("HEAP CORRUPTION",
+                     "heap_block_t magic mismatch - header corrupt",
+                     (uint64_t)block);
+    }
     block->is_free = 1;
 
     // Coalescing: lebur blok kosong yang bersebelahan
     heap_block_t* current = heap_head;
     while (current != NULL) {
+        if (current->magic != HEAP_MAGIC) {
+            kernel_panic("HEAP CORRUPTION",
+                         "heap_block_t magic mismatch - header corrupt",
+                         (uint64_t)current);
+        }
         if (current->is_free && current->next != NULL && current->next->is_free) {
             current->size += current->next->size + sizeof(heap_block_t);
             current->next  = current->next->next;

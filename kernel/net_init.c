@@ -13,7 +13,7 @@
  *
  * Kompilasi dengan LWIP_CFLAGS (butuh lwIP + port headers):
  *   clang -target x86_64-pc-none-elf -ffreestanding -mcmodel=kernel
- *         -Ithird_party/net/lwip/src/include -Idrivers/net/port
+ *         -Idrivers/net/lwip/src/include -Idrivers/net/lwip/port
  *         -std=c11 -O2 -c kernel/net_init.c
  */
 

@@ -22,7 +22,7 @@ int parse_auth(char* input_user, char* input_pass, uint32_t* out_uid) {
     
     uint32_t fsize = sys_file_size("users.sys");
     char buffer[1024];
-    sys_read_file_to_buffer("users.sys", buffer);
+    sys_read_file_to_buffer("users.sys", buffer, sizeof(buffer));
     buffer[fsize] = '\0'; // Kunci string agar tidak ada memori sampah
 
     int i = 0;

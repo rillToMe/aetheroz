@@ -28,7 +28,7 @@ uint64_t elf_load_file(char* filename) {
         kprint("[ELF] Error: Heap habis!\n");
         return 0;
     }
-    kfs_read_to_buffer(filename, (char*)file_buffer);
+    kfs_read_to_buffer(filename, (char*)file_buffer, file_size);
 
     // Validasi ELF Magic Number
     if (file_buffer[0] != 0x7F || file_buffer[1] != 'E' ||

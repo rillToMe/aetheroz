@@ -34,7 +34,7 @@ void sys_free(void* ptr);
 void* sys_realloc(void* ptr, uint32_t old_size, uint32_t new_size);
 int sys_file_exists(char* filename);
 uint32_t sys_file_size(char* filename);
-int sys_read_file_to_buffer(char* filename, char* buffer);
+int sys_read_file_to_buffer(char* filename, char* buffer, uint32_t buffer_capacity);
 int sys_create_file(char* filename, char* data, uint32_t size);
 
 uint64_t sys_uptime(void);

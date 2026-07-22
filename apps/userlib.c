@@ -27,8 +27,8 @@ int sys_file_exists(char* filename) {
 uint32_t sys_file_size(char* filename) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(12), "b"((uint64_t)filename)); return (uint32_t)ret;
 }
-int sys_read_file_to_buffer(char* filename, char* buffer) {
-    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(13), "b"((uint64_t)filename), "c"((uint64_t)buffer)); return (int)ret;
+int sys_read_file_to_buffer(char* filename, char* buffer, uint32_t buffer_capacity) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(13), "b"((uint64_t)filename), "c"((uint64_t)buffer), "d"((uint64_t)buffer_capacity)); return (int)ret;
 }
 uint64_t sys_uptime() {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(14)); return ret;

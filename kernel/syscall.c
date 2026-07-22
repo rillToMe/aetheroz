@@ -26,7 +26,7 @@ extern void kfree(void* ptr);
 extern void* krealloc(void* ptr, uint32_t old_size, uint32_t new_size);
 extern int kfs_exists(char* filename);
 extern uint32_t kfs_get_file_size(char* filename);
-extern int kfs_read_to_buffer(char* filename, char* out_buffer);
+extern int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 extern int kfs_create_file(char* filename, char* data, uint32_t size);
 extern int kfs_get_file_list(void* buffer, int max_entries);
 extern uint32_t elf_load_file(char* filename);
@@ -121,7 +121,7 @@ void syscall_handler(registers_t *r) {
         ret_val = kfs_get_file_size((char*)r->rbx);
     }
     else if (syscall_num == 13) { // sys_read_file_to_buffer
-        ret_val = kfs_read_to_buffer((char*)r->rbx, (char*)r->rcx);
+        ret_val = kfs_read_to_buffer((char*)r->rbx, (char*)r->rcx, (uint32_t)r->rdx);
     }
     else if (syscall_num == 14) { // sys_uptime → returns ms sejak boot (hardware-agnostic)
         ret_val = timer_get_ms();

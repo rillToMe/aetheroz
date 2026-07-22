@@ -35,6 +35,6 @@ void kfs_read_file(char* filename);
 void kfs_delete_file(char* filename);
 int kfs_exists(char* filename);
 uint32_t kfs_get_file_size(char* filename);
-int kfs_read_to_buffer(char* filename, char* out_buffer);
+int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 
 #endif

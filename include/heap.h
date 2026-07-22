@@ -5,6 +5,7 @@
 #include <stddef.h>  // size_t
 
 typedef struct heap_block {
+    uint32_t magic;
     size_t size;               // Ukuran blok data (tidak termasuk header)
     uint8_t is_free;           // 1 = bebas, 0 = terpakai
     struct heap_block* next;   // Pointer ke blok berikutnya di linked list

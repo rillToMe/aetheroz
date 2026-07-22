@@ -18,7 +18,7 @@ extern int   kfs_create_file(char* filename, char* data, uint32_t size);
 extern void  kfs_delete_file(char* filename);
 extern int   kfs_exists(char* filename);
 extern uint32_t kfs_get_file_size(char* filename);
-extern int   kfs_read_to_buffer(char* filename, char* out_buffer);
+extern int   kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 
 typedef struct {
     int      used;
@@ -83,7 +83,7 @@ int vfs_open(const char* path, uint32_t flags) {
     if (!buf) return -1;
 
     if (exists && !(flags & VFS_O_TRUNC) && fsize > 0) {
-        if (!kfs_read_to_buffer((char*)path, (char*)buf)) { kfree(buf); return -1; }
+        if (!kfs_read_to_buffer((char*)path, (char*)buf, cap)) { kfree(buf); return -1; }
     } else {
         fsize = 0;   // O_TRUNC or brand-new file starts empty
     }

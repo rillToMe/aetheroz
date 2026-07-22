@@ -198,7 +198,7 @@ void user_shell() {
                             // Sedot file users.sys yang lama ke RAM
                             uint32_t fsize = sys_file_size("users.sys");
                             char buffer[1024];
-                            sys_read_file_to_buffer("users.sys", buffer);
+                            sys_read_file_to_buffer("users.sys", buffer, sizeof(buffer));
                             buffer[fsize] = '\0';
 
                             // Hitung jumlah baris ('\n') untuk otomatis menentukan UID baru

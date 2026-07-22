@@ -72,7 +72,7 @@ void main(void) {
     if (sys_file_exists("edit.tmp")) {
         uint32_t tmp_size = sys_file_size("edit.tmp");
         if (tmp_size > 0 && tmp_size < 64) {
-            sys_read_file_to_buffer("edit.tmp", current_file);
+            sys_read_file_to_buffer("edit.tmp", current_file, sizeof(current_file));
             current_file[tmp_size] = '\0';
             file_len = (int)tmp_size;
         }
@@ -83,7 +83,7 @@ void main(void) {
     if (sys_file_exists(current_file)) {
         text_len = sys_file_size(current_file);
         if (text_len > 4095) text_len = 4095;
-        sys_read_file_to_buffer(current_file, text_buffer);
+        sys_read_file_to_buffer(current_file, text_buffer, sizeof(text_buffer));
         text_buffer[text_len] = '\0';
     } else {
         text_len = 0;

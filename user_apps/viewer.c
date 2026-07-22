@@ -147,7 +147,7 @@ static void render_image(gui_window_t* win, const char* filename) {
         gui_draw_text(win, "Memori tidak cukup.", 15, TOOLBAR_H + 10, BTN_TEXT);
         return;
     }
-    sys_read_file_to_buffer((char*)filename, (char*)raw);
+    sys_read_file_to_buffer((char*)filename, (char*)raw, fsize);
 
     int iw, ih, channels;
     uint8_t* pixels = stbi_load_from_memory(raw, (int)fsize, &iw, &ih, &channels, 4);
@@ -185,7 +185,7 @@ static int open_from_fileman(gui_window_t* win) {
     if (tsize == 0 || tsize >= 63) return 0;
 
     char target[64];
-    sys_read_file_to_buffer("view.tmp", target);
+    sys_read_file_to_buffer("view.tmp", target, sizeof(target));
     target[tsize] = '\0';
 
     // Konsumsi flag sekali pakai: Back akan kembali ke daftar milik viewer,
