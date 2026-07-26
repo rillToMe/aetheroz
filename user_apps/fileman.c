@@ -102,6 +102,11 @@ void main(void) {
                 int list_x0 = 10, list_x1 = (int)app->inner_w - 10;
                 int list_y0 = LIST_START_Y;
                 int list_y1 = list_y0 + total_files * LIST_ROW_H;
+                // Baris yang tergambar di balik status bar TIDAK boleh bisa
+                // diklik — dengan >11 file, zona daftar menimpa tombol BUKA
+                // dan klik BUKA diam-diam memilih file tersembunyi terakhir.
+                int vis_y1 = (int)app->inner_h - 30;   // batas atas status bar
+                if (list_y1 > vis_y1) list_y1 = vis_y1;
 
                 if (rel_x >= list_x0 && rel_x <= list_x1 &&
                     rel_y >= list_y0 && rel_y <  list_y1) {

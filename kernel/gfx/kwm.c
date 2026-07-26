@@ -72,6 +72,19 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
     return -1;
 }
 
+// Ukuran canvas window dalam byte (0 jika slot kosong/id invalid).
+// Ukuran fix sejak create — aman dipakai syscall 31 untuk validasi range
+// buffer app SEBELUM kwm_update_window (FIX_005 Tahap 2).
+uint64_t kwm_window_canvas_bytes(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    uint64_t bytes = kwm_windows[win_id].active
+        ? (uint64_t)kwm_windows[win_id].width * (uint64_t)kwm_windows[win_id].height * 4ULL
+        : 0;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    return bytes;
+}
+
 // Owner task dari sebuah window (-1 jika slot kosong/id invalid).
 int kwm_window_owner(int win_id) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return -1;

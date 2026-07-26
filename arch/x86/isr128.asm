@@ -10,12 +10,12 @@ isr128_stub:
     
     mov rdi, rsp    ; Arg 1: struct registers*
     call syscall_handler
-    
-    ; Trik 64-bit: Fungsi C mengembalikan data di RAX.
-    ; Kita timpa RAX lama yang kita simpan di tumpukan stack.
-    ; Posisi RAX lama tepat berada 112 byte dari dasar stack saat ini.
-    mov [rsp + 112], rax    
-    
-    POPA64          ; Kembalikan semua, aplikasi akan dapat nilai RAX yang baru!
+
+    ; FIX_005 Tahap 2: JANGAN timpa slot RAX dengan sisa register RAX dari
+    ; fungsi C — syscall_handler bertipe void dan menulis return value ke
+    ; frame (r->rax) di SEMUA jalur. Trik lama ([rsp+112] = RAX) hanya
+    ; kebetulan benar dan pecah begitu ada call lain sebelum return.
+
+    POPA64          ; Kembalikan semua; RAX = r->rax yang ditulis handler
     add rsp, 16
     iretq

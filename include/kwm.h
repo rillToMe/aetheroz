@@ -12,6 +12,9 @@ void kwm_destroy_window(int win_id);
 // Owner task dari sebuah window (-1 jika slot kosong/id invalid).
 int  kwm_window_owner(int win_id);
 
+// Ukuran canvas window dalam byte (0 jika slot kosong/id invalid).
+uint64_t kwm_window_canvas_bytes(int win_id);
+
 // Destroy HANYA window milik task_id — dipanggil saat app exit/exec.
 void kwm_destroy_windows_of(int task_id);
 

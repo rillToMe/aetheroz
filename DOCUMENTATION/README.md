@@ -18,6 +18,7 @@ Linux), menggantikan satu file raksasa secara bertahap.
 | Dokumen | Ringkasan |
 |---------|-----------|
 | [`ring3-tahap1-cpl3.md`](design/ring3-tahap1-cpl3.md) | Ring 3 Tahap 1 — ELF apps jalan di CPL 3 via TSS per-CPU + syscall stack permanen; syscall tetap `int 0x80` |
+| [`ring3-tahap2-boundary-copy.md`](design/ring3-tahap2-boundary-copy.md) | Ring 3 Tahap 2 — boundary copy: pointer user divalidasi + di-copy in/out via `kernel/usercopy.c`; kontrak per-syscall (copy/shared/bypass); fix UAF `sys_load_elf` |
 | [`sched-module-split.md`](design/sched-module-split.md) | Pemecahan `kernel/task.c` (907 baris) jadi modul `kernel/sched/` (core, runqueue, lifecycle, block, debug) — tanpa perubahan perilaku, `task.h` tidak berubah |
 
 ### troubleshooting/

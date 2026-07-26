@@ -56,13 +56,14 @@ CLOCK_ELF   = $(OUT_DIR)/clock.elf
 CALC_ELF    = $(OUT_DIR)/calc.elf
 TASKMGR_ELF = $(OUT_DIR)/taskmgr.elf
 NOTEPAD_ELF = $(OUT_DIR)/notepad.elf
+BADPTR_ELF  = $(OUT_DIR)/badptr.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
-.PHONY: all fileman viewer clock calc taskmgr notepad clean
+.PHONY: all fileman viewer clock calc taskmgr notepad badptr clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF)
 	@echo ""
 	@echo "[USER APPS] Build selesai! Semua app di virtual 0x4000000"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
@@ -170,9 +171,23 @@ $(NOTEPAD_ELF): notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 notepad: $(NOTEPAD_ELF)
 
 # ==========================================================
+# BADPTR — Uji boundary copy syscall (FIX_005 Tahap 2)
+# ==========================================================
+badptr.o: badptr.c
+	@echo "[CC] Mengompilasi badptr.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(BADPTR_ELF): badptr.o $(USERLIB_OBJ)
+	@echo "[LD] Linking badptr.elf ke $(APP_BASE)..."
+	$(LD) $(LDFLAGS) badptr.o $(USERLIB_OBJ) -o $@
+	@echo "[OK] badptr.elf siap!"
+
+badptr: $(BADPTR_ELF)
+
+# ==========================================================
 # CLEAN
 # ==========================================================
 clean:
 	@echo "[CLEAN] Membersihkan file objek user_apps..."
-	rm -f fileman.o viewer.o clock.o calc.o taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
+	rm -f fileman.o viewer.o clock.o calc.o taskmgr.o badptr.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
 	@echo "[CLEAN] Selesai."

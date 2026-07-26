@@ -7,6 +7,7 @@
 #include "vfs.h"
 #include "net_socket.h"
 #include "elf.h"
+#include "usercopy.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -87,6 +88,12 @@ void syscall_handler(registers_t *r) {
     uint64_t syscall_num = r->rax;
     uint64_t ret_val = 0; // Default return
 
+    // FIX_005 Tahap 2: konteks boundary copy — pointer dari ring 3
+    // divalidasi & di-copy; caller ring 0 (shell/login kernel via int 0x80)
+    // lewat jalur bypass (pointer kernel sah).
+    ucopy_ctx_t uc;
+    ucopy_ctx_init(&uc, r);
+
     // --- Pemetaan Argumen Standar Kyuzen OS 64-bit ---
     // RAX = Nomor Syscall
     // RBX = Argumen 1
@@ -96,8 +103,11 @@ void syscall_handler(registers_t *r) {
     // RDI = Argumen 5
 
     if (syscall_num == 1) { // sys_print
-        write_fs(&tty_node, 0, string_length((char*)r->rbx), (uint8_t*)r->rbx);
-    } 
+        // Tahap 2: copy-in bounded — strlen tak berbatas pada pointer user hilang.
+        char kstr[UC_MAX_STR];
+        int64_t n = strncpy_from_user(&uc, kstr, r->rbx, sizeof(kstr));
+        if (n > 0) write_fs(&tty_node, 0, (uint32_t)n, (uint8_t*)kstr);
+    }
     else if (syscall_num == 2) { // sys_clear_screen
         tty_clear();
     } 
@@ -109,7 +119,17 @@ void syscall_handler(registers_t *r) {
         extern void flush_kbd_buffer(void);
         flush_event_queue();
         flush_kbd_buffer();
-        ret_val = read_fs(&tty_node, 0, r->rcx, (uint8_t*)r->rbx);
+        // Tahap 2: baca ke buffer kernel dulu — tulisan ke pointer user tidak
+        // lagi terjadi di dalam kbd_lock (IRQ off). Validasi SEBELUM read
+        // yang blocking, supaya input tidak terlanjur dikonsumsi lalu gagal.
+        uint32_t want = (uint32_t)r->rcx;
+        if (want > UC_MAX_KBD) want = UC_MAX_KBD;
+        if (want > 0 && user_range_ok(&uc, r->rbx, want)) {
+            uint8_t kbuf[UC_MAX_KBD];
+            uint32_t n = read_fs(&tty_node, 0, want, kbuf);
+            if (n > 0) copy_to_user(&uc, r->rbx, kbuf, n);
+            ret_val = n;
+        }
     }
 
     else if (syscall_num == 4) { // sys_yield
@@ -127,10 +147,12 @@ void syscall_handler(registers_t *r) {
         kfs_list_files();
     }
     else if (syscall_num == 7) { // sys_fs_read
-        kfs_read_file((char*)r->rbx);
+        char kf[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) kfs_read_file(kf);
     }
     else if (syscall_num == 8) { // sys_fs_delete
-        kfs_delete_file((char*)r->rbx);
+        char kf[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) kfs_delete_file(kf);
     }
     else if (syscall_num == 9) { // sys_alloc (kmalloc)
         ret_val = (uint64_t)kmalloc((uint32_t)r->rbx);
@@ -139,13 +161,39 @@ void syscall_handler(registers_t *r) {
         kfree((void*)r->rbx);
     }
     else if (syscall_num == 11) { // sys_file_exists
-        ret_val = kfs_exists((char*)r->rbx);
+        char kf[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) {
+            ret_val = kfs_exists(kf);
+        }
     }
     else if (syscall_num == 12) { // sys_file_size
-        ret_val = kfs_get_file_size((char*)r->rbx);
+        char kf[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) {
+            ret_val = kfs_get_file_size(kf);
+        }
     }
     else if (syscall_num == 13) { // sys_read_file_to_buffer
-        ret_val = kfs_read_to_buffer((char*)r->rbx, (char*)r->rcx, (uint32_t)r->rdx);
+        // Tahap 2: baca ke bounce kernel, copy-out di luar fs_lock.
+        // Semantik lama dipertahankan: size > capacity → 0; file ada → 1.
+        char kf[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) {
+            uint32_t cap   = (uint32_t)r->rdx;
+            uint32_t fsize = kfs_get_file_size(kf);
+            if (fsize == 0) {
+                // File kosong / tidak ada — buffer user tidak disentuh.
+                ret_val = kfs_exists(kf) ? 1 : 0;
+            } else if (fsize <= cap && fsize <= UC_MAX_FILE &&
+                       user_range_ok(&uc, r->rcx, fsize)) {
+                char* bounce = (char*)kmalloc(fsize);
+                if (bounce) {
+                    if (kfs_read_to_buffer(kf, bounce, fsize) &&
+                        copy_to_user(&uc, r->rcx, bounce, fsize) == 0) {
+                        ret_val = 1;
+                    }
+                    kfree(bounce);
+                }
+            }
+        }
     }
     else if (syscall_num == 14) { // sys_uptime → returns ms sejak boot (hardware-agnostic)
         ret_val = timer_get_ms();
@@ -158,17 +206,37 @@ void syscall_handler(registers_t *r) {
         ret_val = pmm_get_used_ram();
     }
     else if (syscall_num == 17) { // get_cpu_string
-        get_cpu_string((char*)r->rbx);
+        // get_cpu_string menulis tepat 49 byte (48 brand CPUID + NUL).
+        char kcpu[64];
+        get_cpu_string(kcpu);
+        copy_to_user(&uc, r->rbx, kcpu, 49);
     }
     else if (syscall_num == 18) { // sys_create_file
-        ret_val = kfs_create_file((char*)r->rbx, (char*)r->rcx, (uint32_t)r->rdx);
+        char kf[UC_MAX_FNAME];
+        uint32_t size = (uint32_t)r->rdx;
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0 && size <= UC_MAX_FILE) {
+            if (size == 0) {
+                char empty = '\0';
+                ret_val = kfs_create_file(kf, &empty, 0);
+            } else {
+                char* bounce = (char*)kmalloc(size);
+                if (bounce) {
+                    if (copy_from_user(&uc, bounce, r->rcx, size) == 0) {
+                        ret_val = kfs_create_file(kf, bounce, size);
+                    }
+                    kfree(bounce);
+                }
+            }
+        }
     }
     else if (syscall_num == 19) { // krealloc
         ret_val = (uint64_t)krealloc((void*)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
     }
     else if (syscall_num == 20) { // sys_get_time
         extern void rtc_read_time(uint32_t*);
-        rtc_read_time((uint32_t*)r->rbx);
+        uint32_t ktime[6];   // [year, month, day, hour, min, sec]
+        rtc_read_time(ktime);
+        copy_to_user(&uc, r->rbx, ktime, sizeof(ktime));
     }
     else if (syscall_num == 21) {
         // Reserved/Unused
@@ -178,12 +246,46 @@ void syscall_handler(registers_t *r) {
         screen_mark_dirty((int32_t)r->rbx, (int32_t)r->rcx, 1, 1);
     }
     else if (syscall_num == 23) { // sys_draw_image
-        draw_image((int)r->rbx, (int)r->rcx, (int)r->rdx, (int)r->rsi, (uint32_t*)r->rdi);
+        // PENGECUALIAN TERDOKUMENTASI #2 (Tahap 2): buffer pixel bisa besar
+        // (sampai 64MB) — tidak di-copy; range divalidasi lalu dibaca
+        // langsung. Aman: hanya caller yang bisa unmap AS-nya sendiri.
+        int w = (int)r->rdx, h = (int)r->rsi;
+        if (w > 0 && h > 0 && w <= 4096 && h <= 4096) {
+            uint64_t bytes = (uint64_t)w * (uint64_t)h * 4ULL;
+            if (user_range_ok(&uc, r->rdi, bytes)) {
+                draw_image((int)r->rbx, (int)r->rcx, w, h, (uint32_t*)r->rdi);
+            }
+        }
     }
     else if (syscall_num == 24) { // sys_get_file_list
-        ret_val = kfs_get_file_list((void*)r->rbx, (int)r->rcx);
+        // Tahap 2: tulis ke bounce kernel, copy-out setelah fs_lock lepas.
+        int maxn = (int)r->rcx;
+        if (maxn > (int)UC_MAX_ENTRIES) maxn = (int)UC_MAX_ENTRIES;
+        uint64_t bytes = (uint64_t)maxn * sizeof(file_info_t);
+        if (maxn > 0 && user_range_ok(&uc, r->rbx, bytes)) {
+            file_info_t* bounce = (file_info_t*)kmalloc((uint32_t)bytes);
+            if (bounce) {
+                int count = kfs_get_file_list(bounce, maxn);
+                if (count > 0 &&
+                    copy_to_user(&uc, r->rbx, bounce,
+                                 (uint64_t)count * sizeof(file_info_t)) != 0) {
+                    count = 0;
+                }
+                ret_val = (uint64_t)count;
+                kfree(bounce);
+            }
+        }
     }
     else if (syscall_num == 25) { // sys_load_elf
+        // FIX Tahap 2 (UAF): copy filename SEBELUM AS lama dihancurkan dan
+        // CR3 pindah ke AS baru — sebelumnya string user di-deref SETELAH
+        // switch, membaca alamat dari AS yang sudah tidak ada.
+        char kfname[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kfname, r->rbx, sizeof(kfname)) < 0) {
+            r->rax = 0;
+            return;
+        }
+
         // Flush KEDUA buffer sebelum app baru jalan
         extern void flush_event_queue(void);
         extern void flush_kbd_buffer(void);
@@ -220,7 +322,7 @@ void syscall_handler(registers_t *r) {
 
         uint64_t new_stack_top = 0;
         void*    new_stack_base = NULL;
-        ret_val = elf_load_file((char*)r->rbx, &new_stack_top, &new_stack_base,
+        ret_val = elf_load_file(kfname, &new_stack_top, &new_stack_base,
                                 new_pml4);
         {
             task_t *self2 = syscall_current_task();
@@ -234,7 +336,11 @@ void syscall_handler(registers_t *r) {
     }
 
     else if (syscall_num == 26) { // sys_draw_string
-        draw_string((const char*)r->rbx, (int)r->rcx, (int)r->rdx, (uint32_t)r->rsi);
+        // Tahap 2: bukan bagian pengecualian canvas — string kecil, di-copy.
+        char kstr[UC_MAX_STR];
+        if (strncpy_from_user(&uc, kstr, r->rbx, sizeof(kstr)) >= 0) {
+            draw_string(kstr, (int)r->rcx, (int)r->rdx, (uint32_t)r->rsi);
+        }
     }
     // --- SYSCALL: MULTI-USER IDENTITY ---
     else if (syscall_num == 27) { // sys_set_uid
@@ -245,12 +351,19 @@ void syscall_handler(registers_t *r) {
     }
     // --- SYSCALL: EVENT QUEUE UNTUK GUI ---
     else if (syscall_num == 29) { // sys_get_event
-        kyuzen_event_t* out_event = (kyuzen_event_t*)r->rbx;
+        // Tahap 2: validasi out-pointer SEBELUM event dikonsumsi (event tidak
+        // hilang sia-sia); pop ke buffer kernel, copy-out DI LUAR event_lock.
+        if (!user_range_ok(&uc, r->rbx, sizeof(kyuzen_event_t))) {
+            r->rax = 0;
+            return;
+        }
+        kyuzen_event_t kev;
 
         // 1. Prioritaskan Event Queue asli (Keyboard IRQ + Mouse IRQ via push_event)
         //    Semua keystroke dan klik mouse sudah dimasukkan ke queue oleh ISR.
         extern int pop_event(kyuzen_event_t* out);
-        if (pop_event(out_event)) {
+        if (pop_event(&kev)) {
+            copy_to_user(&uc, r->rbx, &kev, sizeof(kev));
             r->rax = 1;
             return; // Event berhasil diambil dari queue — langsung return
         }
@@ -261,20 +374,20 @@ void syscall_handler(registers_t *r) {
         extern uint8_t mouse_left_clicked;
 
         if (mouse_left_clicked) {
-            out_event->type   = EVENT_MOUSE_CLICK;
-            out_event->param1 = 0;         // 0 = tombol kiri
-            out_event->param2 = 1;         // 1 = ditekan
-            out_event->param3 = mouse_x;   // koordinat X saat klik
+            kev.type   = EVENT_MOUSE_CLICK;
+            kev.param1 = 0;         // 0 = tombol kiri
+            kev.param2 = 1;         // 1 = ditekan
+            kev.param3 = mouse_x;   // koordinat X saat klik
             mouse_left_clicked = 0;
-            r->rax = 1;
         } else {
             // Selalu kirim posisi mouse agar app bisa track hover
-            out_event->type   = EVENT_MOUSE_MOVE;
-            out_event->param1 = mouse_x;
-            out_event->param2 = mouse_y;
-            out_event->param3 = 0;
-            r->rax = 1;
+            kev.type   = EVENT_MOUSE_MOVE;
+            kev.param1 = mouse_x;
+            kev.param2 = mouse_y;
+            kev.param3 = 0;
         }
+        copy_to_user(&uc, r->rbx, &kev, sizeof(kev));
+        r->rax = 1;
         return;
     }
 
@@ -284,8 +397,15 @@ void syscall_handler(registers_t *r) {
         ret_val = kwm_create_window((int)r->rbx, (int)r->rcx, (uint32_t)r->rdx, (uint32_t)r->rsi);
     }
     else if (syscall_num == 31) { // sys_kwm_update_window
+        // PENGECUALIAN TERDOKUMENTASI #1 (FIX_004 + Tahap 2): canvas sampai
+        // 16MB/frame — copy per frame mahal, tetap SHARED. Tapi: range source
+        // divalidasi di sini, dan owner divalidasi di kwm_update_window.
         extern void kwm_update_window(int, uint32_t*);
-        kwm_update_window((int)r->rbx, (uint32_t*)r->rcx);
+        extern uint64_t kwm_window_canvas_bytes(int);
+        uint64_t cbytes = kwm_window_canvas_bytes((int)r->rbx);
+        if (cbytes > 0 && user_range_ok(&uc, r->rcx, cbytes)) {
+            kwm_update_window((int)r->rbx, (uint32_t*)r->rcx);
+        }
     }
     else if (syscall_num == 32) { // sys_kwm_destroy_window
         extern void kwm_destroy_window(int);
@@ -298,16 +418,26 @@ void syscall_handler(registers_t *r) {
     }
     else if (syscall_num == 33) { // sys_exec — load & jalankan ELF baru, replace current app
         // PENTING: copy filename ke kernel stack DULU sebelum unmap!
-        char kfname[64];
-        {
-            char* ufname = (char*)r->rbx;
-            int fi = 0;
-            while (fi < 63 && ufname[fi] != '\0') {
-                kfname[fi] = ufname[fi];
-                fi++;
-            }
-            kfname[fi] = '\0';
+        // Tahap 2: lewat strncpy_from_user (tervalidasi); gagal → keluar
+        // SEBELUM window/AS caller disentuh.
+        char kfname[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kfname, r->rbx, sizeof(kfname)) < 0) {
+            r->rax = 0;
+            return;
         }
+#ifdef HEAP_WATCH_DEBUG
+        {
+            extern void serial_print(const char* s);
+            extern void serial_print_hex(uint64_t v);
+            serial_print("[EXEC] kfname=[");
+            serial_print(kfname);
+            serial_print("] rbx=");
+            serial_print_hex(r->rbx);
+            serial_print(" cs=");
+            serial_print_hex(r->cs);
+            serial_print("\n");
+        }
+#endif
 
         // 0. Destroy KWM windows milik TASK INI saja (FIX_004) — compositor
         //    tetap aman tanpa menghancurkan window milik task lain.
@@ -469,15 +599,25 @@ void syscall_handler(registers_t *r) {
     }
     else if (syscall_num == 40) { // sys_get_window_pos
         // rbx = win_id, rcx = int32_t* out_x, rdx = int32_t* out_y
+        // Tahap 2: tulis ke lokal kernel, copy-out di luar kwm_lock.
+        // Tiap pointer divalidasi sendiri-sendiri (NULL di-skip, spt dulu).
         extern void kwm_get_window_pos(int, int32_t*, int32_t*);
-        kwm_get_window_pos((int)r->rbx, (int32_t*)r->rcx, (int32_t*)r->rdx);
+        int32_t kx = 0, ky = 0;
+        kwm_get_window_pos((int)r->rbx, &kx, &ky);
+        copy_to_user(&uc, r->rcx, &kx, sizeof(kx));
+        copy_to_user(&uc, r->rdx, &ky, sizeof(ky));
     }
     else if (syscall_num == 41) { // sys_ping
         // RBX = const char* host (user-space pointer ke string hostname/IP)
         // Return: RTT dalam ms (>=0) jika berhasil, -1 jika timeout/error
+        // Tahap 2: copy-in dulu — string lama dipakai lintas preemption
+        // berdetik-detik oleh kernel_ping (TOCTOU tertutup).
         extern int kernel_ping(const char *host);
-        const char *host = (const char *)r->rbx;
-        int rtt = kernel_ping(host);
+        char khost[UC_MAX_HOST];
+        int rtt = -1;
+        if (strncpy_from_user(&uc, khost, r->rbx, sizeof(khost)) > 0) {
+            rtt = kernel_ping(khost);
+        }
         ret_val = (uint64_t)(int64_t)rtt; // sign-extend -1 dengan benar
     }
     else if (syscall_num == 42) { // sys_get_cr3 — return current CR3 physical address
@@ -508,13 +648,48 @@ void syscall_handler(registers_t *r) {
         task_sleep_ms((uint32_t)r->rbx);
     }
     else if (syscall_num == 47) { // sys_open(path, flags) -> fd
-        ret_val = (uint64_t)(int64_t)vfs_open((const char*)r->rbx, (uint32_t)r->rcx);
+        char kpath[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kpath, r->rbx, sizeof(kpath)) > 0) {
+            ret_val = (uint64_t)(int64_t)vfs_open(kpath, (uint32_t)r->rcx);
+        } else {
+            ret_val = (uint64_t)(int64_t)-1;
+        }
     }
     else if (syscall_num == 48) { // sys_read(fd, buf, count) -> bytes
-        ret_val = (uint64_t)(int64_t)vfs_read((int)r->rbx, (void*)r->rcx, (uint32_t)r->rdx);
+        // Tahap 2: baca ke bounce kernel, copy-out di luar vfs_lock.
+        uint32_t count = (uint32_t)r->rdx;
+        if (count > UC_MAX_IO) count = UC_MAX_IO;
+        int n = -1;
+        if (count == 0) {
+            uint8_t dummy;
+            n = vfs_read((int)r->rbx, &dummy, 0);   // pertahankan validasi fd
+        } else if (user_range_ok(&uc, r->rcx, count)) {
+            uint8_t* bounce = (uint8_t*)kmalloc(count);
+            if (bounce) {
+                n = vfs_read((int)r->rbx, bounce, count);
+                if (n > 0) copy_to_user(&uc, r->rcx, bounce, (uint32_t)n);
+                kfree(bounce);
+            }
+        }
+        ret_val = (uint64_t)(int64_t)n;
     }
     else if (syscall_num == 49) { // sys_write(fd, buf, count) -> bytes
-        ret_val = (uint64_t)(int64_t)vfs_write((int)r->rbx, (const void*)r->rcx, (uint32_t)r->rdx);
+        // Tahap 2: copy-in ke bounce kernel; count > UC_MAX_IO ditolak
+        // eksplisit (dulu count liar = OOB read + alokasi tak berbatas).
+        uint32_t count = (uint32_t)r->rdx;
+        int n = -1;
+        if (count == 0) {
+            uint8_t dummy = 0;
+            n = vfs_write((int)r->rbx, &dummy, 0);
+        } else if (count <= UC_MAX_IO && user_range_ok(&uc, r->rcx, count)) {
+            uint8_t* bounce = (uint8_t*)kmalloc(count);
+            if (bounce) {
+                copy_from_user(&uc, bounce, r->rcx, count); // range sudah valid
+                n = vfs_write((int)r->rbx, bounce, count);
+                kfree(bounce);
+            }
+        }
+        ret_val = (uint64_t)(int64_t)n;
     }
     else if (syscall_num == 50) { // sys_lseek(fd, offset, whence) -> pos
         ret_val = (uint64_t)(int64_t)vfs_lseek((int)r->rbx, (int32_t)r->rcx, (int)r->rdx);
@@ -529,10 +704,41 @@ void syscall_handler(registers_t *r) {
         ret_val = (uint64_t)(int64_t)ksock_connect((int)r->rbx, (uint32_t)r->rcx, (uint16_t)r->rdx);
     }
     else if (syscall_num == 54) { // sys_sock_send(sockfd, buf, len)
-        ret_val = (uint64_t)(int64_t)ksock_send((int)r->rbx, (const void*)r->rcx, (uint32_t)r->rdx);
+        // Tahap 2: copy-in ke bounce — buffer lama dibaca berulang lintas
+        // preemption sampai 5 detik oleh ksock_send (TOCTOU tertutup).
+        uint32_t len = (uint32_t)r->rdx;
+        int n = -1;
+        if (len == 0) {
+            n = ksock_send((int)r->rbx, NULL, 0);   // semantik lama: 0
+        } else if (len <= UC_MAX_SOCK && user_range_ok(&uc, r->rcx, len)) {
+            uint8_t* bounce = (uint8_t*)kmalloc(len);
+            if (bounce) {
+                copy_from_user(&uc, bounce, r->rcx, len); // range sudah valid
+                n = ksock_send((int)r->rbx, bounce, len);
+                kfree(bounce);
+            }
+        }
+        ret_val = (uint64_t)(int64_t)n;
     }
     else if (syscall_num == 55) { // sys_sock_recv(sockfd, buf, len)
-        ret_val = (uint64_t)(int64_t)ksock_recv((int)r->rbx, (void*)r->rcx, (uint32_t)r->rdx);
+        // Tahap 2: validasi out-range SEBELUM data ring dikonsumsi; terima
+        // ke bounce kernel, copy-out di luar net_lock.
+        uint32_t len = (uint32_t)r->rdx;
+        int n = -1;
+        if (len == 0) {
+            n = ksock_recv((int)r->rbx, NULL, 0);   // semantik lama: 0
+        } else {
+            if (len > UC_MAX_SOCK) len = UC_MAX_SOCK;  // recv partial itu sah
+            if (user_range_ok(&uc, r->rcx, len)) {
+                uint8_t* bounce = (uint8_t*)kmalloc(len);
+                if (bounce) {
+                    n = ksock_recv((int)r->rbx, bounce, len);
+                    if (n > 0) copy_to_user(&uc, r->rcx, bounce, (uint32_t)n);
+                    kfree(bounce);
+                }
+            }
+        }
+        ret_val = (uint64_t)(int64_t)n;
     }
     else if (syscall_num == 56) { // sys_sock_close(sockfd)
         ret_val = (uint64_t)(int64_t)ksock_close((int)r->rbx);
