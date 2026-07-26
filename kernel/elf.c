@@ -19,10 +19,9 @@ extern void kprint_num(uint32_t num);
 //   2. Di Program Header, p_flags ada SEBELUM p_offset (bukan setelah!)
 // Menggunakan struct ELF32 untuk ELF64 → semua field offset salah → crash!
 // =======================================================================
-uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base,
+uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                        phys_addr_t target_pml4) {
     if (out_stack_top)  *out_stack_top  = 0;
-    if (out_stack_base) *out_stack_base = 0;
     uint32_t file_size = kfs_get_file_size(filename);
     if (file_size == 0) {
         kprint("[ELF] Error: File kosong atau tidak ditemukan!\n");
@@ -91,14 +90,29 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack
 
         // Alokasi stack per-app hanya untuk caller yang meng-handle RSP switch
         // (sys_exec). Caller NULL (shell direct-launch) pakai stack pemanggil.
+        // FIX_005 Tahap 3: stack di USER RANGE AS target — kmalloc higher-half
+        // kini US=0, ring 3 yang push ke sana langsung #PF. Frame dibebaskan
+        // otomatis oleh vmm_destroy_address_space saat AS mati.
         if (out_stack_top) {
-            void* stack_mem = kmalloc(USER_STACK_SIZE);
-            if (!stack_mem) {
-                kprint("[ELF64] Error: Tidak bisa alokasi user stack!\n");
+            if (target_pml4 == PHYS_NULL) {
+                // Tanpa AS per-proses tidak ada tempat sah untuk stack ring 3.
+                kprint("[ELF64] Error: stack butuh AS per-proses!\n");
                 return 0;
             }
-            *out_stack_top = ((uint64_t)stack_mem + USER_STACK_SIZE) & ~0xFULL;
-            if (out_stack_base) *out_stack_base = stack_mem;
+            extern uint64_t hhdm_offset;
+            uint64_t stack_bottom = USER_STACK_TOP - USER_STACK_SIZE;
+            for (uint64_t page = stack_bottom; page < USER_STACK_TOP; page += 4096) {
+                phys_addr_t pa = pmm_alloc_page();
+                if (pa == PHYS_NULL ||
+                    !vmm_map_page_into(page, pa, 7, target_pml4)) {
+                    if (pa != PHYS_NULL) pmm_free_page(pa);
+                    kprint("[ELF64] Error: Tidak bisa map user stack!\n");
+                    return 0;   // halaman ter-map ikut bebas saat AS dihancurkan
+                }
+                // Zero via HHDM — frame bekas tidak boleh bocor ke ring 3.
+                memset((void*)(pa + hhdm_offset), 0, 4096);
+            }
+            *out_stack_top = USER_STACK_TOP;
         }
 
         return entry;

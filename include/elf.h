@@ -75,13 +75,17 @@ typedef struct {
 } __attribute__((packed)) elf32_phdr_t;
 
 #define USER_STACK_SIZE (256 * 1024)
+// FIX_005 Tahap 3: stack app di USER RANGE AS target (bukan kmalloc lagi) —
+// region [USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_TOP), mati bersama AS.
+#define USER_STACK_TOP  0x0C000000ULL
 
 // Returns 64-bit entry point.
-// *out_stack_top = 16-byte-aligned top of new user stack (set RSP here).
-// *out_stack_base = raw kmalloc pointer (kfree this on exit/exec).
+// *out_stack_top = top of the new user stack (set RSP here). Minta stack
+// (out_stack_top != NULL) WAJIB dengan target_pml4 != PHYS_NULL — stack
+// di-map ke user range AS target dan dibebaskan bersama AS itu.
 // target_pml4 = address space tujuan mapping user page (FIX_002 — eksplisit);
-//               PHYS_NULL = kernel PML4 (fallback).
-uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base,
+//               PHYS_NULL = kernel PML4 (fallback direct-launch tanpa stack).
+uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                        phys_addr_t target_pml4);
 
 #endif

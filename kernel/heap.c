@@ -136,7 +136,9 @@ static heap_block_t* expand_heap(size_t required_size) {
     uint64_t start_expansion_addr = current_heap_end;
 
     for (uint64_t i = 0; i < pages_needed; i++) {
-        if (!vmm_alloc_page_kernel(current_heap_end, 7)) {
+        // FIX_005 Tahap 3: US=0 (flags 3, dulu 7) — heap kernel tidak lagi
+        // terlihat ring 3; app yang menyentuh 0xFFFF9000... langsung #PF.
+        if (!vmm_alloc_page_kernel(current_heap_end, 3)) {
             return NULL; // RAM fisik habis
         }
         current_heap_end += 4096;

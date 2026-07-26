@@ -74,6 +74,11 @@ int  vmm_alloc_page_into(uint64_t vaddr, uint64_t flags, phys_addr_t target_pml4
 // pml4_phys == PHYS_NULL → kernel PML4.
 int  paging_is_mapped_into(uint64_t vaddr, phys_addr_t pml4_phys);
 
+// Unmap vaddr from a SPECIFIC PML4. Returns the physical address of the
+// unmapped page so the caller can free it (PHYS_NULL if not mapped).
+// FIX_005 Tahap 3: dipakai uheap untuk sys_free region user.
+phys_addr_t vmm_unmap_page_from(uint64_t vaddr, phys_addr_t target_pml4_phys);
+
 // --- TLB MANAGEMENT ---
 
 // Invalidate TLB for a single virtual address (current CPU)

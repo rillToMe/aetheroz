@@ -310,6 +310,57 @@ int vmm_unmap_page(uint64_t vaddr) {
 }
 
 // ============================================================
+// vmm_unmap_page_from — Unmap vaddr from a SPECIFIC PML4
+//
+// FIX_005 Tahap 3: dipakai uheap untuk melepas region user dari AS
+// task tanpa menghancurkan seluruh AS. Mengembalikan physical address
+// halaman yang di-unmap (PHYS_NULL jika tidak mapped / huge page)
+// supaya caller bisa mengembalikan frame ke PMM.
+//
+// target_pml4_phys == PHYS_NULL → kernel PML4 (current_pml4).
+// invlpg hanya CPU ini — batasan yang sama dengan vmm_tlb_shootdown.
+// ============================================================
+phys_addr_t vmm_unmap_page_from(uint64_t vaddr, phys_addr_t target_pml4_phys) {
+    uint64_t* pml4 = (target_pml4_phys != PHYS_NULL)
+                   ? (uint64_t*)PHYS_TO_VIRT(target_pml4_phys)
+                   : current_pml4;
+    if (!pml4) return PHYS_NULL;
+
+    uint64_t irq = spinlock_lock_irqsave(&paging_lock);
+
+    if (!(pml4[PML4_IDX(vaddr)] & 1)) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return PHYS_NULL;
+    }
+    uint64_t* pdpt = (uint64_t*)PHYS_TO_VIRT(pml4[PML4_IDX(vaddr)] & PAGE_MASK);
+
+    if (!(pdpt[PDPT_IDX(vaddr)] & 1) || (pdpt[PDPT_IDX(vaddr)] & (1ULL << 7))) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return PHYS_NULL;
+    }
+    uint64_t* pd = (uint64_t*)PHYS_TO_VIRT(pdpt[PDPT_IDX(vaddr)] & PAGE_MASK);
+
+    if (!(pd[PD_IDX(vaddr)] & 1) || (pd[PD_IDX(vaddr)] & (1ULL << 7))) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return PHYS_NULL;
+    }
+    uint64_t* pt = (uint64_t*)PHYS_TO_VIRT(pd[PD_IDX(vaddr)] & PAGE_MASK);
+
+    if (!(pt[PT_IDX(vaddr)] & 1)) {
+        spinlock_unlock_irqrestore(&paging_lock, irq);
+        return PHYS_NULL;
+    }
+
+    phys_addr_t page_phys = (phys_addr_t)(pt[PT_IDX(vaddr)] & PAGE_MASK);
+    pt[PT_IDX(vaddr)] = 0;
+
+    spinlock_unlock_irqrestore(&paging_lock, irq);
+
+    vmm_tlb_shootdown(vaddr);
+    return page_phys;
+}
+
+// ============================================================
 // vmm_alloc_page_into — Allocate physical page + map into a SPECIFIC PML4
 //
 // target_pml4 == PHYS_NULL → map into the kernel PML4 (vmm_map_page).

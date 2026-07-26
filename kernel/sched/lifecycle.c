@@ -8,6 +8,7 @@
 // ============================================================
 
 #include "task.h"
+#include "uheap.h"
 #include "heap.h"
 #include "spinlock.h"
 #include "smp.h"
@@ -102,8 +103,8 @@ void tasking_init(void) {
         tasks[i].wake_at_ms = 0;
         tasks[i].priority = PRIO_NORMAL;
         tasks[i].enqueue_ms = 0;
-        tasks[i].user_stack_base = NULL;
-        tasks[i].deferred_user_stack_base = NULL;
+        tasks[i].uheap_brk = 0;
+        tasks[i].uheap_regions = NULL;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -226,6 +227,9 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     if (tasks[slot].stack_base != 0) {
         kfree((void*)tasks[slot].stack_base);
     }
+    // FIX_005 Tahap 3: fallback yang sama untuk metadata heap user — slot
+    // yang dimatikan di luar jalur normal tidak boleh mewariskan region list.
+    uheap_reset(&tasks[slot]);
 
     // p sekarang menunjuk ke r15, yang adalah RSP "benar" dari ISR frame ini
     tasks[slot].id         = (uint32_t)slot;
@@ -295,6 +299,12 @@ void task_exit(void) {
                 dead_pml4 = tasks[cur].pml4_phys;
                 tasks[cur].pml4_phys = PHYS_NULL;
             }
+
+            // FIX_005 Tahap 3: bebaskan metadata heap user SEBELUM slot
+            // terlihat DEAD — reaper create_task tidak akan double-free.
+            // kfree di bawah scheduler_lock = pola yang sama dengan fallback
+            // stack_base di create_task_prio.
+            uheap_reset(&tasks[cur]);
 
             tasks[cur].state = TASK_DEAD;
             tasks[cur].rsp = 0;

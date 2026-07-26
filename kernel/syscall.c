@@ -8,6 +8,7 @@
 #include "net_socket.h"
 #include "elf.h"
 #include "usercopy.h"
+#include "uheap.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -72,17 +73,8 @@ static task_t* syscall_current_task(void) {
     return &tasks[task_id];
 }
 
-static void reclaim_deferred_user_stack(task_t* self) {
-    if (self && self->deferred_user_stack_base) {
-        void* stack = self->deferred_user_stack_base;
-        self->deferred_user_stack_base = NULL;
-        kfree(stack);
-    }
-}
-
 void syscall_handler(registers_t *r) {
     task_t* syscall_task = syscall_current_task();
-    reclaim_deferred_user_stack(syscall_task);
 
     // Nomor Syscall selalu ada di RAX
     uint64_t syscall_num = r->rax;
@@ -154,11 +146,24 @@ void syscall_handler(registers_t *r) {
         char kf[UC_MAX_FNAME];
         if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) kfs_delete_file(kf);
     }
-    else if (syscall_num == 9) { // sys_alloc (kmalloc)
-        ret_val = (uint64_t)kmalloc((uint32_t)r->rbx);
+    else if (syscall_num == 9) { // sys_alloc
+        // FIX_005 Tahap 3: ring 3 → region user range milik AS caller
+        // (kernel/uheap.c) — pointer yang lewat boundary bukan lagi alamat
+        // heap kernel. Ring 0 (shell/login/zen) tetap kmalloc.
+        if (uc.from_user) {
+            ret_val = uheap_alloc(syscall_task, r->rbx);
+        } else {
+            ret_val = (uint64_t)kmalloc((uint32_t)r->rbx);
+        }
     }
-    else if (syscall_num == 10) { // sys_free (kfree)
-        kfree((void*)r->rbx);
+    else if (syscall_num == 10) { // sys_free
+        // Tahap 3: kepemilikan divalidasi — pointer asing/stale diabaikan,
+        // metadata allocator hidup di heap kernel (tak tersentuh app).
+        if (uc.from_user) {
+            uheap_free(syscall_task, r->rbx);
+        } else {
+            kfree((void*)r->rbx);
+        }
     }
     else if (syscall_num == 11) { // sys_file_exists
         char kf[UC_MAX_FNAME];
@@ -229,8 +234,14 @@ void syscall_handler(registers_t *r) {
             }
         }
     }
-    else if (syscall_num == 19) { // krealloc
-        ret_val = (uint64_t)krealloc((void*)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
+    else if (syscall_num == 19) { // sys_realloc
+        // Tahap 3 ring 3: ukuran lama dilacak kernel per region — argumen
+        // old_size (rcx) dari app tidak dipercaya lagi.
+        if (uc.from_user) {
+            ret_val = uheap_realloc(syscall_task, r->rbx, r->rdx);
+        } else {
+            ret_val = (uint64_t)krealloc((void*)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
+        }
     }
     else if (syscall_num == 20) { // sys_get_time
         extern void rtc_read_time(uint32_t*);
@@ -306,6 +317,9 @@ void syscall_handler(registers_t *r) {
             }
 
             if (self) {
+                // Tahap 3: region heap user mati bersama AS lama — buang
+                // metadata + mulai brk segar untuk AS baru.
+                uheap_reset(self);
                 self->pml4_phys = new_pml4;
                 self->cookie = as_cookie_next();
             }
@@ -320,19 +334,10 @@ void syscall_handler(registers_t *r) {
             vmm_switch_pml4(new_pml4);
         }
 
+        // Tahap 3: stack ter-map di user range AS baru — bebas bersama AS,
+        // tidak ada lagi tracking kfree.
         uint64_t new_stack_top = 0;
-        void*    new_stack_base = NULL;
-        ret_val = elf_load_file(kfname, &new_stack_top, &new_stack_base,
-                                new_pml4);
-        {
-            task_t *self2 = syscall_current_task();
-            if (self2 && new_stack_base) {
-                if (self2->user_stack_base) {
-                    self2->deferred_user_stack_base = self2->user_stack_base;
-                }
-                self2->user_stack_base = new_stack_base;
-            }
-        }
+        ret_val = elf_load_file(kfname, &new_stack_top, new_pml4);
     }
 
     else if (syscall_num == 26) { // sys_draw_string
@@ -448,15 +453,13 @@ void syscall_handler(registers_t *r) {
         {
             task_t *self = syscall_current_task();
 
-            if (self && self->user_stack_base) {
-                self->deferred_user_stack_base = self->user_stack_base;
-                self->user_stack_base = NULL;
-            }
-
             if (self && self->pml4_phys != 0) {
                 vmm_destroy_task_as(self->pml4_phys);
                 self->pml4_phys = 0;
             }
+            // Tahap 3: stack & heap user hidup di AS — frame ikut bebas di
+            // vmm_destroy_task_as; sisa metadata heap user dibuang di sini.
+            uheap_reset(self);
             // pml4_phys == 0: task memakai boot/kernel AS. User range PML4 boot
             // milik Limine — membebaskannya mencemari free list PMM dengan
             // halaman reserved/ROM <72MB (akar BOSD heap corruption).
@@ -490,19 +493,9 @@ void syscall_handler(registers_t *r) {
         }
 
         // 3. Load ELF baru ke slot 0x4000000 — target PML4 eksplisit (FIX_002)
+        // Tahap 3: stack di user range AS baru, dibebaskan bersama AS.
         uint64_t new_stack_top = 0;
-        void*    new_stack_base = NULL;
-        uint64_t entry = elf_load_file(kfname, &new_stack_top, &new_stack_base,
-                                       new_pml4);
-
-        // Store new stack base for cleanup on next exec/exit
-        {
-            task_t *self2 = syscall_current_task();
-            if (self2 && new_stack_base) {
-                self2->user_stack_base = new_stack_base;
-            }
-        }
-
+        uint64_t entry = elf_load_file(kfname, &new_stack_top, new_pml4);
 
         // 3. Set RIP & RSP untuk IRETQ
         extern uint64_t g_shell_return_rsp;
@@ -543,10 +536,9 @@ void syscall_handler(registers_t *r) {
         {
             task_t *self = syscall_current_task();
 
-            if (self && self->user_stack_base) {
-                self->deferred_user_stack_base = self->user_stack_base;
-                self->user_stack_base = NULL;
-            }
+            // Tahap 3: buang metadata heap user — frame region & stack app
+            // ikut bebas saat AS dihancurkan di bawah.
+            uheap_reset(self);
 
             if (self && self->pml4_phys != 0) {
                 vmm_destroy_task_as(self->pml4_phys);

@@ -119,13 +119,13 @@ uint32_t sys_get_uid(void)         { return (uint32_t)current_uid; }
 // --- ELF Loader ---
 uint64_t sys_load_elf(char* filename) {
     extern uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
-                                  void** out_stack_base, phys_addr_t target_pml4);
+                                  phys_addr_t target_pml4);
     extern void flush_event_queue(void);
     extern void flush_kbd_buffer(void);
     flush_event_queue();
     flush_kbd_buffer();
     // Direct-launch dari kernel: tidak ada per-process AS — map ke kernel PML4.
-    return elf_load_file(filename, NULL, NULL, PHYS_NULL);
+    return elf_load_file(filename, NULL, PHYS_NULL);
 }
 
 // FIX_005 Tahap 1: launch app lewat syscall 33 — AS per-proses + iretq ke

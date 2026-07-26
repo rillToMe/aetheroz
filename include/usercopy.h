@@ -2,16 +2,19 @@
 #define USERCOPY_H
 
 // FIX_005 Tahap 2 — boundary copy: syscall tidak lagi men-deref pointer user
-// mentah. Pointer dari ring 3 divalidasi (mapped di AS caller) lalu di-copy
-// in/out lewat helper modul ini.
+// mentah. Pointer dari ring 3 divalidasi lalu di-copy in/out lewat helper
+// modul ini.
 //
-// TRANSISIONAL: stack app & hasil sys_alloc masih heap kernel (higher-half),
-// jadi predikat memeriksa "mapped di AS caller", BELUM "user range saja".
-// Tahap 3 memperketat user_range_ok (cukup fungsi itu saja) ke PML4 idx < 256.
+// Tahap 3: predikat FINAL — pointer ring 3 wajib di USER RANGE (PML4 idx
+// < 256, alamat < UC_USER_VA_MAX) DAN mapped di AS caller. Stack app &
+// hasil sys_alloc kini di user range (elf.c / uheap.c), higher-half US=0.
 
 #include <stdint.h>
 #include "pmm.h"
 #include "task.h"
+
+// Batas atas user range (awal non-canonical hole = akhir PML4 idx 255).
+#define UC_USER_VA_MAX 0x0000800000000000ULL
 
 // --- Batas ukuran per kelas argumen (satu tempat, dipakai syscall.c) ---
 #define UC_MAX_STR     1024u                    // string umum (print, draw_string)
