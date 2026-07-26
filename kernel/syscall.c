@@ -56,10 +56,14 @@ int current_uid = 0; // Definisi global — UID proses yang sedang berjalan
 // (Dipanggil oleh isr128_stub saat aplikasi melempar int 0x80)
 // ========================================================
 // Per-address-space cookie generator: increments for each new AS.
+// FIX_003: increment atomik (SMP) — dua exec bersamaan tidak boleh
+// mendapat nomor cookie yang sama. Identitas cookie itu sendiri disimpan
+// PER-TASK (task_t.cookie), bukan di global.
 static uint32_t as_cookie_counter = 0;
-// Current address space cookie (readable by apps via sys_get_pid).
-// Updated by sys_load_elf when creating a new AS.
-static uint32_t current_as_cookie = 0;
+
+static inline uint32_t as_cookie_next(void) {
+    return __sync_fetch_and_add(&as_cookie_counter, 1) + 1;
+}
 
 static task_t* syscall_current_task(void) {
     int task_id = smp_current_task_id();
@@ -198,8 +202,7 @@ void syscall_handler(registers_t *r) {
 
             if (self) {
                 self->pml4_phys = new_pml4;
-                self->cookie = ++as_cookie_counter;
-                current_as_cookie = self->cookie;
+                self->cookie = as_cookie_next();
             }
 
             // Switch CR3 to the user PML4 BEFORE loading. elf_load_file copies
@@ -335,7 +338,10 @@ void syscall_handler(registers_t *r) {
             new_pml4 = vmm_create_address_space();
             if (new_pml4 != PHYS_NULL) {
                 task_t *self = syscall_current_task();
-                if (self) self->pml4_phys = new_pml4;
+                if (self) {
+                    self->pml4_phys = new_pml4;
+                    self->cookie = as_cookie_next();
+                }
 
                 // Switch CR3 to the user PML4 BEFORE loading — elf_load_file
                 // copies segment bytes to user virtual addresses via memcpy,
@@ -465,8 +471,11 @@ void syscall_handler(registers_t *r) {
         ret_val = (uint64_t)paging_is_mapped_into((uint64_t)r->rbx, as);
     }
     else if (syscall_num == 45) { // sys_get_pid — return per-AS cookie
-        // Returns the unique cookie of the current address space.
-        ret_val = (uint64_t)current_as_cookie;
+        // FIX_003: cookie dibaca dari TASK pemanggil, bukan global —
+        // global current_as_cookie menampung cookie task yang TERAKHIR
+        // exec di CPU mana pun (tertukar di SMP).
+        task_t *self = syscall_current_task();
+        ret_val = (uint64_t)(self ? self->cookie : 0);
     }
     else if (syscall_num == 46) { // sys_sleep — non-busy sleep RBX ms
         // Task masuk sleep queue (TASK_SLEEPING); CPU bebas jalankan task lain.
