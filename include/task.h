@@ -93,6 +93,15 @@ void task_exit(void) __attribute__((noreturn));
 void scheduler_dump(void);
 void scheduler_idle_loop(void) __attribute__((noreturn));
 
+// FIX_001: idle stack permanen per-CPU (dialokasikan di tasking_init, tidak
+// pernah di-free). task_exit() pindah ke idle stack SEBELUM stack task DEAD
+// di-kfree — menutup race UAF stack antara task_exit dan slot reaper di
+// create_task. smp_ap_main juga memakainya untuk meninggalkan stack Limine.
+uint64_t task_idle_stack_top(uint32_t cpu_id);
+void task_switch_to_idle_stack(uint64_t stack_top) __attribute__((noreturn));
+void task_exit_via_idle(uint64_t stack_top, void* old_stack_base) __attribute__((noreturn));
+void task_exit_finish_on_idle(void* old_stack_base) __attribute__((noreturn));
+
 // Preemptive scheduler — dipanggil dari timer interrupt
 registers_t* schedule(registers_t* current_regs);
 registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs);

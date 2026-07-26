@@ -172,6 +172,25 @@ static int steal_task(uint32_t self_cpu) {
 extern void kprint(const char* str);
 extern void kprint_num(uint64_t num);
 extern uint64_t hhdm_offset;
+extern void kernel_panic(const char* title, const char* desc, uint64_t code);
+
+// FIX_001: idle stack permanen per-CPU — dialokasikan sekali di tasking_init,
+// tidak pernah di-free. Lihat task.h untuk kontraknya.
+static uint64_t idle_stack_tops[SMP_MAX_CPUS];
+
+uint64_t task_idle_stack_top(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) cpu_id = 0;
+    return idle_stack_tops[cpu_id];
+}
+
+// Dipanggil dari task_exit_via_idle (asm) SETELAH RSP pindah ke idle stack.
+// Baru di sinilah stack task DEAD boleh di-free.
+void task_exit_finish_on_idle(void* old_stack_base) {
+    if (old_stack_base != NULL) {
+        kfree(old_stack_base);
+    }
+    scheduler_idle_loop();
+}
 
 // String copy helper (tidak bisa include string.h di kernel)
 static void task_strncpy(char* dst, const char* src, int n) {
@@ -220,6 +239,17 @@ void tasking_init(void) {
         run_queue_t *rq = &cpu_runqueues[i];
         rq->lock.locked = 0;
         rq->count = 0;
+    }
+
+    // FIX_001: idle stack permanen per-CPU. task_exit() pindah ke stack ini
+    // sebelum meng-kfree stack task DEAD — menutup race UAF antara CPU yang
+    // masih idling di stack lama dan slot reaper di create_task (CPU lain).
+    for (uint32_t i = 0; i < SMP_MAX_CPUS; i++) {
+        void* s = kmalloc(TASK_STACK_SIZE);
+        if (!s) {
+            kernel_panic("TASK INIT", "OOM alokasi per-CPU idle stack", i);
+        }
+        idle_stack_tops[i] = ((uint64_t)s + TASK_STACK_SIZE) & ~15ULL;
     }
 
     // Task 0 = kernel main thread yang sedang berjalan
@@ -329,6 +359,9 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
         return;
     }
 
+    // Fallback saja: task_exit (FIX_001) sudah me-zero-kan stack_base sebelum
+    // slot DEAD terlihat, jadi cabang ini hanya menyentuh task yang dimatikan
+    // di luar jalur task_exit normal.
     if (tasks[slot].stack_base != 0) {
         kfree((void*)tasks[slot].stack_base);
     }
@@ -462,26 +495,27 @@ void task_exit(void) {
     // scheduler_lock: vfs has its own lock and must not nest under it.
     vfs_close_all(smp_current_task_id());
 
+    void*       old_stack = NULL;
+    phys_addr_t dead_pml4 = PHYS_NULL;
+
     uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
 
     if (cpu_id < SMP_MAX_CPUS) {
         int cur = cpu_current_task[cpu_id];
         if (cur > 0 && cur < task_count) {
+            // FIX_001: pindahkan ownership stack task ke register LOKAL.
+            // Setelah stack_base di-zero-kan, slot reaper di create_task
+            // (CPU lain) tidak akan pernah menyentuh stack ini — ia hanya
+            // di-free oleh CPU ini, SETELAH pindah ke idle stack permanen.
+            old_stack = (void*)tasks[cur].stack_base;
+            tasks[cur].stack_base = 0;
+
             // If task has a private address space, destroy it
             if (tasks[cur].pml4_phys != PHYS_NULL) {
                 // Switch to kernel PML4 (safe — uses saved boot PML4)
                 vmm_switch_to_kernel_as();
-
-                // Must unlock before destroy (it acquires paging_lock)
-                tasks[cur].state = TASK_DEAD;
-                tasks[cur].rsp = 0;
-                phys_addr_t dead_pml4 = tasks[cur].pml4_phys;
+                dead_pml4 = tasks[cur].pml4_phys;
                 tasks[cur].pml4_phys = PHYS_NULL;
-                cpu_current_task[cpu_id] = -1;
-
-                spinlock_unlock_irqrestore(&scheduler_lock, flags);
-                vmm_destroy_address_space(dead_pml4, 1);
-                scheduler_idle_loop();
             }
 
             tasks[cur].state = TASK_DEAD;
@@ -492,7 +526,14 @@ void task_exit(void) {
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
 
-    scheduler_idle_loop();
+    // Must run outside scheduler_lock (it acquires paging_lock). Aman di
+    // stack lama: stack belum bisa di-free siapa pun (ownership di register).
+    if (dead_pml4 != PHYS_NULL) {
+        vmm_destroy_address_space(dead_pml4, 1);
+    }
+
+    // Pindah ke idle stack permanen DULU (asm), baru kfree(old_stack) di sana.
+    task_exit_via_idle(task_idle_stack_top(cpu_id), old_stack);
 }
 
 void scheduler_idle_loop(void) {

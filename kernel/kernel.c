@@ -261,7 +261,9 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     kprint(")\n");
     smp_spin_unlock(&smp_log_lock);
 
-    scheduler_idle_loop();
+    // FIX_001: tinggalkan stack awal dari Limine — idle loop berjalan di
+    // idle stack permanen per-CPU (dialokasikan di tasking_init).
+    task_switch_to_idle_stack(task_idle_stack_top(state->cpu_index));
 }
 
 static void smp_init(void) {
