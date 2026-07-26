@@ -158,6 +158,15 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     tss_set_rsp0(state->cpu_index, task_syscall_stack_top(state->cpu_index));
     tss_load_cpu(state->cpu_index);
 
+    // FIX_005 Tahap 4: CR4.SMEP/SMAP & CR0.WP bersifat per-core — AP wajib
+    // mengaktifkan miliknya sendiri (BSP sudah di kernel_main).
+    {
+        extern void cpu_enable_smap_smep(void);
+        extern int  cpu_verify_wp(void);
+        cpu_enable_smap_smep();
+        cpu_verify_wp();
+    }
+
     // Record this AP's current CR3 (inherited from BSP via Limine)
     uint64_t cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));

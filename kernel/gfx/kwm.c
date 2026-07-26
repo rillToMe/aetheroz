@@ -6,6 +6,7 @@
 #include "heap.h"
 #include "task.h"
 #include "spinlock.h"
+#include "smap.h"
 
 // --- KYUZEN WINDOW MANAGER (KWM) ---
 // FIX_004: batas dimensi/ukuran canvas — w*h*4 dari app tidak boleh wrap
@@ -109,7 +110,11 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
 
     uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height;
     uint32_t* dest = kwm_windows[win_id].canvas;
+    // FIX_005 Tahap 4: app_buffer bisa halaman user (pengecualian shared #1,
+    // dibaca langsung dengan CR3 caller) → jendela SMAP selama blit.
+    user_access_begin();
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
+    user_access_end();
     int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
     uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
     spinlock_unlock_irqrestore(&kwm_lock, flags);

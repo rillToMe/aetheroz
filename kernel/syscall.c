@@ -9,6 +9,7 @@
 #include "elf.h"
 #include "usercopy.h"
 #include "uheap.h"
+#include "smap.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -264,7 +265,11 @@ void syscall_handler(registers_t *r) {
         if (w > 0 && h > 0 && w <= 4096 && h <= 4096) {
             uint64_t bytes = (uint64_t)w * (uint64_t)h * 4ULL;
             if (user_range_ok(&uc, r->rdi, bytes)) {
+                // Tahap 4: buffer user dibaca langsung di dalam draw_image
+                // (pengecualian shared #2) → jendela SMAP selama blit.
+                if (uc.from_user) user_access_begin();
                 draw_image((int)r->rbx, (int)r->rcx, w, h, (uint32_t*)r->rdi);
+                if (uc.from_user) user_access_end();
             }
         }
     }

@@ -2,8 +2,53 @@
 // KERNEL CPU INFO — kernel/cpu.c
 // Mengimplementasikan get_cpu_string() via instruksi CPUID.
 // Dipanggil oleh syscall_handler (syscall 17) dan shell.c (fetch).
+// FIX_005 Tahap 4: cpu_enable_smap_smep() + cpu_verify_wp().
 // ============================================================
 #include <stdint.h>
+#include "smap.h"
+
+// --- FIX_005 Tahap 4: SMEP/SMAP + WP ---
+
+int g_smap_enabled = 0;
+int g_smep_enabled = 0;
+
+#define CR4_SMEP (1ULL << 20)
+#define CR4_SMAP (1ULL << 21)
+#define CR0_WP   (1ULL << 16)
+
+void cpu_enable_smap_smep(void) {
+    uint32_t eax, ebx, ecx, edx;
+
+    // Leaf 7 tersedia? (max standard leaf di leaf 0)
+    __asm__ volatile("cpuid" : "=a"(eax) : "a"(0) : "ebx", "ecx", "edx");
+    if (eax < 7) return;
+
+    // CPUID.(EAX=7,ECX=0):EBX — bit 7 = SMEP, bit 20 = SMAP
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(7), "c"(0));
+
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    if (ebx & (1u << 7))  cr4 |= CR4_SMEP;
+    if (ebx & (1u << 20)) cr4 |= CR4_SMAP;
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
+
+    // Semua CPU menulis nilai identik — race antar core tidak berbahaya.
+    g_smep_enabled = (ebx >> 7)  & 1;
+    g_smap_enabled = (ebx >> 20) & 1;
+}
+
+int cpu_verify_wp(void) {
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    if (!(cr0 & CR0_WP)) {
+        cr0 |= CR0_WP;
+        __asm__ volatile("mov %0, %%cr0" :: "r"(cr0) : "memory");
+        __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    }
+    return (cr0 & CR0_WP) ? 1 : 0;
+}
 
 void get_cpu_string(char* buffer) {
     uint32_t eax, ebx, ecx, edx;

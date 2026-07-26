@@ -131,6 +131,21 @@ void kernel_main(void) {
 
     init_paging(0); // paging.c membaca CR3 langsung, parameter tidak dipakai
     init_heap();
+
+    // FIX_005 Tahap 4: SMEP/SMAP di BSP + pastikan CR0.WP. AP mengaktifkan
+    // miliknya sendiri di smp_ap_main (CR4/CR0 per-core).
+    {
+        extern void cpu_enable_smap_smep(void);
+        extern int  cpu_verify_wp(void);
+        extern int  g_smap_enabled, g_smep_enabled;
+        cpu_enable_smap_smep();
+        int wp = cpu_verify_wp();
+        kprint("[CPU] SMEP=");  kprint(g_smep_enabled ? "on" : "off");
+        kprint(" SMAP=");       kprint(g_smap_enabled ? "on" : "off");
+        kprint(" WP=");         kprint(wp ? "on" : "off");
+        kprint("\n");
+    }
+
     pic_remap();
     lapic_init_bsp();
 

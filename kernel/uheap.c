@@ -13,6 +13,7 @@
 #include "paging.h"
 #include "pmm.h"
 #include "string.h"
+#include "smap.h"
 
 extern uint64_t hhdm_offset;
 
@@ -100,8 +101,11 @@ uint64_t uheap_realloc(task_t* t, uint64_t uaddr, uint64_t new_size) {
     if (new_base == 0) return 0;   // region lama tetap utuh
 
     // Copy via alamat user langsung — CR3 = AS caller selama syscall.
+    // Tahap 4: kedua sisi halaman user → butuh jendela SMAP.
     uint64_t copy = (n->size < new_size) ? n->size : new_size;
+    user_access_begin();
     memcpy((void*)new_base, (const void*)uaddr, copy);
+    user_access_end();
     uheap_free(t, uaddr);
     return new_base;
 }

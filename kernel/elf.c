@@ -3,6 +3,7 @@
 #include "heap.h"
 #include "string.h"
 #include "paging.h"
+#include "smap.h"
 
 extern void kprint(const char* str);
 extern void kprint_num(uint32_t num);
@@ -73,6 +74,8 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
             }
 
             // COPY: salin data segmen ke virtual address tujuan
+            // Tahap 4: halaman tujuan US=1 → tulis dalam jendela SMAP.
+            user_access_begin();
             memcpy((void*)seg_vaddr,
                    file_buffer + phdr[i].p_offset,
                    (uint32_t)phdr[i].p_filesz);
@@ -83,6 +86,7 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                        0,
                        (uint32_t)(phdr[i].p_memsz - phdr[i].p_filesz));
             }
+            user_access_end();
         }
 
         uint64_t entry = hdr->e_entry;
@@ -140,6 +144,7 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                 block += 0x400000;
             }
 
+            user_access_begin();   // Tahap 4: halaman tujuan US=1
             memcpy((void*)(uint64_t)seg_vaddr,
                    file_buffer + phdr[i].p_offset,
                    phdr[i].p_filesz);
@@ -149,6 +154,7 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                        0,
                        phdr[i].p_memsz - phdr[i].p_filesz);
             }
+            user_access_end();
         }
 
         kfree(file_buffer);
