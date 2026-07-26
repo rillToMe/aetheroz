@@ -352,42 +352,97 @@ void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height);
 
 // --- KYUZEN WINDOW MANAGER (KWM) ---
 #define MAX_WINDOWS 16
+// FIX_004: batas dimensi/ukuran canvas — w*h*4 dari app tidak boleh wrap
+// 32-bit (alokasi kecil untuk "canvas raksasa") atau menguras heap.
+#define KWM_MAX_DIMENSION    4096U
+#define KWM_MAX_CANVAS_BYTES (16U * 1024U * 1024U)
+
 typedef struct {
     uint8_t active;
     int32_t x, y;
     uint32_t width, height;
-    uint32_t* canvas; 
+    uint32_t* canvas;
     uint32_t z_index;
+    int32_t owner_task;   // FIX_004: task pemilik window (-1 = tidak ada)
 } kwm_window_t;
 
 kwm_window_t kwm_windows[MAX_WINDOWS];
 uint32_t next_z_index = 1;
 static spinlock_t kwm_lock = SPINLOCK_INIT;
 
+// State global untuk drag session yang sedang aktif
+static int     dragged_win_id = -1;  // -1 = tidak ada drag
+static int32_t drag_offset_x  = 0;   // Offset klik dalam window (mencegah window "loncat")
+static int32_t drag_offset_y  = 0;
+
+// Caller MUST hold kwm_lock. FIX_004: canvas di-NULL-kan setelah free dan
+// drag session ke slot ini diputus — tidak ada pointer/state menggantung.
+static void kwm_free_slot(int i) {
+    if (kwm_windows[i].canvas) {
+        kfree(kwm_windows[i].canvas);
+        kwm_windows[i].canvas = NULL;
+    }
+    kwm_windows[i].active = 0;
+    kwm_windows[i].owner_task = -1;
+    if (dragged_win_id == i) dragged_win_id = -1;
+}
+
 int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
+    // FIX_004: validasi dulu. Ukuran dihitung 64-bit agar tidak wrap.
+    if (width == 0 || height == 0 ||
+        width > KWM_MAX_DIMENSION || height > KWM_MAX_DIMENSION) {
+        return -1;
+    }
+    uint64_t bytes = (uint64_t)width * (uint64_t)height * 4ULL;
+    if (bytes > (uint64_t)KWM_MAX_CANVAS_BYTES) return -1;
+
+    int owner = smp_current_task_id();
+
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     for(int i = 0; i < MAX_WINDOWS; i++) {
         if(!kwm_windows[i].active) {
-            kwm_windows[i].active = 1;
+            // FIX_004: alokasi DULU — slot ditandai active hanya setelah
+            // semua field siap (tidak ada zombie window saat kmalloc gagal).
+            uint32_t* canvas = (uint32_t*)kmalloc((size_t)bytes);
+            if (!canvas) {
+                spinlock_unlock_irqrestore(&kwm_lock, flags);
+                return -1;
+            }
             kwm_windows[i].x = x;
             kwm_windows[i].y = y;
             kwm_windows[i].width = width;
             kwm_windows[i].height = height;
-            kwm_windows[i].canvas = (uint32_t*)kmalloc(width * height * 4);
+            kwm_windows[i].canvas = canvas;
+            kwm_windows[i].owner_task = owner;
             kwm_windows[i].z_index = next_z_index++;
+            kwm_windows[i].active = 1;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
             screen_mark_dirty(x, y, width, height);
             return i;
         }
     }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    return -1; 
+    return -1;
+}
+
+// Owner task dari sebuah window (-1 jika slot kosong/id invalid).
+int kwm_window_owner(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return -1;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    int owner = kwm_windows[win_id].active ? kwm_windows[win_id].owner_task : -1;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    return owner;
 }
 
 void kwm_update_window(int win_id, uint32_t* app_buffer) {
     if(win_id < 0 || win_id >= MAX_WINDOWS) return;
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     if(!kwm_windows[win_id].active || !kwm_windows[win_id].canvas || !app_buffer) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return;
+    }
+    // FIX_004: hanya pemilik yang boleh menulis canvas-nya.
+    if (kwm_windows[win_id].owner_task != smp_current_task_id()) {
         spinlock_unlock_irqrestore(&kwm_lock, flags);
         return;
     }
@@ -410,20 +465,32 @@ void kwm_destroy_window(int win_id) {
     }
     int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
     uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
-    if (kwm_windows[win_id].canvas) kfree(kwm_windows[win_id].canvas);
-    kwm_windows[win_id].active = 0;
+    kwm_free_slot(win_id);
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(mx, my, mw, mh);
 }
 
-// Destroy ALL KWM windows — called on app exit to prevent dangling canvas pointers.
-// Without this, the compositor would read freed memory when rendering.
+// FIX_004: destroy HANYA window milik task_id — dipanggil saat app exit/exec
+// menggantikan kwm_destroy_all_windows() agar lifecycle satu task tidak
+// menghancurkan window task lain.
+void kwm_destroy_windows_of(int task_id) {
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (kwm_windows[i].active && kwm_windows[i].owner_task == task_id) {
+            kwm_free_slot(i);
+        }
+    }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    screen_mark_dirty(0, 0, fb_width, fb_height);
+}
+
+// Destroy ALL KWM windows — hanya untuk path kernel/test, BUKAN syscall.
+// Tanpa ini, compositor akan membaca memori bebas saat render.
 void kwm_destroy_all_windows(void) {
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (kwm_windows[i].active) {
-            if (kwm_windows[i].canvas) kfree(kwm_windows[i].canvas);
-            kwm_windows[i].active = 0;
+            kwm_free_slot(i);
         }
     }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
@@ -448,11 +515,8 @@ void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y) {
 // ============================================================
 // KWM V2 — Drag & Drop + Z-Index Dinamis
 // ============================================================
-
-// State global untuk drag session yang sedang aktif
-static int     dragged_win_id = -1;  // -1 = tidak ada drag
-static int32_t drag_offset_x  = 0;   // Offset klik dalam window (mencegah window "loncat")
-static int32_t drag_offset_y  = 0;
+// (dragged_win_id & drag_offset_* dideklarasikan di atas, dekat kwm_lock,
+//  agar kwm_free_slot bisa memutus drag session ke slot yang di-free.)
 
 // Bawa window ke depan (Z-index tertinggi)
 // Dipanggil saat user klik pada window manapun.

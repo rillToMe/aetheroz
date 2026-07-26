@@ -286,7 +286,12 @@ void syscall_handler(registers_t *r) {
     }
     else if (syscall_num == 32) { // sys_kwm_destroy_window
         extern void kwm_destroy_window(int);
-        kwm_destroy_window((int)r->rbx);
+        extern int kwm_window_owner(int);
+        int wid = (int)r->rbx;
+        // FIX_004: app hanya boleh menghancurkan window miliknya sendiri.
+        if (kwm_window_owner(wid) == smp_current_task_id()) {
+            kwm_destroy_window(wid);
+        }
     }
     else if (syscall_num == 33) { // sys_exec — load & jalankan ELF baru, replace current app
         // PENTING: copy filename ke kernel stack DULU sebelum unmap!
@@ -301,10 +306,10 @@ void syscall_handler(registers_t *r) {
             kfname[fi] = '\0';
         }
 
-        // 0. Destroy all KWM windows FIRST — prevents compositor from
-        //    accessing freed canvas memory after AS cleanup.
-        extern void kwm_destroy_all_windows(void);
-        kwm_destroy_all_windows();
+        // 0. Destroy KWM windows milik TASK INI saja (FIX_004) — compositor
+        //    tetap aman tanpa menghancurkan window milik task lain.
+        extern void kwm_destroy_windows_of(int);
+        kwm_destroy_windows_of(smp_current_task_id());
 
         // 1. Destroy current address space and switch back to kernel PML4
         {
@@ -379,9 +384,10 @@ void syscall_handler(registers_t *r) {
         }
     }
     else if (syscall_num == 34) { // sys_exit — app selesai, kembali ke shell
-        // Destroy all KWM windows FIRST — prevents dangling canvas pointers
-        extern void kwm_destroy_all_windows(void);
-        kwm_destroy_all_windows();
+        // Destroy KWM windows milik TASK INI saja (FIX_004) — window task lain
+        // tidak ikut terhapus; pointer canvas selalu di-NULL-kan.
+        extern void kwm_destroy_windows_of(int);
+        kwm_destroy_windows_of(smp_current_task_id());
 
         // Destroy address space and switch back to kernel PML4
         {
