@@ -18,7 +18,7 @@ LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
 # Direktori sumber kernel (Ring 0)
-SRC_DIRS = arch/x86 drivers kernel fs apps
+SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs apps
 
 # ==========================================
 # lwIP Network Stack

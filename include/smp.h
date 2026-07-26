@@ -31,4 +31,8 @@ void smp_mark_reschedule(uint32_t cpu_id);
 void smp_clear_reschedule(uint32_t cpu_id);
 int  smp_reschedule_pending(uint32_t cpu_id);
 
+// Bring-up semua AP via Limine MP response (boleh NULL → single-core).
+struct limine_mp_response;
+void smp_init(struct limine_mp_response *mp);
+
 #endif
