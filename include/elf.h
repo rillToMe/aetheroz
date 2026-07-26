@@ -73,6 +73,11 @@ typedef struct {
     uint32_t p_align;
 } __attribute__((packed)) elf32_phdr_t;
 
-uint64_t elf_load_file(char* filename);  // Returns 64-bit entry point
+#define USER_STACK_SIZE (256 * 1024)
+
+// Returns 64-bit entry point.
+// *out_stack_top = 16-byte-aligned top of new user stack (set RSP here).
+// *out_stack_base = raw kmalloc pointer (kfree this on exit/exec).
+uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base);
 
 #endif

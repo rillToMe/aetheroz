@@ -70,6 +70,8 @@ typedef struct task {
     uint64_t wake_at_ms;      // TASK_SLEEPING: absolute timer_get_ms() at which to wake (0 = n/a)
     uint8_t  priority;        // Base priority, higher = more important (PRIO_*)
     uint64_t enqueue_ms;      // When this task last entered a run queue (for aging)
+    void*    user_stack_base; // kmalloc'd user stack for current app
+    void*    deferred_user_stack_base; // Previous app stack, freed on a later syscall
 } task_t;
 
 // Priority levels: higher value = scheduled first. Aging boosts long-waiting

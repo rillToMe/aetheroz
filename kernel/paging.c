@@ -43,6 +43,10 @@ static phys_addr_t kernel_pml4_phys = PHYS_NULL;
 // SMP-safe lock for all page table operations
 static spinlock_t paging_lock = SPINLOCK_INIT;
 
+// Forward decls (definitions below): used by init_paging pre-population.
+static uint64_t* alloc_page_virt(void);
+extern void kernel_panic(const char* title, const char* desc, uint64_t code);
+
 // ============================================================
 // TLB MANAGEMENT
 // ============================================================
@@ -78,6 +82,27 @@ void init_paging(uint32_t unused) {
     uint64_t phys_pml4 = cr3 & 0xFFFFFFFFFFFFF000ULL;
     current_pml4 = (uint64_t*)PHYS_TO_VIRT(phys_pml4);
     kernel_pml4_phys = (phys_addr_t)phys_pml4;  // Save boot PML4 forever
+
+    // Pre-populate ALL absent higher-half PML4 entries [256..511] with empty,
+    // shared PDPTs. vmm_create_address_space() shallow-copies PML4[256..511]
+    // at fork time; if a heap/kernel slot (e.g. PML4[288] = heap zone
+    // 0xFFFF900000000000) is still absent when an AS is cloned, that AS keeps a
+    // stale entry. A later expand_heap() then allocates a *fresh* PDPT in the
+    // live AS while the kernel PML4 keeps its own — the same heap vaddr resolves
+    // to two different physical frames across address spaces, and the PMM
+    // re-hands one frame to the compositor. Installing the top-level PDPTs ONCE
+    // up front (PMM is already initialized here, still single-CPU at boot) makes
+    // every clone share these tables, so all later PD/PT growth is visible in
+    // every address space.
+    for (int i = 256; i < 512; i++) {
+        if (current_pml4[i] & 1) continue;  // keep Limine's existing entries
+        uint64_t* pdpt = alloc_page_virt();
+        if (!pdpt) {
+            kernel_panic("PAGING INIT",
+                         "OOM pre-populating higher-half PDPT", (uint64_t)i);
+        }
+        current_pml4[i] = VIRT_TO_PHYS(pdpt) | 7;
+    }
 }
 
 // ============================================================
@@ -499,23 +524,6 @@ void vmm_destroy_address_space(phys_addr_t pml4_phys, int free_pml4) {
 }
 
 // ============================================================
-// vmm_unmap_user_space — Legacy wrapper
-//
-// Cleans user-range mappings in the GLOBAL current_pml4.
-// Does NOT free the PML4 page itself (it's the boot PML4).
-// Called from sys_exec / sys_exit when no per-process PML4 exists.
-// ============================================================
-void vmm_unmap_user_space(void) {
-    if (!current_pml4) return;
-
-    // Compute physical address of the global PML4
-    phys_addr_t pml4_phys = VIRT_TO_PHYS(current_pml4);
-
-    // Destroy user mappings but keep the PML4 page
-    vmm_destroy_address_space(pml4_phys, 0);
-}
-
-// ============================================================
 // vmm_switch_pml4 — Switch CR3 to a given PML4 (for isolation)
 //
 // Does NOT change current_pml4 — it always stays as kernel PML4.
@@ -573,20 +581,28 @@ void vmm_destroy_task_as(phys_addr_t pml4_phys) {
 //
 // Used by expand_heap() to ensure kernel heap pages are always
 // in the kernel PML4, regardless of which AS is currently active.
-// Without this, heap expansion during an app would map pages into
-// the app's PML4 — lost when the app exits.
 // ============================================================
 int vmm_map_page_kernel(uint64_t vaddr, uint64_t paddr, uint64_t flags) {
-    if (kernel_pml4_phys == PHYS_NULL) return 0;
+    return vmm_map_page_into(vaddr, paddr, flags, kernel_pml4_phys);
+}
 
-    // Temporarily redirect current_pml4 to the kernel PML4
-    uint64_t* saved_pml4 = current_pml4;
-    current_pml4 = (uint64_t*)PHYS_TO_VIRT(kernel_pml4_phys);
-
-    int result = vmm_map_page(vaddr, paddr, flags);
-
-    // Restore original current_pml4
-    current_pml4 = saved_pml4;
-
-    return result;
+int vmm_alloc_page_kernel(uint64_t vaddr, uint64_t flags) {
+    phys_addr_t paddr = pmm_alloc_page();
+    if (paddr == PHYS_NULL) return 0;
+    if (!vmm_map_page_kernel(vaddr, paddr, flags)) {
+        pmm_free_page(paddr);
+        return 0;
+    }
+#ifdef HEAP_WATCH_DEBUG
+    // Jejak phys yang diberikan PMM untuk halaman heap — pembanding terhadap
+    // PTE yang terbaca ulang saat watchpoint #DB menyala.
+    extern void serial_print(const char* s);
+    extern void serial_print_hex(uint64_t v);
+    serial_print("[VMM] kmap va=");
+    serial_print_hex(vaddr);
+    serial_print(" pa=");
+    serial_print_hex(paddr);
+    serial_print("\n");
+#endif
+    return 1;
 }

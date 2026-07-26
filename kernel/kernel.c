@@ -245,6 +245,14 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     state->online = 1;
     smp_set_cpu_online(state->cpu_index);
 
+#ifdef HEAP_WATCH_DEBUG
+    // DR register bersifat per-CPU: setiap AP harus memasang watchpoint-nya
+    // sendiri, kalau tidak writer dari AP ini tak pernah ketangkap.
+    extern void heap_watch_set(uint64_t addr, int len_bytes);
+    extern uint64_t heap_watch_target_addr;
+    heap_watch_set(heap_watch_target_addr, 4);
+#endif
+
     smp_spin_lock(&smp_log_lock);
     kprint("[smp] CPU #");
     kprint_num(cpu->processor_id);
@@ -751,8 +759,20 @@ void kernel_main(void) {
 
     init_mouse();
     init_keyboard();
-    init_tty(); 
+    init_tty();
     kfs_init();
+#ifdef HEAP_WATCH_DEBUG
+    extern void serial_init(void);
+    extern void serial_print(const char* s);
+    serial_init();
+    serial_print("\n[HEAP_WATCH_DEBUG] serial ready\n");
+    // Pasang hardware watchpoint DR0 (per-CPU!) di BSP SEBELUM AP online.
+    // Setiap AP memasang DR0-nya sendiri di smp_ap_main().
+    extern void heap_watch_set(uint64_t addr, int len_bytes);
+    extern uint64_t heap_watch_target_addr;
+    heap_watch_set(heap_watch_target_addr, 4);
+    serial_print("[HEAP_WATCH] BSP DR0 watch magic @ target (4 bytes)\n");
+#endif
     vfs_init();
     smp_init();
 

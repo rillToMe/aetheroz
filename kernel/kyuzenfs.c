@@ -20,7 +20,14 @@ static uint32_t slen(const char* str) {
     uint32_t l = 0; while(str[l]) l++; return l;
 }
 void kprint(const char* str) {
-    if (!str || !tty_node.write) return; 
+    if (!str || !tty_node.write) return;
+
+#ifdef HEAP_WATCH_DEBUG
+    // Mirror kprint to COM1 so boot log survives a watchpoint freeze / BSOD,
+    // where the framebuffer TTY is no longer readable on the host side.
+    extern void serial_print(const char* s);
+    serial_print(str);
+#endif
 
     // NOTE: No lock here — kprint is called from within fs_lock-protected
     // functions. TTY output may interleave across CPUs but won't deadlock.
@@ -77,13 +84,18 @@ void kfs_format(void) {
 
     uint32_t fat_size_bytes = total_disk_sectors * 4;
     fat_sectors_needed = (fat_size_bytes + 511) / 512;
+    // FAT is flushed/reloaded a whole sector (512B) at a time, so the buffer
+    // must be allocated to the sector-rounded size — not fat_size_bytes — or
+    // the last ata_*_sector spills past the heap block and corrupts the
+    // adjacent split-remainder header.
+    uint32_t fat_alloc_bytes = fat_sectors_needed * 512;
 
     current_fs.magic[0] = 'K'; current_fs.magic[1] = 'Z';
     current_fs.magic[2] = 'F'; current_fs.magic[3] = 'S';
     current_fs.root_dir_sector = 1 + fat_sectors_needed;
     current_fs.total_files = 0;
 
-    if (fat_table == 0) fat_table = (uint32_t*)kmalloc(fat_size_bytes);
+    if (fat_table == 0) fat_table = (uint32_t*)kmalloc(fat_alloc_bytes);
     for (uint32_t i = 0; i < total_disk_sectors; i++) fat_table[i] = FAT_FREE;
 
     fat_table[0] = FAT_EOF;
@@ -113,13 +125,15 @@ static void kfs_format_nolock(void) {
 
     uint32_t fat_size_bytes = total_disk_sectors * 4;
     fat_sectors_needed = (fat_size_bytes + 511) / 512;
+    // Sector-rounded alloc — see kfs_format() note. Prevents FAT flush overrun.
+    uint32_t fat_alloc_bytes = fat_sectors_needed * 512;
 
     current_fs.magic[0] = 'K'; current_fs.magic[1] = 'Z';
     current_fs.magic[2] = 'F'; current_fs.magic[3] = 'S';
     current_fs.root_dir_sector = 1 + fat_sectors_needed;
     current_fs.total_files = 0;
 
-    if (fat_table == 0) fat_table = (uint32_t*)kmalloc(fat_size_bytes);
+    if (fat_table == 0) fat_table = (uint32_t*)kmalloc(fat_alloc_bytes);
     for (uint32_t i = 0; i < total_disk_sectors; i++) fat_table[i] = FAT_FREE;
 
     fat_table[0] = FAT_EOF;
@@ -160,7 +174,9 @@ void kfs_init(void) {
 
     uint32_t fat_size_bytes = total_disk_sectors * 4;
     fat_sectors_needed = (fat_size_bytes + 511) / 512;
-    if (fat_table == 0) fat_table = (uint32_t*)kmalloc(fat_size_bytes);
+    // Sector-rounded alloc — see kfs_format() note. Prevents FAT reload overrun.
+    uint32_t fat_alloc_bytes = fat_sectors_needed * 512;
+    if (fat_table == 0) fat_table = (uint32_t*)kmalloc(fat_alloc_bytes);
 
     uint8_t* fat_bytes = (uint8_t*)fat_table;
     for (uint32_t i = 0; i < fat_sectors_needed; i++) {

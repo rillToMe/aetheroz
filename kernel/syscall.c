@@ -6,6 +6,7 @@
 #include "smp.h"
 #include "vfs.h"
 #include "net_socket.h"
+#include "elf.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
 
@@ -29,7 +30,6 @@ extern uint32_t kfs_get_file_size(char* filename);
 extern int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 extern int kfs_create_file(char* filename, char* data, uint32_t size);
 extern int kfs_get_file_list(void* buffer, int max_entries);
-extern uint32_t elf_load_file(char* filename);
 
 extern void get_cpu_string(char* buffer);
 extern uint64_t pmm_get_used_ram(void);
@@ -61,7 +61,24 @@ static uint32_t as_cookie_counter = 0;
 // Updated by sys_load_elf when creating a new AS.
 static uint32_t current_as_cookie = 0;
 
+static task_t* syscall_current_task(void) {
+    int task_id = smp_current_task_id();
+    if (task_id < 0 || task_id >= task_count) return NULL;
+    return &tasks[task_id];
+}
+
+static void reclaim_deferred_user_stack(task_t* self) {
+    if (self && self->deferred_user_stack_base) {
+        void* stack = self->deferred_user_stack_base;
+        self->deferred_user_stack_base = NULL;
+        kfree(stack);
+    }
+}
+
 void syscall_handler(registers_t *r) {
+    task_t* syscall_task = syscall_current_task();
+    reclaim_deferred_user_stack(syscall_task);
+
     // Nomor Syscall selalu ada di RAX
     uint64_t syscall_num = r->rax;
     uint64_t ret_val = 0; // Default return
@@ -175,10 +192,7 @@ void syscall_handler(registers_t *r) {
         phys_addr_t new_pml4 = vmm_create_address_space();
         if (new_pml4 != PHYS_NULL) {
             // Clean old user pages if this task had a previous AS
-            task_t *self = NULL;
-            for (int i = 0; i < task_count; i++) {
-                if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
-            }
+            task_t *self = syscall_current_task();
             if (self && self->pml4_phys != 0) {
                 vmm_destroy_task_as(self->pml4_phys);
             }
@@ -202,7 +216,18 @@ void syscall_handler(registers_t *r) {
             vmm_switch_pml4(new_pml4);
         }
 
-        ret_val = elf_load_file((char*)r->rbx);
+        uint64_t new_stack_top = 0;
+        void*    new_stack_base = NULL;
+        ret_val = elf_load_file((char*)r->rbx, &new_stack_top, &new_stack_base);
+        {
+            task_t *self2 = syscall_current_task();
+            if (self2 && new_stack_base) {
+                if (self2->user_stack_base) {
+                    self2->deferred_user_stack_base = self2->user_stack_base;
+                }
+                self2->user_stack_base = new_stack_base;
+            }
+        }
 
         // Done loading ELF — stop routing to user PML4
         vmm_user_pml4 = PHYS_NULL;
@@ -286,17 +311,20 @@ void syscall_handler(registers_t *r) {
 
         // 1. Destroy current address space and switch back to kernel PML4
         {
-            task_t *self = NULL;
-            for (int i = 0; i < task_count; i++) {
-                if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
+            task_t *self = syscall_current_task();
+
+            if (self && self->user_stack_base) {
+                self->deferred_user_stack_base = self->user_stack_base;
+                self->user_stack_base = NULL;
             }
 
             if (self && self->pml4_phys != 0) {
                 vmm_destroy_task_as(self->pml4_phys);
                 self->pml4_phys = 0;
-            } else {
-                vmm_unmap_user_space();
             }
+            // pml4_phys == 0: task memakai boot/kernel AS. User range PML4 boot
+            // milik Limine — membebaskannya mencemari free list PMM dengan
+            // halaman reserved/ROM <72MB (akar BOSD heap corruption).
         }
 
         // 1b. Flush input buffers so new app doesn't inherit old keystrokes
@@ -314,10 +342,7 @@ void syscall_handler(registers_t *r) {
             if (new_pml4 != PHYS_NULL) {
                 // Route ELF pages into the new PML4
                 vmm_user_pml4 = new_pml4;
-                task_t *self = NULL;
-                for (int i = 0; i < task_count; i++) {
-                    if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
-                }
+                task_t *self = syscall_current_task();
                 if (self) self->pml4_phys = new_pml4;
 
                 // Switch CR3 to the user PML4 BEFORE loading — elf_load_file
@@ -329,7 +354,17 @@ void syscall_handler(registers_t *r) {
         }
 
         // 3. Load ELF baru ke slot 0x4000000
-        uint64_t entry = elf_load_file(kfname);
+        uint64_t new_stack_top = 0;
+        void*    new_stack_base = NULL;
+        uint64_t entry = elf_load_file(kfname, &new_stack_top, &new_stack_base);
+
+        // Store new stack base for cleanup on next exec/exit
+        {
+            task_t *self2 = syscall_current_task();
+            if (self2 && new_stack_base) {
+                self2->user_stack_base = new_stack_base;
+            }
+        }
 
         // Done loading — stop routing user-range mappings to the new PML4.
         // CR3 already points at the user PML4 (switched before load).
@@ -340,21 +375,12 @@ void syscall_handler(registers_t *r) {
 
 
         // 3. Set RIP & RSP untuk IRETQ
+        extern uint64_t g_shell_return_rsp;
         if (entry != 0) {
             r->rip = entry;
-
-            // Reset RSP ke shell's saved stack.
-            // g_shell_return_rsp = RSP tepat sebelum shell CALL app.
-            // Kita set r->rsp = g_shell_return_rsp, sehingga setelah IRETQ
-            // stack kembali ke kondisi "seolah belum pernah CALL".
-            // Saat app baru return (ret), RET pops [RSP].
-            // [g_shell_return_rsp] berisi apa yang ada di stack sebelum CALL:
-            // yaitu shell's own stack frame → local vars, saved rbp, etc.
-            // INI MEMANG BUKAN return address, tapi kita handle via sys_exit.
-            extern uint64_t g_shell_return_rsp;
-            if (g_shell_return_rsp != 0) {
-                r->rsp = g_shell_return_rsp;
-            }
+            // New app runs on its own 256KB stack (deep decode chains overflow
+            // the shared shell stack). Fallback to shell RSP if alloc failed.
+            r->rsp = (new_stack_top != 0) ? new_stack_top : g_shell_return_rsp;
             ret_val = 1;
         } else {
             ret_val = 0;
@@ -367,17 +393,20 @@ void syscall_handler(registers_t *r) {
 
         // Destroy address space and switch back to kernel PML4
         {
-            task_t *self = NULL;
-            for (int i = 0; i < task_count; i++) {
-                if (tasks[i].state == TASK_RUNNING) { self = &tasks[i]; break; }
+            task_t *self = syscall_current_task();
+
+            if (self && self->user_stack_base) {
+                self->deferred_user_stack_base = self->user_stack_base;
+                self->user_stack_base = NULL;
             }
 
             if (self && self->pml4_phys != 0) {
                 vmm_destroy_task_as(self->pml4_phys);
                 self->pml4_phys = 0;
-            } else {
-                vmm_unmap_user_space();
             }
+            // pml4_phys == 0: task memakai boot/kernel AS. User range PML4 boot
+            // milik Limine — membebaskannya mencemari free list PMM dengan
+            // halaman reserved/ROM <72MB (akar BOSD heap corruption).
         }
 
         // Longjmp kembali ke shell: reset RSP dan jump ke user_shell()

@@ -40,10 +40,6 @@ phys_addr_t vmm_create_address_space(void);
 //   - If free_pml4=1, also frees the PML4 page itself
 void vmm_destroy_address_space(phys_addr_t pml4_phys, int free_pml4);
 
-// Legacy wrapper: clean user-range mappings in current (global) PML4.
-// Does NOT free the PML4 page itself.
-void vmm_unmap_user_space(void);
-
 // Switch CR3 + current_pml4 to a given PML4 physical address.
 // Updates percpu CR3 tracking for the current CPU.
 void vmm_switch_pml4(phys_addr_t pml4_phys);
@@ -62,6 +58,9 @@ void vmm_destroy_task_as(phys_addr_t pml4_phys);
 // Map a page into the KERNEL PML4 (not current PML4).
 // Used by heap expansion to ensure kernel heap pages persist across AS switches.
 int  vmm_map_page_kernel(uint64_t vaddr, uint64_t paddr, uint64_t flags);
+
+// Allocate a physical page and map it into the KERNEL PML4.
+int  vmm_alloc_page_kernel(uint64_t vaddr, uint64_t flags);
 
 // Map a page into a SPECIFIC PML4 (used for ELF loading into user AS).
 int  vmm_map_page_into(uint64_t vaddr, uint64_t paddr, uint64_t flags,

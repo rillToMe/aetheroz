@@ -249,6 +249,17 @@ heap-stress:
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
 
+.PHONY: heap-watch
+heap-watch:
+	$(MAKE) clean
+	$(MAKE) boot_image.iso CFLAGS="$(CFLAGS) -g -DHEAP_WATCH_DEBUG"
+	qemu-system-x86_64.exe -cpu max -m 512M -boot d \
+		-smp 4 \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000 \
+		-serial stdio
+
 # Bersihkan file hasil build (kernel + lwIP objects)
 clean:
 	rm -f $(OBJS) $(LWIP_OBJS) $(TARGET) debug/pmm_stress.o debug/pmm_valid.o test/conc_test.o test/heap_stress_test.o

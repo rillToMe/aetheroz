@@ -210,6 +210,8 @@ void tasking_init(void) {
         tasks[i].wake_at_ms = 0;
         tasks[i].priority = PRIO_NORMAL;
         tasks[i].enqueue_ms = 0;
+        tasks[i].user_stack_base = NULL;
+        tasks[i].deferred_user_stack_base = NULL;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -574,9 +576,16 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
         return current_regs;
     }
 
-    // A replacement is secured. Save the outgoing task's context. A RUNNING task
-    // goes back on a run queue (stealable); a blocked task keeps its frame but is
-    // left off every queue (only unblock_task may make it runnable again).
+    if (next >= task_count || tasks[next].state != TASK_READY || tasks[next].rsp == 0) {
+        // Stale queue entry. The current task still owns this CPU, so leave its
+        // state and queue membership unchanged.
+        spinlock_unlock(&scheduler_lock);
+        return current_regs;
+    }
+
+    // A valid replacement is secured. Save the outgoing task's context. A
+    // RUNNING task goes back on a run queue (stealable); a blocked task keeps
+    // its frame but is left off every queue.
     if (cur_blocked) {
         tasks[cur].rsp = (uint64_t)current_regs;
     }
@@ -584,21 +593,11 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
         tasks[cur].rsp   = (uint64_t)current_regs;
         tasks[cur].state = TASK_READY;
         if (runq_push(cpu_id, cur) != 0) {
-            // The local queue always has room for the outgoing task here (total
-            // live tasks <= MAX_TASKS and `next` is currently out of every
-            // queue), so this is unreachable. Fail safe: keep the current task
-            // running and defer the switch rather than drop a runnable task.
             tasks[cur].state = TASK_RUNNING;
             (void)runq_push(cpu_id, next);
             spinlock_unlock(&scheduler_lock);
             return current_regs;
         }
-    }
-
-    if (next >= task_count || tasks[next].state != TASK_READY || tasks[next].rsp == 0) {
-        // Stale queue entry (task died between enqueue and now). Skip the switch.
-        spinlock_unlock(&scheduler_lock);
-        return current_regs;
     }
 
     tasks[next].state = TASK_RUNNING;

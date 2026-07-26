@@ -270,6 +270,14 @@ void pmm_free_page(phys_addr_t addr) {
         return;
     }
 
+    // Zona < 72MB (kernel, Limine, BIOS/ROM, framebuffer) tidak pernah
+    // dialokasikan PMM — free di zona ini SELALU bug pemanggil. Menolaknya
+    // menjaga free list tidak tercemar halaman reserved/ROM (akar BOSD heap).
+    if (addr < 0x4800000ULL) {
+        pmm_warn("[PMM] free low-reserved (BUG, ditolak): ", addr);
+        return;
+    }
+
     uint64_t irqflags = spinlock_lock_irqsave(&pmm_lock);
 
     // ── P3: Double-free detection ──

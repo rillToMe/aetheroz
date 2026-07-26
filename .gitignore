@@ -27,11 +27,16 @@ compile_commands.json
 build/
 bin/
 out/
+/graphify-out
 
 run.md
 iso_root
+CLAUDE.md
 
 implementasi_step.md
 .qoder
 roadmap
 .rules
+
+# Resolve Build
+Resolve

@@ -139,6 +139,16 @@ static const char* exception_names[] = {
 // =======================================================================
 void exception_handler(registers_t *r) {
     __asm__ volatile("cli");
+#ifdef HEAP_WATCH_DEBUG
+    // isr1_stub (vector 1, #DB) already routes here; divert hardware-watchpoint
+    // hits to the serial dumper instead of the framebuffer BSOD. Handler hanya
+    // MENLOG lalu return — eksekusi dilanjutkan via iretq di stub.
+    if (r->int_num == 1) {
+        extern void heap_watch_db_handler(registers_t *r);
+        heap_watch_db_handler(r);
+        return;
+    }
+#endif
     if (!fb_ptr) { while(1) { __asm__ volatile("hlt"); } }
 
     uint64_t int_num    = r->int_num;

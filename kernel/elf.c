@@ -16,7 +16,9 @@ extern void kprint_num(uint32_t num);
 //   2. Di Program Header, p_flags ada SEBELUM p_offset (bukan setelah!)
 // Menggunakan struct ELF32 untuk ELF64 → semua field offset salah → crash!
 // =======================================================================
-uint64_t elf_load_file(char* filename) {
+uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base) {
+    if (out_stack_top)  *out_stack_top  = 0;
+    if (out_stack_base) *out_stack_base = 0;
     uint32_t file_size = kfs_get_file_size(filename);
     if (file_size == 0) {
         kprint("[ELF] Error: File kosong atau tidak ditemukan!\n");
@@ -80,8 +82,22 @@ uint64_t elf_load_file(char* filename) {
             }
         }
 
+        uint64_t entry = hdr->e_entry;
         kfree(file_buffer);
-        return hdr->e_entry;  // 64-bit entry point
+
+        // Alokasi stack per-app hanya untuk caller yang meng-handle RSP switch
+        // (sys_exec). Caller NULL (shell direct-launch) pakai stack pemanggil.
+        if (out_stack_top) {
+            void* stack_mem = kmalloc(USER_STACK_SIZE);
+            if (!stack_mem) {
+                kprint("[ELF64] Error: Tidak bisa alokasi user stack!\n");
+                return 0;
+            }
+            *out_stack_top = ((uint64_t)stack_mem + USER_STACK_SIZE) & ~0xFULL;
+            if (out_stack_base) *out_stack_base = stack_mem;
+        }
+
+        return entry;
 
     } else if (elf_class == ELFCLASS32) {
         // ===========================
