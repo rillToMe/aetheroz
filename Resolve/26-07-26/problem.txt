@@ -1,0 +1,277 @@
+# Kyuzen OS — Ringkasan Investigasi BOSD Heap Corruption
+
+Tanggal: 26 Juli 2026
+Branch: `feature/64bit-migration`
+Toolchain wajib: `E:\Tools\msys2\clang64\bin\clang.exe`
+
+## Gejala
+
+Sesudah boot, jalur berikut menyebabkan BOSD:
+
+1. Login.
+2. Jalankan `fileman`.
+3. Pilih `kyuzen.png`.
+4. Klik `BUKA`.
+
+Nilai RIP/CR2/error kadang berbeda-beda, tetapi crash yang konsisten pada build HEAP_WATCH adalah:
+
+```text
+REASON: HEAP CORRUPTION
+DETAILS: heap_block_t magic mismatch - header corrupt
+CODE: 0xFFFF9000002B3A50
+```
+
+## Bukti runtime terbaru
+
+File log: `heap-watch-new.log`
+
+Log berasal dari ISO terbaru yang benar-benar dibangun ulang setelah patch sebelumnya.
+
+Urutan kritis:
+
+```text
+current=0xFFFF900000287000
+current->size=0x000000000002CFE0
+request=0x000000000002CA30
+```
+
+`0x2CA30` = 182832 byte, tepat sama dengan ukuran `kyuzen.png`.
+
+Remainder header seharusnya berada di:
+
+```text
+0xFFFF900000287000 + 0x20 + 0x2CA30
+= 0xFFFF9000002B3A50
+```
+
+Namun tepat pada output `[AFTER SPLIT]`, sebelum `kmalloc()` mengembalikan pointer:
+
+```text
+new_block=0xFFFF9000002B3A50
+new_block->size=0xA026C68966F1CDA0
+new_block->magic=0x0000000000DA80BB
+new_block->next=0x75E866C0B60F6623
+```
+
+Nilai valid seharusnya:
+
+```text
+magic = 0xDEADC0DE
+size  = 0x00000000000005B0 (atau sekitar itu, sesuai remainder aktual)
+is_free = 1
+next = pointer heap valid / NULL
+```
+
+Heap corruption terdeteksi saat alokasi berikutnya:
+
+```text
+[HEAP CORRUPTION]
+block   = 0xFFFF9000002B3A50
+size     = 0xA026C68966F1CDA0
+free     = 0xCC
+next     = 0x75E866C0B60F6623
+canary expected = 0xDEADC0DE
+canary actual   = 0xDA80BB
+```
+
+Blok sebelumnya:
+
+```text
+addr = 0xFFFF900000287000
+size = 0x000000000002CA30
+end  = 0xFFFF9000002B3A50
+```
+
+## Kesimpulan yang sudah terbukti
+
+1. Ini bukan crash acak tanpa pola. Semua variasi BOSD adalah efek lanjutan dari heap metadata yang sudah rusak.
+2. Korupsi terjadi pada/tepat sebelum fase split `kmalloc()` untuk buffer PNG.
+3. `kyuzen.png` sendiri belum dibaca oleh KFS/STB pada saat header remainder sudah rusak. Jadi STB dan pembacaan PNG bukan writer pertama untuk kejadian ini.
+4. `kmalloc()` memegang `heap_lock` dan local IRQ disabled saat split. Race allocator normal melalui `kmalloc/kfree` bukan penjelasan yang cukup.
+5. Semua field header (magic, size, free, next) berubah menjadi data garbage multi-byte. Polanya lebih cocok dengan stale writer, task yang dieksekusi pada dua CPU, stack/context reuse, atau DMA/page alias daripada satu kesalahan field allocator.
+6. Hipotesis awal bahwa stack viewer `0xFFFF9000000C9040`, ukuran `0x40000`, langsung mencakup header `0xFFFF9000002B3A50` adalah SALAH. Stack itu berakhir di `0xFFFF900000109040`; jadi tidak mencakup alamat header yang rusak. Stack UAF tetap bug nyata, tetapi belum terbukti sebagai writer langsung header ini.
+7. FAT allocation sudah diperbaiki menjadi sector-rounded. Untuk `disk.img` 100 MiB, FAT overrun bukan penyebab aktif pada log terbaru.
+8. Paging heap sudah memakai mapping eksplisit ke kernel PML4 (`vmm_alloc_page_kernel`), dan `vmm_map_page_kernel()` tidak lagi mengubah global `current_pml4` sementara.
+9. Scan repository tidak menemukan production heap yang masih menggunakan generic `vmm_alloc_page()`. Pemakaian generic di `kernel/elf.c` memang ditujukan untuk user ELF pages.
+
+## Bug source yang ditemukan
+
+### P0 — `sys_exec()` / `sys_exit()` free stack aplikasi aktif
+
+Lokasi: `kernel/syscall.c`
+
+Sebelumnya:
+
+```c
+kfree(self->user_stack_base);
+```
+
+Stack tersebut masih menjadi stack aktif ketika syscall/interrupt handler berjalan. Ini adalah active-stack use-after-free. Stack dapat segera dipakai allocator lain, lalu syscall frame/local variable/interrupt frame menulis ke blok yang sudah dianggap bebas.
+
+Patch deferred-free sudah dibuat:
+
+- `include/task.h` mendapat field:
+
+```c
+void* deferred_user_stack_base;
+```
+
+- `kernel/syscall.c` menambah `reclaim_deferred_user_stack()`.
+- Deferred stack direclaim pada awal syscall berikutnya.
+- `sys_exec()` dan `sys_exit()` tidak lagi langsung `kfree()` `user_stack_base`.
+
+Catatan: desain ini masih perlu diaudit untuk kasus task tidak pernah masuk syscall lagi, slot reuse, dan lebih dari satu deferred stack. Jangan menganggap bug ini sudah selesai secara arsitektur.
+
+### P0 — `task_exit()` masih memakai stack task yang sudah ditandai DEAD
+
+Lokasi: `kernel/task.c`
+
+`task_exit()` mengubah task menjadi `TASK_DEAD`, mengosongkan `cpu_current_task`, lalu langsung memanggil `scheduler_idle_loop()`. CPU masih memakai `%rsp` stack task lama ketika menjalankan idle loop dan menerima interrupt.
+
+CPU lain dapat menemukan slot DEAD dan `kfree(tasks[slot].stack_base)`, kemudian memakai ulang blok tersebut. Ini race UAF stack task yang dapat menulis langsung ke heap tanpa `heap_lock`.
+
+Belum diperbaiki. Solusi benar membutuhkan idle stack permanen/per-CPU atau deferred reclamation dengan jaminan CPU sudah pindah stack. Solusi diagnosis sementara dapat menunda free stack task DEAD, tetapi jangan sekadar free langsung.
+
+### P0/P1 — scheduler stale-entry ordering bug
+
+Lokasi: `kernel/task.c`, `schedule_on_cpu()`.
+
+Sebelum patch:
+
+1. `next` dipop.
+2. Task `cur` yang sedang RUNNING diubah READY dan dimasukkan kembali ke run queue.
+3. Baru `next` divalidasi.
+4. Jika `next` stale, fungsi mengembalikan `current_regs`, tetapi `cur` sudah READY dan sudah berada di queue.
+
+CPU lain dapat menjalankan `cur` yang masih berjalan di CPU pertama. Ini kandidat kuat untuk menjelaskan stale writer lintas CPU.
+
+Patch sudah diterapkan:
+
+- Validasi `next` sekarang dilakukan SEBELUM `cur` diubah READY dan dienqueue.
+- Jika entry stale, current task mempertahankan state/ownership dan scheduler return tanpa enqueue.
+
+Patch ini belum diuji runtime karena QEMU terakhir selesai sebelum reproduksi lanjutan dilaporkan.
+
+### P1 — global mutable `vmm_user_pml4`
+
+Lokasi: `kernel/paging.c`, `kernel/elf.c`, `kernel/syscall.c`.
+
+`elf_load_file()` memakai `vmm_alloc_page()`, yang memilih target PML4 melalui global `vmm_user_pml4`.
+
+Jika dua CPU melakukan ELF load bersamaan:
+
+```text
+CPU A: vmm_user_pml4 = A
+CPU B: vmm_user_pml4 = B
+CPU A: vmm_alloc_page() -> bisa memetakan ke B
+```
+
+Belum diperbaiki. Solusi yang benar: pass target PML4 eksplisit melalui loader dan fungsi map/alloc (`vmm_alloc_page_into(pml4, ...)`). Solusi sementara: lock global yang mencakup seluruh ELF load.
+
+### P1 — `current_as_cookie` global
+
+`syscall 45` masih mengembalikan `current_as_cookie`, bukan `tasks[current_task].cookie`. Ini race/identity bug pada SMP.
+
+Belum diperbaiki.
+
+### P1 — KWM ownership global
+
+`kwm_windows` global, tetapi tidak memiliki owner task/cookie/generation. `sys_exec()`/`sys_exit()` memanggil `kwm_destroy_all_windows()`, sehingga lifecycle satu task dapat menghancurkan window task lain.
+
+`kwm_destroy_window()`/`kwm_destroy_all_windows()` juga tidak selalu mengosongkan pointer canvas setelah free.
+
+`kwm_create_window()` menandai slot active sebelum memastikan `kmalloc()` berhasil dan perkalian `width * height * 4` tidak divalidasi.
+
+Belum diperbaiki.
+
+### P1 — user app berjalan di Ring 0 dan dapat mengakses kernel heap langsung
+
+`sys_alloc()` mengembalikan pointer `kmalloc()` langsung. `sys_free()` menerima pointer mentah. User mode CPL3 belum benar-benar diterapkan; app dipanggil dalam kernel address space/context.
+
+Akibatnya stale pointer app bisa langsung merusak metadata kernel heap.
+
+## Instrumentasi yang belum efektif
+
+`kernel/heap_watch.c` memiliki `heap_watch_set()` berbasis DR0/DR7, tetapi:
+
+```c
+uint64_t heap_watch_target_addr = 0x0;
+```
+
+Tidak ada pemanggilan `heap_watch_set()` yang ditemukan di tree.
+
+Jadi build HEAP_WATCH sebelumnya hanya logging/canary, belum memasang hardware watchpoint. Debug registers x86 bersifat per-CPU; memasangnya di BSP saja tidak menangkap writer dari AP.
+
+Langkah berikut yang disarankan:
+
+1. Set target header `0xFFFF9000002B3A50`.
+2. Panggil `heap_watch_set(target, 4)` pada BSP dan setiap AP setelah AP online.
+3. Log CPU index/LAPIC ID/task ID/CR3 ketika `#DB` terjadi.
+4. Pasang watchpoint untuk field magic, size, dan next secara terpisah bila perlu.
+5. Uji `-smp 1` dibanding `-smp 4`.
+6. Uji tanpa NIC/e1000 untuk mengeliminasi DMA.
+
+## Build terakhir
+
+Build pertama gagal karena `CFLAGS` ditimpa tanpa `-Iinclude`.
+
+Build kedua dengan flags lengkap berhasil:
+
+```text
+clang: E:\Tools\msys2\clang64\bin\clang.exe
+ld:    E:\Tools\msys2\clang64\bin\ld.lld.exe
+as:    E:\Tools\msys2\usr\bin\nasm.exe
+```
+
+Berhasil:
+
+- compile seluruh kernel/object dari clean build;
+- link `myos.bin`;
+- compile semua user apps;
+- generate `boot_image.iso` dengan xorriso;
+- install Limine BIOS stage.
+
+QEMU dijalankan dengan:
+
+```text
+qemu-system-x86_64.exe -cpu max -m 512M -boot d -smp 4 \
+  -drive file=disk.img,format=raw,index=0,media=disk \
+  -drive file=boot_image.iso,media=cdrom,index=2 \
+  -nic user,model=e1000 \
+  -serial file:heap-watch-new.log
+```
+
+Task QEMU terakhir selesai dengan exit code 0. Belum ada reproduksi baru setelah patch scheduler + deferred stack pada ISO hasil build terakhir.
+
+## File yang berubah oleh sesi ini
+
+- `include/task.h`
+  - tambah `deferred_user_stack_base`.
+- `kernel/task.c`
+  - inisialisasi field stack baru;
+  - ubah urutan validasi stale scheduler entry sebelum requeue current task.
+- `kernel/syscall.c`
+  - tambah reclaim deferred stack pada awal syscall;
+  - ubah free stack aktif menjadi deferred free.
+
+File lain sudah memiliki perubahan lokal dari pekerjaan sebelumnya; jangan revert perubahan yang bukan milik patch ini.
+
+## Titik terakhir yang dicapai
+
+Titik terakhir bukan “bug sudah selesai”. Titik terakhir adalah:
+
+1. Root cause lama yang terbukti: heap remainder header corrupt sebelum `kmalloc()` return.
+2. Stack UAF dan stale scheduler ordering sudah dipatch sebagai mitigasi penting.
+3. Build clean HEAP_WATCH dan ISO terbaru berhasil.
+4. QEMU ISO terbaru sudah dijalankan, tetapi sesi QEMU selesai sebelum ada hasil reproduksi pasca-patch yang bisa dianalisis.
+5. Langkah berikut yang paling bernilai adalah menjalankan ulang QEMU/atau mengaktifkan watchpoint semua CPU, lalu membaca `heap-watch-new.log` setelah jalur PNG direproduksi.
+6. Jika crash masih sama, implementasikan penghapusan global `vmm_user_pml4` atau lock seluruh ELF load, dan pasang DR0/DR7 per CPU untuk menangkap instruksi penulis pertama.
+
+## Peringatan untuk model berikutnya
+
+- Jangan menyimpulkan STB/KFS sebagai penyebab hanya karena crash terjadi saat membuka PNG; log membuktikan header sudah rusak sebelum buffer PNG dibaca.
+- Jangan memakai log lama sebagai bukti patch terbaru; pastikan `boot_image.iso` dibangun ulang setelah setiap patch.
+- Jangan menyatakan stack viewer langsung menimpa `0xFFFF9000002B3A50`; rentang alamatnya tidak mencakup target.
+- Jangan menghapus perubahan lokal pengguna yang sudah ada.
+- Jangan hanya menghapus `kfree()` stack sebagai “fix”; gunakan deferred reclamation/idle stack yang benar.
+- Jangan lupa bahwa `heap_watch_set()` saat ini belum dipanggil dan watchpoint x86 per-CPU.

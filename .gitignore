@@ -7,7 +7,7 @@
 *.bin
 *.img
 *.iso
-
+*.exe
 # Dependency tracking
 *.d
 
@@ -39,4 +39,3 @@ roadmap
 .rules
 
 # Resolve Build
-Resolve
