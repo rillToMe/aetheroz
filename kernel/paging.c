@@ -31,11 +31,6 @@ extern uint64_t hhdm_offset;
 // Current PML4: ALWAYS the kernel PML4. Never changes after init.
 uint64_t* current_pml4 = 0;
 
-// User PML4: when non-zero, vmm_alloc_page maps USER-range addresses
-// (PML4 index < 256) into this PML4 instead of the kernel PML4.
-// Set by sys_load_elf before loading an app, cleared after.
-phys_addr_t vmm_user_pml4 = PHYS_NULL;
-
 // Boot kernel PML4 physical address — saved at init, never changes.
 // Used to restore kernel AS when returning from user processes.
 static phys_addr_t kernel_pml4_phys = PHYS_NULL;
@@ -315,24 +310,19 @@ int vmm_unmap_page(uint64_t vaddr) {
 }
 
 // ============================================================
-// vmm_alloc_page — Allocate physical page + map to vaddr
+// vmm_alloc_page_into — Allocate physical page + map into a SPECIFIC PML4
 //
-// When vmm_user_pml4 is set AND vaddr is in user range (PML4 < 256),
-// the mapping goes into the user PML4 instead of the kernel PML4.
-// This allows ELF loading to target the per-process AS without
-// ever changing current_pml4 (which stays as kernel PML4).
+// target_pml4 == PHYS_NULL → map into the kernel PML4 (vmm_map_page).
+// FIX_002: target PML4 selalu eksplisit dari pemanggil — tidak ada lagi
+// routing lewat global (race ELF load dua CPU lewat vmm_user_pml4).
 // ============================================================
-int vmm_alloc_page(uint64_t vaddr, uint64_t flags) {
+int vmm_alloc_page_into(uint64_t vaddr, uint64_t flags, phys_addr_t target_pml4) {
     phys_addr_t paddr = pmm_alloc_page();
     if (paddr == PHYS_NULL) return 0;
 
-    // Route user-range addresses to user PML4 if active
-    int ok;
-    if (vmm_user_pml4 != PHYS_NULL && PML4_IDX(vaddr) < 256) {
-        ok = vmm_map_page_into(vaddr, paddr, flags, vmm_user_pml4);
-    } else {
-        ok = vmm_map_page(vaddr, paddr, flags);
-    }
+    int ok = (target_pml4 != PHYS_NULL)
+           ? vmm_map_page_into(vaddr, paddr, flags, target_pml4)
+           : vmm_map_page(vaddr, paddr, flags);
 
     if (!ok) {
         pmm_free_page(paddr);
@@ -341,22 +331,26 @@ int vmm_alloc_page(uint64_t vaddr, uint64_t flags) {
     return 1;
 }
 
+// ============================================================
+// vmm_alloc_page — Allocate physical page + map into KERNEL PML4
+// ============================================================
+int vmm_alloc_page(uint64_t vaddr, uint64_t flags) {
+    return vmm_alloc_page_into(vaddr, flags, PHYS_NULL);
+}
+
 int paging_map_region(uint64_t vaddr) {
     return vmm_alloc_page(vaddr, 7);
 }
 
 // ============================================================
-// paging_is_mapped — Check if vaddr has a mapping (SMP-safe)
+// paging_is_mapped_into — Check if vaddr is mapped in a SPECIFIC PML4
 //
-// When vmm_user_pml4 is set and vaddr is in user range, checks
-// the user PML4 instead of the kernel PML4.
+// pml4_phys == PHYS_NULL → kernel PML4 (current_pml4). SMP-safe.
 // ============================================================
-int paging_is_mapped(uint64_t vaddr) {
-    // Pick the right PML4: user PML4 for user-range when active
-    uint64_t* check_pml4 = current_pml4;
-    if (vmm_user_pml4 != PHYS_NULL && PML4_IDX(vaddr) < 256) {
-        check_pml4 = (uint64_t*)PHYS_TO_VIRT(vmm_user_pml4);
-    }
+int paging_is_mapped_into(uint64_t vaddr, phys_addr_t pml4_phys) {
+    uint64_t* check_pml4 = (pml4_phys != PHYS_NULL)
+                         ? (uint64_t*)PHYS_TO_VIRT(pml4_phys)
+                         : current_pml4;
     if (!check_pml4) return 0;
 
     uint64_t irq = spinlock_lock_irqsave(&paging_lock);
@@ -395,6 +389,13 @@ int paging_is_mapped(uint64_t vaddr) {
 
     spinlock_unlock_irqrestore(&paging_lock, irq);
     return result;
+}
+
+// ============================================================
+// paging_is_mapped — Check vaddr in the KERNEL PML4 (SMP-safe)
+// ============================================================
+int paging_is_mapped(uint64_t vaddr) {
+    return paging_is_mapped_into(vaddr, PHYS_NULL);
 }
 
 // ============================================================

@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include "fs.h"
 #include "heap.h"  // size_t-aware kmalloc/krealloc
+#include "pmm.h"   // phys_addr_t, PHYS_NULL
 
 // --- Impor API Kernel ---
 extern fs_node_t  tty_node;
@@ -117,12 +118,14 @@ uint32_t sys_get_uid(void)         { return (uint32_t)current_uid; }
 
 // --- ELF Loader ---
 uint64_t sys_load_elf(char* filename) {
-    extern uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base);
+    extern uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
+                                  void** out_stack_base, phys_addr_t target_pml4);
     extern void flush_event_queue(void);
     extern void flush_kbd_buffer(void);
     flush_event_queue();
     flush_kbd_buffer();
-    return elf_load_file(filename, NULL, NULL);
+    // Direct-launch dari kernel: tidak ada per-process AS — map ke kernel PML4.
+    return elf_load_file(filename, NULL, NULL, PHYS_NULL);
 }
 
 

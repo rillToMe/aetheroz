@@ -185,10 +185,9 @@ void syscall_handler(registers_t *r) {
 
         // --- PER-PROCESS ISOLATION ---
         // Create a fresh address space for the new user app.
-        // current_pml4 ALWAYS stays as kernel PML4. We route ELF pages
-        // into the user PML4 via vmm_user_pml4, then switch CR3.
-        extern phys_addr_t vmm_user_pml4;
-
+        // current_pml4 ALWAYS stays as kernel PML4. Target PML4 untuk ELF
+        // load diteruskan eksplisit ke elf_load_file (FIX_002), lalu CR3
+        // di-switch ke AS baru.
         phys_addr_t new_pml4 = vmm_create_address_space();
         if (new_pml4 != PHYS_NULL) {
             // Clean old user pages if this task had a previous AS
@@ -196,9 +195,6 @@ void syscall_handler(registers_t *r) {
             if (self && self->pml4_phys != 0) {
                 vmm_destroy_task_as(self->pml4_phys);
             }
-
-            // Route user-range mappings into the new PML4 during ELF load
-            vmm_user_pml4 = new_pml4;
 
             if (self) {
                 self->pml4_phys = new_pml4;
@@ -218,7 +214,8 @@ void syscall_handler(registers_t *r) {
 
         uint64_t new_stack_top = 0;
         void*    new_stack_base = NULL;
-        ret_val = elf_load_file((char*)r->rbx, &new_stack_top, &new_stack_base);
+        ret_val = elf_load_file((char*)r->rbx, &new_stack_top, &new_stack_base,
+                                new_pml4);
         {
             task_t *self2 = syscall_current_task();
             if (self2 && new_stack_base) {
@@ -228,9 +225,6 @@ void syscall_handler(registers_t *r) {
                 self2->user_stack_base = new_stack_base;
             }
         }
-
-        // Done loading ELF — stop routing to user PML4
-        vmm_user_pml4 = PHYS_NULL;
     }
 
     else if (syscall_num == 26) { // sys_draw_string
@@ -336,12 +330,10 @@ void syscall_handler(registers_t *r) {
         }
 
         // 2. Create fresh AS for the new app being exec'd
+        phys_addr_t new_pml4 = PHYS_NULL;
         {
-            extern phys_addr_t vmm_user_pml4;
-            phys_addr_t new_pml4 = vmm_create_address_space();
+            new_pml4 = vmm_create_address_space();
             if (new_pml4 != PHYS_NULL) {
-                // Route ELF pages into the new PML4
-                vmm_user_pml4 = new_pml4;
                 task_t *self = syscall_current_task();
                 if (self) self->pml4_phys = new_pml4;
 
@@ -353,10 +345,11 @@ void syscall_handler(registers_t *r) {
             }
         }
 
-        // 3. Load ELF baru ke slot 0x4000000
+        // 3. Load ELF baru ke slot 0x4000000 — target PML4 eksplisit (FIX_002)
         uint64_t new_stack_top = 0;
         void*    new_stack_base = NULL;
-        uint64_t entry = elf_load_file(kfname, &new_stack_top, &new_stack_base);
+        uint64_t entry = elf_load_file(kfname, &new_stack_top, &new_stack_base,
+                                       new_pml4);
 
         // Store new stack base for cleanup on next exec/exit
         {
@@ -364,13 +357,6 @@ void syscall_handler(registers_t *r) {
             if (self2 && new_stack_base) {
                 self2->user_stack_base = new_stack_base;
             }
-        }
-
-        // Done loading — stop routing user-range mappings to the new PML4.
-        // CR3 already points at the user PML4 (switched before load).
-        {
-            extern phys_addr_t vmm_user_pml4;
-            vmm_user_pml4 = PHYS_NULL;
         }
 
 
@@ -471,9 +457,12 @@ void syscall_handler(registers_t *r) {
         ret_val = (uint64_t)(int64_t)smp_current_task_id();
     }
     else if (syscall_num == 44) { // sys_is_mapped — check if vaddr is mapped
-        // Returns 1 if the page containing vaddr is present in current PML4.
-        // Safe: does NOT dereference the address, only walks page tables.
-        ret_val = (uint64_t)paging_is_mapped((uint64_t)r->rbx);
+        // Returns 1 if the page containing vaddr is present in the address
+        // space of the CALLING TASK (app AS untuk user page; kernel PML4
+        // untuk task kernel). Safe: does NOT dereference, only walks tables.
+        task_t *self = syscall_current_task();
+        phys_addr_t as = (self) ? self->pml4_phys : PHYS_NULL;
+        ret_val = (uint64_t)paging_is_mapped_into((uint64_t)r->rbx, as);
     }
     else if (syscall_num == 45) { // sys_get_pid — return per-AS cookie
         // Returns the unique cookie of the current address space.

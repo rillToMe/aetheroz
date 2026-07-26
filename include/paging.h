@@ -66,9 +66,13 @@ int  vmm_alloc_page_kernel(uint64_t vaddr, uint64_t flags);
 int  vmm_map_page_into(uint64_t vaddr, uint64_t paddr, uint64_t flags,
                         phys_addr_t target_pml4_phys);
 
-// When non-zero, vmm_alloc_page routes user-range addresses into this PML4.
-// Set by sys_load_elf before loading, cleared after.
-extern phys_addr_t vmm_user_pml4;
+// Allocate a physical page and map it into a SPECIFIC PML4.
+// target_pml4 == PHYS_NULL → kernel PML4. (FIX_002: target selalu eksplisit.)
+int  vmm_alloc_page_into(uint64_t vaddr, uint64_t flags, phys_addr_t target_pml4);
+
+// Check if vaddr is mapped in a SPECIFIC PML4 (SMP-safe).
+// pml4_phys == PHYS_NULL → kernel PML4.
+int  paging_is_mapped_into(uint64_t vaddr, phys_addr_t pml4_phys);
 
 // --- TLB MANAGEMENT ---
 

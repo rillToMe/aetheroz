@@ -2,6 +2,7 @@
 #define ELF_H
 
 #include <stdint.h>
+#include "pmm.h"   // phys_addr_t
 
 // ELF Magic Number ("\x7F E L F")
 #define ELF_MAGIC 0x464C457F
@@ -78,6 +79,9 @@ typedef struct {
 // Returns 64-bit entry point.
 // *out_stack_top = 16-byte-aligned top of new user stack (set RSP here).
 // *out_stack_base = raw kmalloc pointer (kfree this on exit/exec).
-uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base);
+// target_pml4 = address space tujuan mapping user page (FIX_002 — eksplisit);
+//               PHYS_NULL = kernel PML4 (fallback).
+uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base,
+                       phys_addr_t target_pml4);
 
 #endif

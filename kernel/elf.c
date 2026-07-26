@@ -10,13 +10,17 @@ extern void kprint_num(uint32_t num);
 // =======================================================================
 // elf_load_file() — Load ELF64 user-app ke RAM, kembalikan entry point
 //
+// target_pml4: address space tujuan untuk mapping user page (FIX_002 —
+// eksplisit, bukan global). PHYS_NULL = map ke kernel PML4 (fallback).
+//
 // CATATAN: User apps dikompilasi sebagai 64-bit ELF (e_machine = 0x3E = x86_64)
 // ELF64 berbeda dari ELF32 dalam dua hal penting:
 //   1. e_entry, e_phoff, e_shoff adalah uint64_t (bukan uint32_t)
 //   2. Di Program Header, p_flags ada SEBELUM p_offset (bukan setelah!)
 // Menggunakan struct ELF32 untuk ELF64 → semua field offset salah → crash!
 // =======================================================================
-uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base) {
+uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack_base,
+                       phys_addr_t target_pml4) {
     if (out_stack_top)  *out_stack_top  = 0;
     if (out_stack_base) *out_stack_base = 0;
     uint32_t file_size = kfs_get_file_size(filename);
@@ -58,8 +62,8 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack
 
             // PRE-MAP: map semua 4KB pages yang dicakup segmen
             for (uint64_t page = seg_vaddr & ~0xFFFULL; page < seg_end; page += 4096) {
-                if (!paging_is_mapped(page)) {
-                    if (!vmm_alloc_page(page, 7)) {
+                if (!paging_is_mapped_into(page, target_pml4)) {
+                    if (!vmm_alloc_page_into(page, 7, target_pml4)) {
                         kprint("[ELF64] FATAL: Tidak bisa map page 0x");
                         kprint_num((uint32_t)(page >> 32)); kprint_num((uint32_t)page);
                         kprint("\n");
@@ -114,7 +118,7 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top, void** out_stack
 
             uint32_t block = seg_vaddr & 0xFFC00000;
             while (block < seg_end) {
-                if (!paging_map_region(block)) {
+                if (!vmm_alloc_page_into(block, 7, target_pml4)) {
                     kprint("[ELF32] FATAL: Tidak bisa map region!\n");
                     kfree(file_buffer);
                     return 0;
