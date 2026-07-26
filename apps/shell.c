@@ -434,25 +434,20 @@ void user_shell() {
                         elf_filename[i++] = 'f';
                         elf_filename[i] = '\0';
 
-                        // 2. Minta Kernel mencari dan memuat file tersebut
-                        uint64_t app_entry = sys_load_elf(elf_filename);
+                        // 2. Luncurkan app via sys_exec (33): AS per-proses +
+                        //    iretq ke CPL 3 (FIX_005 Tahap 1) — bukan lagi
+                        //    CALL langsung di CPL 0. Simpan RSP dulu: sys_exit
+                        //    app akan longjmp ke user_shell di stack ini.
+                        __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
+                        clear_screen();
+                        sys_exec(elf_filename);
 
-                        if (app_entry != 0) {
-                            clear_screen();
-                            // 3. Lompat dan jalankan aplikasinya
-                            void (*run_app)(void) = (void (*)(void))app_entry;
-                            // Simpan RSP sebelum CALL agar sys_exec bisa reset stack
-                            __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
-                            run_app();
-                            // App returned (baik normal, atau via sys_exit longjmp)
-                            print("\n");
-                        } else {
-                            // 4. File tidak ada
-                            print("Perintah tidak dikenali: ");
-                            print(command);
-                            print("\n");
-
-                        }
+                        // sys_exec TIDAK kembali saat sukses (app jalan di
+                        // ring 3; exit → longjmp ke user_shell). Sampai di
+                        // sini berarti file gagal dimuat.
+                        print("Perintah tidak dikenali: ");
+                        print(command);
+                        print("\n");
                     }
                     // -------------------------------------------
                 }

@@ -114,8 +114,11 @@ void syscall_handler(registers_t *r) {
 
     else if (syscall_num == 4) { // sys_yield
         yield_counter++; // Tandai CPU idle untuk CPU usage tracker
-        // Preemptive: timer IRQ0 akan switch otomatis saat quantum habis
-        // Tidak perlu explicit switch di sini
+        // FIX_005 Tahap 1: hlt dilakukan di sisi kernel — hlt privileged
+        // (CPL=0), app ring-3 yang mengeksekusinya sendiri kena #GP.
+        // PENTING: gate int 0x80 (0xEE) adalah INTERRUPT gate — IF dimatikan
+        // saat entry. sti WAJIB sebelum hlt atau CPU tidur selamanya.
+        __asm__ volatile("sti; hlt");
     }
     else if (syscall_num == 5) { // sys_fs_format
         kfs_format();
@@ -378,6 +381,23 @@ void syscall_handler(registers_t *r) {
             // New app runs on its own 256KB stack (deep decode chains overflow
             // the shared shell stack). Fallback to shell RSP if alloc failed.
             r->rsp = (new_stack_top != 0) ? new_stack_top : g_shell_return_rsp;
+            // FIX_005 Tahap 1: masuk CPL 3 — iretq memuat segmen user.
+            // Kernel tetap bisa dijangkau via int 0x80 (gate DPL=3 + TSS.RSP0).
+            r->cs = 0x1B;  // user code (GDT[3] | RPL3)
+            r->ss = 0x23;  // user data (GDT[4] | RPL3)
+#ifdef HEAP_WATCH_DEBUG
+            extern void serial_print(const char* s);
+            extern void serial_print_hex(uint64_t v);
+            serial_print("[EXEC] ring3 cs=");
+            serial_print_hex(r->cs);
+            serial_print(" ss=");
+            serial_print_hex(r->ss);
+            serial_print(" rip=");
+            serial_print_hex(r->rip);
+            serial_print(" rsp=");
+            serial_print_hex(r->rsp);
+            serial_print("\n");
+#endif
             ret_val = 1;
         } else {
             ret_val = 0;

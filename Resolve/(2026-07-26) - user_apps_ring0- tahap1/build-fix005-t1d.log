@@ -1,0 +1,56 @@
+clang --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -Iinclude -g -DHEAP_WATCH_DEBUG -std=c11 -c kernel/syscall.c -o kernel/syscall.o
+clang --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -Iinclude -g -DHEAP_WATCH_DEBUG -std=c11 -c apps/kernel_userlib.c -o apps/kernel_userlib.o
+clang --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -Iinclude -g -DHEAP_WATCH_DEBUG -std=c11 -c apps/shell.c -o apps/shell.o
+ld.lld -flavor gnu -T linker.ld -m elf_x86_64 --build-id=none -nostdlib arch/x86/gdt.o arch/x86/idt.o arch/x86/lapic.o drivers/ata.o drivers/keyboard.o drivers/mouse.o drivers/pci.o drivers/rtc.o drivers/serial.o drivers/timer.o drivers/tty.o kernel/cpu.o kernel/display.o kernel/elf.o kernel/event.o kernel/heap.o kernel/heap_watch.o kernel/kernel.o kernel/kyuzenfs.o kernel/net_init.o kernel/net_ping.o kernel/net_socket.o kernel/paging.o kernel/panic.o kernel/pmm.o kernel/spinlock.o kernel/string.o kernel/sync.o kernel/syscall.o kernel/task.o kernel/timer_callbacks.o kernel/vfs_fd.o kernel/wait.o fs/vfs.o apps/kernel_userlib.o apps/login.o apps/shell.o apps/zen.o arch/x86/exceptions.o arch/x86/gdt_flush.o arch/x86/idle_switch.o arch/x86/idt_flush.o arch/x86/isr128.o arch/x86/isr14.o arch/x86/keyboard_isr.o arch/x86/lapic_timer_isr.o arch/x86/mouse_isr.o arch/x86/reschedule_isr.o arch/x86/smp_ap_entry.o arch/x86/timer_isr.o third_party/net/lwip/src/core/altcp.o third_party/net/lwip/src/core/altcp_alloc.o third_party/net/lwip/src/core/altcp_tcp.o third_party/net/lwip/src/core/def.o third_party/net/lwip/src/core/dns.o third_party/net/lwip/src/core/inet_chksum.o third_party/net/lwip/src/core/init.o third_party/net/lwip/src/core/ip.o third_party/net/lwip/src/core/mem.o third_party/net/lwip/src/core/memp.o third_party/net/lwip/src/core/netif.o third_party/net/lwip/src/core/pbuf.o third_party/net/lwip/src/core/raw.o third_party/net/lwip/src/core/stats.o third_party/net/lwip/src/core/sys.o third_party/net/lwip/src/core/tcp.o third_party/net/lwip/src/core/tcp_in.o third_party/net/lwip/src/core/tcp_out.o third_party/net/lwip/src/core/timeouts.o third_party/net/lwip/src/core/udp.o third_party/net/lwip/src/core/ipv4/acd.o third_party/net/lwip/src/core/ipv4/autoip.o third_party/net/lwip/src/core/ipv4/dhcp.o third_party/net/lwip/src/core/ipv4/etharp.o third_party/net/lwip/src/core/ipv4/icmp.o third_party/net/lwip/src/core/ipv4/igmp.o third_party/net/lwip/src/core/ipv4/ip4.o third_party/net/lwip/src/core/ipv4/ip4_addr.o third_party/net/lwip/src/core/ipv4/ip4_frag.o third_party/net/lwip/src/netif/ethernet.o drivers/net/port/kyuzen_netif.o drivers/net/port/sys_arch.o drivers/net/e1000/e1000.o -o myos.bin
+make -C user_apps all
+make[1]: Entering directory '/e/Project/02_Software_Engineering/low-level/kyuzen-os/user_apps'
+
+[USER APPS] Build selesai! Semua app di virtual 0x4000000
+  fileman.elf → ../fileman.elf
+  viewer.elf  → ../viewer.elf
+  clock.elf   → ../clock.elf
+  calc.elf    → ../calc.elf
+  taskmgr.elf → ../taskmgr.elf
+  notepad.elf → ../notepad.elf
+  OS akan otomatis alokasi physical RAM saat dijalankan.
+make[1]: Leaving directory '/e/Project/02_Software_Engineering/low-level/kyuzen-os/user_apps'
+rm -rf iso_root
+mkdir -p iso_root
+# Buat folder EFI untuk standar boot UEFI 64-bit
+mkdir -p iso_root/EFI/BOOT
+cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
+# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
+cp myos.bin limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
+xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
+	--efi-boot limine-uefi-cd.bin -efi-boot-part --efi-boot-image --protective-msdos-label \
+	iso_root -o boot_image.iso
+GNU xorriso 1.5.6 : RockRidge filesystem manipulator, libburnia project.
+
+Drive current: -outdev 'stdio:boot_image.iso'
+Media current: stdio file, overwriteable
+Media status : is blank
+Media summary: 0 sessions, 0 data blocks, 0 data,  213g free
+Added to ISO image: directory '/'='/e/Project/02_Software_Engineering/low-level/kyuzen-os/iso_root'
+xorriso : UPDATE :      16 files added in 1 seconds
+xorriso : UPDATE :      16 files added in 1 seconds
+ISO image produced: 2504 sectors
+Written to medium : 2504 sectors at LBA 0
+Writing to 'stdio:boot_image.iso' completed successfully.
+
+./limine/limine.exe bios-install boot_image.iso
+Physical block size of 512 bytes.
+Installing to GPT. Logical block size of 512 bytes.
+Secondary header at LBA 0x271f.
+Secondary header valid.
+Detected ISOHYBRID with a GUID partition table (GPT).
+Converting to MBR for improved compatibility...
+Conversion successful.
+No active partition found, some systems may not boot.
+Setting partition 1 as active to work around the issue...
+Installing to MBR.
+Stage 2 to be located at byte offset 0x200.
+Reminder: Remember to copy the limine-bios.sys file in either
+          the root, /boot, /limine, or /boot/limine directories of
+          one of the partitions on the device, or boot will fail!
+Limine BIOS stages installed successfully.

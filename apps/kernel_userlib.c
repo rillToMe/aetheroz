@@ -128,6 +128,13 @@ uint64_t sys_load_elf(char* filename) {
     return elf_load_file(filename, NULL, NULL, PHYS_NULL);
 }
 
+// FIX_005 Tahap 1: launch app lewat syscall 33 — AS per-proses + iretq ke
+// CPL 3. TIDAK kembali saat sukses (app exit → longjmp ke user_shell);
+// kembali dengan normal hanya saat file gagal dimuat.
+void sys_exec(char* filename) {
+    __asm__ volatile("int $0x80" : : "a"(33), "b"((uint64_t)filename));
+}
+
 
 // --- Cetak Angka ---
 void print_num(uint32_t num) {

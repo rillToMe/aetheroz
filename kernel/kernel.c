@@ -237,6 +237,13 @@ void smp_ap_main(struct limine_mp_info *cpu, smp_cpu_state_t *state) {
     idt_load();
     lapic_init_ap();
 
+    // FIX_005 Tahap 1: TR bersifat per-core — AP wajib load TSS miliknya
+    // sendiri dan mengisi RSP0 ke syscall stack permanen CPU ini.
+    extern void tss_load_cpu(uint32_t cpu);
+    extern void tss_set_rsp0(uint32_t cpu, uint64_t rsp0);
+    tss_set_rsp0(state->cpu_index, task_syscall_stack_top(state->cpu_index));
+    tss_load_cpu(state->cpu_index);
+
     // Record this AP's current CR3 (inherited from BSP via Limine)
     uint64_t cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));

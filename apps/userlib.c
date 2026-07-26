@@ -5,11 +5,10 @@ void clear_screen() { __asm__ volatile("int $0x80" : : "a"(2)); }
 uint32_t read_keyboard(char* buffer, uint32_t size) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(3), "b"((uint64_t)buffer), "c"((uint64_t)size)); return (uint32_t)ret;
 }
-void sys_yield() { 
-    __asm__ volatile("int $0x80" : : "a"(4)); 
-    // Setelah iretq, IF=1 (interrupt aktif). Tidurkan CPU di LUAR interrupt handler.
-    // Timer/keyboard/mouse akan membangunkan CPU dari hlt.
-    __asm__ volatile("hlt"); 
+void sys_yield() {
+    // FIX_005 Tahap 1: hlt pindah ke kernel — hlt privileged, #GP di CPL 3.
+    // Syscall 4 sekarang yang menidurkan CPU sampai IRQ berikutnya.
+    __asm__ volatile("int $0x80" : : "a"(4));
 }
 
 void fs_format() { __asm__ volatile("int $0x80" : : "a"(5)); }

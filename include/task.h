@@ -102,6 +102,10 @@ void task_switch_to_idle_stack(uint64_t stack_top) __attribute__((noreturn));
 void task_exit_via_idle(uint64_t stack_top, void* old_stack_base) __attribute__((noreturn));
 void task_exit_finish_on_idle(void* old_stack_base) __attribute__((noreturn));
 
+// FIX_005 Tahap 1: syscall stack permanen per-CPU (RSP0 untuk transisi
+// ring-3 → ring-0). Dialokasikan di tasking_init; AP memakainya di smp_ap_main.
+uint64_t task_syscall_stack_top(uint32_t cpu_id);
+
 // Preemptive scheduler — dipanggil dari timer interrupt
 registers_t* schedule(registers_t* current_regs);
 registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs);

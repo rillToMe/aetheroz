@@ -40,13 +40,21 @@ struct tss_entry_struct {
     uint16_t iomap_base;
 } __attribute__((packed));
 
-// Kapasitas GDT menjadi 7 (TSS memakan 2 indeks: 5 dan 6)
-volatile struct gdt_entry gdt[7]; 
+// FIX_005 Tahap 1: TSS per-CPU — satu deskriptor per CPU di GDT index
+// 5 + 2*cpu (tiap deskriptor 16 byte = 2 slot). Tanpa ini, dua CPU yang
+// transisi ring-3→ring-0 bersamaan berbagi satu RSP0 → stack saling timpa.
+#include "smp.h"   // SMP_MAX_CPUS
+#define GDT_TSS_FIRST 5
+#define GDT_ENTRIES   (GDT_TSS_FIRST + 2 * SMP_MAX_CPUS)
+#define TSS_SELECTOR(cpu) ((uint16_t)((GDT_TSS_FIRST + 2 * (cpu)) << 3))
+
+volatile struct gdt_entry gdt[GDT_ENTRIES];
 volatile struct gdt_ptr gp;
-struct tss_entry_struct tss_entry;
+struct tss_entry_struct tss_entries[SMP_MAX_CPUS];
 
 extern void gdt_flush(uint64_t ptr);
 extern void tss_flush();
+extern void tss_flush_sel(uint16_t selector);
 
 void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
     gdt[num].base_low = (base & 0xFFFF);
@@ -58,11 +66,12 @@ void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, ui
     gdt[num].access = access;
 }
 
-void write_tss(int32_t num, uint64_t rsp0) {
-    uint64_t base = (uint64_t)&tss_entry;
-    uint32_t limit = sizeof(tss_entry);
+static void write_tss_cpu(uint32_t cpu) {
+    uint64_t base = (uint64_t)&tss_entries[cpu];
+    uint32_t limit = sizeof(tss_entries[cpu]);
 
-    struct tss_descriptor* tss_desc = (struct tss_descriptor*)&gdt[num];
+    struct tss_descriptor* tss_desc =
+        (struct tss_descriptor*)&gdt[GDT_TSS_FIRST + 2 * cpu];
     tss_desc->base_low = (base & 0xFFFF);
     tss_desc->base_middle = (base >> 16) & 0xFF;
     tss_desc->base_high = (base >> 24) & 0xFF;
@@ -72,26 +81,42 @@ void write_tss(int32_t num, uint64_t rsp0) {
     tss_desc->access = 0x89; // TSS Present & Executable
     tss_desc->reserved = 0;
 
-    memset((void*)&tss_entry, 0, sizeof(tss_entry));
-    tss_entry.rsp0 = rsp0;
-    tss_entry.iomap_base = sizeof(tss_entry);
+    memset((void*)&tss_entries[cpu], 0, sizeof(tss_entries[cpu]));
+    tss_entries[cpu].rsp0 = 0;  // diisi tss_set_rsp0() setelah heap siap
+    tss_entries[cpu].iomap_base = sizeof(tss_entries[cpu]);
+}
+
+// Isi RSP0 milik satu CPU (dipanggil setelah syscall stack-nya dialokasikan).
+void tss_set_rsp0(uint32_t cpu, uint64_t rsp0) {
+    if (cpu >= SMP_MAX_CPUS) return;
+    tss_entries[cpu].rsp0 = rsp0;
+}
+
+// Load TR ke TSS milik CPU ini (wajib per-CPU — TR bersifat per-core).
+void tss_load_cpu(uint32_t cpu) {
+    if (cpu >= SMP_MAX_CPUS) return;
+    tss_flush_sel(TSS_SELECTOR(cpu));
 }
 
 void init_gdt() {
-    gp.limit = (sizeof(struct gdt_entry) * 7) - 1;
+    gp.limit = (sizeof(struct gdt_entry) * GDT_ENTRIES) - 1;
     gp.base = (uint64_t)&gdt;
 
     gdt_set_gate(0, 0, 0, 0, 0);                // Null segment
     // GRANULARITY 0xAF: Bendera 'Long Mode' dinyalakan! (L=1, D=0)
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xAF); // Kernel Code
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Kernel Data
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xAF); // User Code 
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User Data
+    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xAF); // Kernel Code  (0x08)
+    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Kernel Data  (0x10)
+    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xAF); // User Code    (0x18, DPL=3)
+    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User Data    (0x20, DPL=3)
 
-    write_tss(5, 0); // TSS masuk ke index 5 & 6
+    // Deskriptor TSS untuk SEMUA CPU ditulis statis di sini (alamat
+    // tss_entries sudah pasti sejak link); rsp0 diisi belakangan.
+    for (uint32_t cpu = 0; cpu < SMP_MAX_CPUS; cpu++) {
+        write_tss_cpu(cpu);
+    }
 
     gdt_flush((uint64_t)&gp);
-    tss_flush();
+    tss_flush(); // BSP: selector 0x28 = TSS CPU 0
 }
 
 void gdt_load(void) {

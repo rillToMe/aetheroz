@@ -24,6 +24,14 @@ gdt_flush:
 
 tss_flush:
     ; Index ke-5 di GDT x 8 byte = 40 (0x28)
-    mov ax, 0x28  
-    ltr ax          
+    mov ax, 0x28
+    ltr ax
+    ret
+
+; tss_flush_sel(uint16_t selector) — load TR dengan selector TSS eksplisit.
+; Dipakai AP untuk memuat TSS milik CPU-nya sendiri (FIX_005 Tahap 1).
+global tss_flush_sel
+tss_flush_sel:
+    mov ax, di
+    ltr ax
     ret

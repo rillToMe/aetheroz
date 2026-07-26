@@ -183,6 +183,20 @@ uint64_t task_idle_stack_top(uint32_t cpu_id) {
     return idle_stack_tops[cpu_id];
 }
 
+// FIX_005 Tahap 1: syscall stack permanen per-CPU — RSP0 milik TSS setiap
+// CPU saat transisi ring-3 → ring-0 (int 0x80, IRQ, exception dari app).
+// 16 KB (2× task stack) karena rantai syscall bisa dalam (exec → ELF → KFS).
+#define SYSCALL_STACK_SIZE 16384
+static uint64_t syscall_stack_tops[SMP_MAX_CPUS];
+
+extern void tss_set_rsp0(uint32_t cpu, uint64_t rsp0);
+extern void tss_load_cpu(uint32_t cpu);
+
+uint64_t task_syscall_stack_top(uint32_t cpu_id) {
+    if (cpu_id >= SMP_MAX_CPUS) cpu_id = 0;
+    return syscall_stack_tops[cpu_id];
+}
+
 // Dipanggil dari task_exit_via_idle (asm) SETELAH RSP pindah ke idle stack.
 // Baru di sinilah stack task DEAD boleh di-free.
 void task_exit_finish_on_idle(void* old_stack_base) {
@@ -251,6 +265,17 @@ void tasking_init(void) {
         }
         idle_stack_tops[i] = ((uint64_t)s + TASK_STACK_SIZE) & ~15ULL;
     }
+
+    // FIX_005 Tahap 1: syscall stack permanen per-CPU + isi RSP0 milik BSP.
+    // AP mengisi RSP0-nya sendiri di smp_ap_main (stack sudah siap dari sini).
+    for (uint32_t i = 0; i < SMP_MAX_CPUS; i++) {
+        void* s = kmalloc(SYSCALL_STACK_SIZE);
+        if (!s) {
+            kernel_panic("TASK INIT", "OOM alokasi per-CPU syscall stack", i);
+        }
+        syscall_stack_tops[i] = ((uint64_t)s + SYSCALL_STACK_SIZE) & ~15ULL;
+    }
+    tss_set_rsp0(0, syscall_stack_tops[0]);
 
     // Task 0 = kernel main thread yang sedang berjalan
     // RSP-nya akan diisi oleh schedule() pada preemption pertama
