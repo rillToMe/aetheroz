@@ -434,20 +434,29 @@ void user_shell() {
                         elf_filename[i++] = 'f';
                         elf_filename[i] = '\0';
 
-                        // 2. Luncurkan app via sys_exec (33): AS per-proses +
-                        //    iretq ke CPL 3 (FIX_005 Tahap 1) — bukan lagi
-                        //    CALL langsung di CPL 0. Simpan RSP dulu: sys_exit
-                        //    app akan longjmp ke user_shell di stack ini.
-                        __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
-                        clear_screen();
-                        sys_exec(elf_filename);
+                        // 2. Cek dulu file-nya ada — perintah salah TIDAK
+                        //    boleh menghapus layar (clear_screen me-reset
+                        //    ring history terminal, scrollback ikut hilang).
+                        if (!sys_file_exists(elf_filename)) {
+                            print("Perintah tidak dikenali: ");
+                            print(command);
+                            print("\n");
+                        } else {
+                            // 3. Luncurkan app via sys_exec (33): AS per-proses +
+                            //    iretq ke CPL 3 (FIX_005 Tahap 1) — bukan lagi
+                            //    CALL langsung di CPL 0. Simpan RSP dulu: sys_exit
+                            //    app akan longjmp ke user_shell di stack ini.
+                            __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
+                            clear_screen();
+                            sys_exec(elf_filename);
 
-                        // sys_exec TIDAK kembali saat sukses (app jalan di
-                        // ring 3; exit → longjmp ke user_shell). Sampai di
-                        // sini berarti file gagal dimuat.
-                        print("Perintah tidak dikenali: ");
-                        print(command);
-                        print("\n");
+                            // sys_exec TIDAK kembali saat sukses (app jalan di
+                            // ring 3; exit → longjmp ke user_shell). Sampai di
+                            // sini berarti file ada tapi gagal dimuat (korup?).
+                            print("Gagal memuat: ");
+                            print(elf_filename);
+                            print("\n");
+                        }
                     }
                     // -------------------------------------------
                 }

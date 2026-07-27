@@ -34,6 +34,8 @@ typedef struct {
     uint32_t width, height;
 } Rect;
 
+struct DirtyRegionList;
+
 typedef struct {
     uint32_t width;
     uint32_t height;
@@ -41,6 +43,11 @@ typedef struct {
     ColorFormat format;
     uint32_t* pixels;
     uint8_t owns_pixels;   // 1 = destroy() frees pixels, 0 = borrowed
+    // Kontrak Phase 3B: setiap write ke buffer OTOMATIS menandai dirty.
+    // NULL = tanpa tracking. Marking TIDAK mengambil lock — pasang hanya
+    // pada buffer yang disentuh satu konteks (buffer layar pakai jalur
+    // terkunci screen_mark_dirty di fb.c, bukan field ini).
+    struct DirtyRegionList* dirty;
 } DisplayBuffer;
 
 // Allocates pixels (System-owned). Returns NULL on failure.
@@ -71,7 +78,7 @@ Rect rect_union(Rect a, Rect b);
 
 #define MAX_DIRTY_REGIONS 64
 
-typedef struct {
+typedef struct DirtyRegionList {
     Rect regions[MAX_DIRTY_REGIONS];
     uint32_t count;
     uint8_t collapsed;   // 1 = regions[0] is the bounding box of everything marked

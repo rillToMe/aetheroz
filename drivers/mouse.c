@@ -55,21 +55,33 @@ uint8_t mouse_read() {
     return inb(0x60);
 }
 
+// Phase 4 (wheel): 1 = mode IntelliMouse aktif — paket 4 byte, byte[3] = Z.
+static uint8_t mouse_has_wheel = 0;
+
 void init_mouse() {
     uint8_t status;
-    mouse_wait(1); outb(0x64, 0xA8); 
-    mouse_wait(1); outb(0x64, 0x20); 
-    mouse_wait(0); status = (inb(0x60) | 2); 
-    mouse_wait(1); outb(0x64, 0x60); 
+    mouse_wait(1); outb(0x64, 0xA8);
+    mouse_wait(1); outb(0x64, 0x20);
+    mouse_wait(0); status = (inb(0x60) | 2);
+    mouse_wait(1); outb(0x64, 0x60);
     mouse_wait(1); outb(0x60, status);
-    mouse_write(0xF6); mouse_read(); 
-    mouse_write(0xF4); mouse_read(); 
-    
+    mouse_write(0xF6); mouse_read();
+
+    // Phase 4: aktifkan scroll wheel — "magic knock" IntelliMouse
+    // (sample rate 200 → 100 → 80, lalu baca device ID; 3 = wheel ada).
+    mouse_write(0xF3); mouse_read(); mouse_write(200); mouse_read();
+    mouse_write(0xF3); mouse_read(); mouse_write(100); mouse_read();
+    mouse_write(0xF3); mouse_read(); mouse_write(80);  mouse_read();
+    mouse_write(0xF2); mouse_read();               // ACK
+    if (mouse_read() == 3) mouse_has_wheel = 1;    // device ID
+
+    mouse_write(0xF4); mouse_read();
+
     // (HAPUS PEMANGGILAN draw_mouse() DARI SINI KARENA AKAN DITANGANI COMPOSITOR)
 }
 
 uint8_t mouse_cycle = 0;
-int8_t mouse_byte[3];
+int8_t mouse_byte[4];
 
 // Definisi global — di-extern oleh syscall.c untuk polling sederhana
 uint8_t mouse_left_clicked = 0;
@@ -86,11 +98,14 @@ static spinlock_t mouse_state_lock = SPINLOCK_INIT;
 
 void mouse_handler() {
     uint8_t status = inb(0x64);
+    uint8_t packet_size = mouse_has_wheel ? 4 : 3;
+    int8_t wheel_z = 0;
     if ((status & 0x01) && (status & 0x20)) {
         mouse_byte[mouse_cycle++] = inb(0x60);
-        if (mouse_cycle == 3) {
+        if (mouse_cycle == packet_size) {
             mouse_cycle = 0;
             if ((mouse_byte[0] & 0x80) || (mouse_byte[0] & 0x40)) goto end_mouse_irq;
+            if (mouse_has_wheel) wheel_z = mouse_byte[3];
 
             spinlock_lock(&mouse_state_lock);
 
@@ -140,6 +155,21 @@ void mouse_handler() {
             push_event(2, mouse_x, mouse_y, 0); // EVENT_MOUSE_MOVE (2)
 
             spinlock_unlock(&mouse_state_lock);
+
+            // --- Phase 3D/4: routing scroll wheel (di luar mouse_state_lock —
+            // scrollback me-render layar, terlalu berat untuk dipegang lock) ---
+            // PS/2: Z = +1 wheel ke bawah, -1 wheel ke atas.
+            if (wheel_z != 0) {
+                extern int  kwm_has_active_windows(void);
+                extern void tty_scroll_view(int32_t delta_lines);
+                if (kwm_has_active_windows()) {
+                    // EVENT_SCROLL (4) → P1: delta (+1 bawah / -1 atas), P2/P3: posisi
+                    push_event(4, (int32_t)wheel_z, mouse_x, mouse_y);
+                } else {
+                    // Terminal: wheel atas (Z<0) = masuk riwayat (offset naik)
+                    tty_scroll_view((int32_t)(-wheel_z) * 3);
+                }
+            }
         }
     } else if (status & 0x01) {
         inb(0x60);

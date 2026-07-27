@@ -29,4 +29,7 @@ void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y);
 int  kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
                        uint8_t left_down, uint8_t left_up);
 
+// 1 jika ada window aktif — routing wheel scroll (mouse IRQ).
+int  kwm_has_active_windows(void);
+
 #endif

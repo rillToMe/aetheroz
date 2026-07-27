@@ -254,8 +254,8 @@ void syscall_handler(registers_t *r) {
         // Reserved/Unused
     }
     else if (syscall_num == 22) { // sys_draw_pixel
+        // Phase 3B adopsi: draw_pixel menandai dirty sendiri.
         draw_pixel((uint32_t)r->rbx, (uint32_t)r->rcx, (uint32_t)r->rdx);
-        screen_mark_dirty((int32_t)r->rbx, (int32_t)r->rcx, 1, 1);
     }
     else if (syscall_num == 23) { // sys_draw_image
         // PENGECUALIAN TERDOKUMENTASI #2 (Tahap 2): buffer pixel bisa besar

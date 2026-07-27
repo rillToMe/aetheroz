@@ -12,6 +12,7 @@
 #define EVENT_KEY_PRESS     1
 #define EVENT_MOUSE_MOVE    2
 #define EVENT_MOUSE_CLICK   3
+#define EVENT_SCROLL        4   // Phase 4: P1 = delta wheel (+1 bawah / -1 atas)
 
 typedef struct {
     uint32_t type;

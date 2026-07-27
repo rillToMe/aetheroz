@@ -26,18 +26,18 @@ void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height) {
     spinlock_unlock_irqrestore(&g_dirty_lock, flags);
 }
 
-// Copy a screen-space rect between two full-screen buffers, row by row.
-static void blit_rect(uint32_t* dst, const uint32_t* src, Rect r, int pitch4) {
-    for (uint32_t row = 0; row < r.height; row++) {
-        uint32_t off = ((uint32_t)r.y + row) * (uint32_t)pitch4 + (uint32_t)r.x;
-        uint32_t* d = dst + off;
-        const uint32_t* s = src + off;
-        for (uint32_t col = 0; col < r.width; col++) d[col] = s[col];
-    }
+// Copy a screen-space rect between two full-screen buffers.
+// Phase 3C ADOPSI: blit = viewport_render dengan scroll = posisi rect —
+// Viewport adalah mesin blit standar compositor (dipakai lagi oleh WM
+// untuk surface di Phase 5).
+static void blit_rect_db(DisplayBuffer* dst, DisplayBuffer* src, Rect r) {
+    Viewport vp = { r, r.x, r.y, src };
+    viewport_render(&vp, dst);
 }
 
 // Composite every window overlapping `r` (z-order low→high) onto the backbuffer.
-// Caller must hold kwm_lock.
+// Caller must hold kwm_lock. Surface window = DisplayBuffer (Phase 3A/5);
+// tetap loop custom (bukan viewport_render) karena butuh alpha-mask per pixel.
 static void composite_windows_in_rect(Rect r, int pitch4) {
     for (uint32_t z = 1; z <= next_z_index; z++) {
         for (int w = 0; w < MAX_WINDOWS; w++) {
@@ -51,12 +51,11 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
 
             const int32_t win_x = kwm_windows[w].x;
             const int32_t win_y = kwm_windows[w].y;
-            const int win_w = (int)kwm_windows[w].width;
-            uint32_t* canvas = kwm_windows[w].canvas;
+            const DisplayBuffer* canvas = kwm_windows[w].canvas;
 
             for (uint32_t yy = 0; yy < clip.height; yy++) {
                 int32_t sy = clip.y + (int32_t)yy - win_y;
-                const uint32_t* src = canvas + (uint32_t)sy * (uint32_t)win_w + (uint32_t)(clip.x - win_x);
+                const uint32_t* src = canvas->pixels + (uint32_t)sy * canvas->stride + (uint32_t)(clip.x - win_x);
                 uint32_t* dst = backbuffer + ((uint32_t)clip.y + yy) * (uint32_t)pitch4 + (uint32_t)clip.x;
                 for (uint32_t xx = 0; xx < clip.width; xx++) {
                     uint32_t pixel = src[xx];
@@ -70,6 +69,10 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
 
 void compositor_flush() {
     if (fb_width == 0) return;
+    DisplayBuffer* screen_db = gfx_screen_buffer();  // base_canvas
+    DisplayBuffer* back_db   = gfx_back_buffer();
+    DisplayBuffer* fb_db     = gfx_fb_buffer();
+    if (!screen_db || !back_db || !fb_db) return;
     const int pitch4 = (int)(fb_pitch / 4);
     Rect screen = { 0, 0, fb_width, fb_height };
 
@@ -94,7 +97,7 @@ void compositor_flush() {
     for (uint32_t i = 0; i < dirty.count; i++) {
         Rect r;
         if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
-        blit_rect(backbuffer, base_canvas, r, pitch4);
+        blit_rect_db(back_db, screen_db, r);
         composite_windows_in_rect(r, pitch4);
     }
     spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);
@@ -113,6 +116,6 @@ void compositor_flush() {
     for (uint32_t i = 0; i < dirty.count; i++) {
         Rect r;
         if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
-        blit_rect(fb_ptr, backbuffer, r, pitch4);
+        blit_rect_db(fb_db, back_db, r);
     }
 }

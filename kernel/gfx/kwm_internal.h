@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include "spinlock.h"
+#include "display.h"
 
 #define MAX_WINDOWS 16
 
@@ -13,7 +14,9 @@ typedef struct {
     uint8_t active;
     int32_t x, y;
     uint32_t width, height;
-    uint32_t* canvas;
+    // Phase 3A/5 adopsi: surface window = DisplayBuffer (owned, dibuat
+    // display_buffer_create — stride == width).
+    DisplayBuffer* canvas;
     uint32_t z_index;
     int32_t owner_task;   // FIX_004: task pemilik window (-1 = tidak ada)
 } kwm_window_t;

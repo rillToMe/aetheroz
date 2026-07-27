@@ -1,5 +1,6 @@
 #include "display.h"
 #include "heap.h"
+#include "string.h"
 
 static uint8_t rect_clip_to_buffer(const DisplayBuffer* buffer, Rect* area) {
     int64_t x0 = area->x;
@@ -38,6 +39,7 @@ DisplayBuffer* display_buffer_create(uint32_t width, uint32_t height, ColorForma
     buffer->stride = width;
     buffer->format = format;
     buffer->owns_pixels = 1;
+    buffer->dirty = NULL;
     return buffer;
 }
 
@@ -54,6 +56,7 @@ DisplayBuffer* display_buffer_wrap(uint32_t* pixels, uint32_t width, uint32_t he
     buffer->stride = stride;
     buffer->format = format;
     buffer->owns_pixels = 0;
+    buffer->dirty = NULL;
     return buffer;
 }
 
@@ -67,6 +70,10 @@ void display_buffer_write_pixel(DisplayBuffer* buffer, int32_t x, int32_t y, Col
     if (!buffer) return;
     if (x < 0 || y < 0 || (uint32_t)x >= buffer->width || (uint32_t)y >= buffer->height) return;
     buffer->pixels[(uint32_t)y * buffer->stride + (uint32_t)x] = color;
+    if (buffer->dirty) {
+        Rect r = { x, y, 1, 1 };
+        dirty_region_mark(buffer->dirty, r);
+    }
 }
 
 void display_buffer_fill_rect(DisplayBuffer* buffer, Rect area, Color color) {
@@ -79,6 +86,7 @@ void display_buffer_fill_rect(DisplayBuffer* buffer, Rect area, Color color) {
             line[col] = color;
         }
     }
+    if (buffer->dirty) dirty_region_mark(buffer->dirty, area);
 }
 
 int rect_intersect(Rect a, Rect b, Rect* out) {
@@ -148,23 +156,35 @@ void viewport_scroll(Viewport* vp, int32_t dx, int32_t dy) {
     if (vp->scroll_y < 0) vp->scroll_y = 0;
 }
 
+// Jalur panas compositor (blit base→back & back→fb tiap frame): clipping
+// dihitung SEKALI per panggilan, inner loop = memcpy per baris — bukan
+// bounds check per pixel.
 void viewport_render(Viewport* vp, DisplayBuffer* target) {
     if (!vp || !target || !vp->source) return;
-
     const DisplayBuffer* src = vp->source;
-    for (uint32_t row = 0; row < vp->bounds.height; row++) {
-        int32_t sy = vp->scroll_y + (int32_t)row;
-        int32_t ty = vp->bounds.y + (int32_t)row;
-        if (sy < 0 || (uint32_t)sy >= src->height) continue;
-        if (ty < 0 || (uint32_t)ty >= target->height) continue;
 
-        for (uint32_t col = 0; col < vp->bounds.width; col++) {
-            int32_t sx = vp->scroll_x + (int32_t)col;
-            int32_t tx = vp->bounds.x + (int32_t)col;
-            if (sx < 0 || (uint32_t)sx >= src->width) continue;
-            if (tx < 0 || (uint32_t)tx >= target->width) continue;
-            target->pixels[(uint32_t)ty * target->stride + (uint32_t)tx] =
-                src->pixels[(uint32_t)sy * src->stride + (uint32_t)sx];
-        }
+    // Rentang kolom [c0, c1): source & target sama-sama in-bounds.
+    int64_t c0 = 0, c1 = (int64_t)vp->bounds.width;
+    if (-(int64_t)vp->scroll_x > c0)                    c0 = -(int64_t)vp->scroll_x;
+    if ((int64_t)src->width - vp->scroll_x < c1)        c1 = (int64_t)src->width - vp->scroll_x;
+    if (-(int64_t)vp->bounds.x > c0)                    c0 = -(int64_t)vp->bounds.x;
+    if ((int64_t)target->width - vp->bounds.x < c1)     c1 = (int64_t)target->width - vp->bounds.x;
+    if (c1 <= c0) return;
+
+    // Rentang baris [r0, r1): idem.
+    int64_t r0 = 0, r1 = (int64_t)vp->bounds.height;
+    if (-(int64_t)vp->scroll_y > r0)                    r0 = -(int64_t)vp->scroll_y;
+    if ((int64_t)src->height - vp->scroll_y < r1)       r1 = (int64_t)src->height - vp->scroll_y;
+    if (-(int64_t)vp->bounds.y > r0)                    r0 = -(int64_t)vp->bounds.y;
+    if ((int64_t)target->height - vp->bounds.y < r1)    r1 = (int64_t)target->height - vp->bounds.y;
+    if (r1 <= r0) return;
+
+    uint64_t row_bytes = (uint64_t)(c1 - c0) * 4;
+    for (int64_t row = r0; row < r1; row++) {
+        const uint32_t* s = src->pixels +
+            (uint64_t)(vp->scroll_y + row) * src->stride + (uint64_t)(vp->scroll_x + c0);
+        uint32_t* d = target->pixels +
+            (uint64_t)(vp->bounds.y + row) * target->stride + (uint64_t)(vp->bounds.x + c0);
+        memcpy(d, s, row_bytes);
     }
 }

@@ -27,7 +27,7 @@ static int32_t drag_offset_y  = 0;
 // drag session ke slot ini diputus — tidak ada pointer/state menggantung.
 static void kwm_free_slot(int i) {
     if (kwm_windows[i].canvas) {
-        kfree(kwm_windows[i].canvas);
+        display_buffer_destroy(kwm_windows[i].canvas);
         kwm_windows[i].canvas = NULL;
     }
     kwm_windows[i].active = 0;
@@ -50,8 +50,10 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
     for(int i = 0; i < MAX_WINDOWS; i++) {
         if(!kwm_windows[i].active) {
             // FIX_004: alokasi DULU — slot ditandai active hanya setelah
-            // semua field siap (tidak ada zombie window saat kmalloc gagal).
-            uint32_t* canvas = (uint32_t*)kmalloc((size_t)bytes);
+            // semua field siap (tidak ada zombie window saat alokasi gagal).
+            // Phase 3A: surface window = DisplayBuffer owned.
+            DisplayBuffer* canvas =
+                display_buffer_create(width, height, COLOR_FORMAT_XRGB8888);
             if (!canvas) {
                 spinlock_unlock_irqrestore(&kwm_lock, flags);
                 return -1;
@@ -109,7 +111,7 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
     }
 
     uint32_t size = kwm_windows[win_id].width * kwm_windows[win_id].height;
-    uint32_t* dest = kwm_windows[win_id].canvas;
+    uint32_t* dest = kwm_windows[win_id].canvas->pixels;  // stride == width
     // FIX_005 Tahap 4: app_buffer bisa halaman user (pengecualian shared #1,
     // dibaca langsung dengan CR3 caller) → jendela SMAP selama blit.
     user_access_begin();
@@ -147,6 +149,18 @@ void kwm_destroy_windows_of(int task_id) {
     }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(0, 0, fb_width, fb_height);
+}
+
+// Ada window aktif? Dipakai mouse IRQ untuk routing wheel: window aktif →
+// EVENT_SCROLL ke app; tidak ada → scrollback terminal (Phase 3D/4).
+int kwm_has_active_windows(void) {
+    spinlock_lock(&kwm_lock);   // konsisten dengan kwm_process_mouse (konteks IRQ)
+    int any = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (kwm_windows[i].active) { any = 1; break; }
+    }
+    spinlock_unlock(&kwm_lock);
+    return any;
 }
 
 // Destroy ALL KWM windows — hanya untuk path kernel/test, BUKAN syscall.
