@@ -135,6 +135,14 @@ void sys_exec(char* filename) {
     __asm__ volatile("int $0x80" : : "a"(33), "b"((uint64_t)filename));
 }
 
+// Phase 5A: spawn app sebagai task ring-3 BARU (syscall 57) — konkuren,
+// shell tetap jalan. Return task id (>= 0) atau -1 jika gagal.
+int sys_spawn(char* filename) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(57), "b"((uint64_t)filename));
+    return ret;
+}
+
 
 // --- Cetak Angka ---
 void print_num(uint32_t num) {

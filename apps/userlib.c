@@ -111,6 +111,13 @@ void sys_exec(char* filename) {
     __builtin_unreachable();
 }
 
+// sys_spawn (Phase 5A): task ring-3 baru yang konkuren — caller tetap jalan.
+int sys_spawn(char* filename) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(57), "b"((uint64_t)filename));
+    return ret;
+}
+
 // sys_exit: App selesai, kembali ke shell.
 // Kernel membebaskan RAM app dan jump langsung ke shell command loop.
 __attribute__((noreturn))

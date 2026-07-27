@@ -158,6 +158,22 @@ registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
         current_task = next;
     }
 
+    // ── RSP0 MENGIKUTI TASK (wajib sejak app ring-3 konkuren, Phase 5A) ──
+    // Frame preemption task ring-3 ditulis CPU di RSP0 = TOP stack yang
+    // ditunjuk TSS. Jika RSP0 global (per-CPU syscall stack bersama), dua
+    // task ring-3 yang berbagi satu CPU saling MENIMPA frame satu sama lain
+    // (alamat [TOP-F, TOP] identik) → resume dengan register sampah → BOSD.
+    // Fix: tiap context switch, arahkan RSP0 ke stack kernel MILIK task
+    // berikutnya. Task kernel lama (stack_base==0, mis. kmain) tetap memakai
+    // per-CPU syscall stack seperti semula.
+    {
+        extern void tss_set_rsp0(uint32_t cpu, uint64_t rsp0);
+        uint64_t rsp0_top = (tasks[next].stack_base != 0)
+            ? tasks[next].stack_base + TASK_STACK_SIZE
+            : task_syscall_stack_top(cpu_id);
+        tss_set_rsp0(cpu_id, rsp0_top);
+    }
+
     // ── CR3 SWITCH: Load next task's address space ──
     // Only CR3 changes. current_pml4 ALWAYS stays as kernel PML4.
     // User-range isolation is handled by the per-process PML4 loaded into CR3.

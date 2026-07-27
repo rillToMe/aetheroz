@@ -537,6 +537,16 @@ void syscall_handler(registers_t *r) {
         extern void kwm_destroy_windows_of(int);
         kwm_destroy_windows_of(smp_current_task_id());
 
+        // Phase 5A: app hasil sys_spawn adalah task independen — tidak ada
+        // shell untuk "kembali". task_exit() membereskan sisanya: AS
+        // (dead_pml4), uheap, fd terbuka, stack kernel, lalu parkir di idle.
+        {
+            task_t *self = syscall_current_task();
+            if (self && self->kind == TASK_KIND_SPAWNED) {
+                task_exit();  // noreturn
+            }
+        }
+
         // Destroy address space and switch back to kernel PML4
         {
             task_t *self = syscall_current_task();
@@ -739,6 +749,52 @@ void syscall_handler(registers_t *r) {
     }
     else if (syscall_num == 56) { // sys_sock_close(sockfd)
         ret_val = (uint64_t)(int64_t)ksock_close((int)r->rbx);
+    }
+    else if (syscall_num == 57) { // sys_spawn — Phase 5A: ELF sebagai task ring-3 BARU
+        // Copy-in path SEBELUM apa pun (pola boundary Tahap 2).
+        char kfname[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kfname, r->rbx, sizeof(kfname)) < 0) {
+            r->rax = (uint64_t)-1;
+            return;
+        }
+
+        ret_val = (uint64_t)-1;
+
+        // 1. Address space baru untuk child
+        phys_addr_t child_pml4 = vmm_create_address_space();
+        if (child_pml4 != PHYS_NULL) {
+            // 2. Load ELF ke AS child. Selama load, CR3 harus menunjuk AS
+            //    child (memcpy segmen lewat VA user). pml4_phys CALLER
+            //    dipinjamkan sementara ke AS child mengikuti pola sys_exec:
+            //    kalau task ini di-preempt di tengah load, scheduler
+            //    me-restore CR3 dari pml4_phys task saat resume — tanpa ini
+            //    resume bisa membawa CR3 basi dan memcpy segmen salah alamat.
+            task_t *self = syscall_current_task();
+            phys_addr_t saved_as  = self ? self->pml4_phys : PHYS_NULL;
+            phys_addr_t saved_cr3 = vmm_read_cr3();
+            if (self) self->pml4_phys = child_pml4;
+            vmm_switch_pml4(child_pml4);
+
+            uint64_t child_stack_top = 0;
+            uint64_t entry = elf_load_file(kfname, &child_stack_top, child_pml4);
+
+            vmm_switch_pml4(saved_cr3);
+            if (self) self->pml4_phys = saved_as;
+
+            // 3. Buat task ring-3 — AS + cookie + kind terpasang sebelum READY
+            if (entry != 0 && child_stack_top != 0) {
+                int tid = create_user_task(entry, child_stack_top, child_pml4,
+                                           as_cookie_next(), kfname);
+                if (tid >= 0) {
+                    ret_val = (uint64_t)tid;
+                    child_pml4 = PHYS_NULL; // kepemilikan AS pindah ke task
+                }
+            }
+            // Gagal load / gagal buat task → AS yatim, hancurkan
+            if (child_pml4 != PHYS_NULL) {
+                vmm_destroy_task_as(child_pml4);
+            }
+        }
     }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)

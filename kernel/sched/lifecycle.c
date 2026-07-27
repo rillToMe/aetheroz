@@ -105,6 +105,7 @@ void tasking_init(void) {
         tasks[i].enqueue_ms = 0;
         tasks[i].uheap_brk = 0;
         tasks[i].uheap_regions = NULL;
+        tasks[i].kind = TASK_KIND_KERNEL;
     }
 
     for (int i = 0; i < SMP_MAX_CPUS; i++) {
@@ -124,6 +125,7 @@ void tasking_init(void) {
     tasks[0].wake_at_ms = 0;
     tasks[0].priority   = PRIO_NORMAL;
     tasks[0].enqueue_ms = 0;
+    tasks[0].kind       = TASK_KIND_KERNEL;
     task_strncpy(tasks[0].name, "kmain", 16);
 
     current_task = 0;
@@ -240,6 +242,7 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     tasks[slot].cookie     = 0;
     tasks[slot].wake_at_ms = 0;
     tasks[slot].priority   = priority;
+    tasks[slot].kind       = TASK_KIND_KERNEL;
     task_strncpy(tasks[slot].name, name ? name : "task", 16);
 
     spinlock_unlock_irqrestore(&scheduler_lock, flags);
@@ -268,6 +271,124 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
         smp_mark_reschedule(kick_cpus[i]);
         lapic_send_reschedule(kick_cpus[i]);
     }
+}
+
+// ============================================================
+// create_user_task — Phase 5A: task ring-3 BARU untuk sys_spawn
+//
+// Sama dengan create_task_prio, tetapi fake ISR frame mengarah ke ring 3:
+// iretq memuat CS=0x1B/SS=0x23 dengan RIP=entry ELF dan RSP=stack user,
+// sehingga app mulai langsung di CPL 3 (tanpa task_entry_trampoline).
+//
+// pml4_phys/cookie/kind di-set DI DALAM scheduler_lock sebelum state=READY —
+// scheduler membaca pml4_phys untuk CR3 switch saat task pertama dipilih;
+// jika di-set setelah READY, AP lain bisa menjemput task dengan CR3 salah.
+// ============================================================
+int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
+                     phys_addr_t pml4_phys, uint32_t cookie, const char* name) {
+    uint32_t kick_cpus[SMP_MAX_CPUS];
+    uint32_t kick_count = 0;
+
+    uint8_t* stack = (uint8_t*)kmalloc(TASK_STACK_SIZE);
+    if (!stack) return -1;
+
+    uint64_t stack_top = (uint64_t)stack + TASK_STACK_SIZE;
+    for (int i = 0; i < TASK_STACK_SIZE; i++) stack[i] = 0;
+
+    // Fake ISR Frame — layout identik dengan create_task_prio, bedanya:
+    // SS/CS = segmen user (RPL3), RIP = entry ELF, RSP = stack user app.
+    uint64_t* p = (uint64_t*)stack_top;
+
+    // ── CPU auto-push (5 slot, urutan tinggi→rendah) ──
+    *(--p) = 0x23ULL;            // SS  = user data (GDT[4] | RPL3)
+    *(--p) = user_rsp;           // RSP = stack user app (dari elf_load_file)
+    *(--p) = 0x202ULL;           // RFLAGS: reserved bit + IF=1
+    *(--p) = 0x1BULL;            // CS  = user code (GDT[3] | RPL3)
+    *(--p) = entry_rip;          // RIP = entry point ELF (main)
+
+    // ── ISR stub push (2 slot) ──
+    *(--p) = 0ULL;               // error_code
+    *(--p) = 0ULL;               // int_num
+
+    // ── PUSHA64 order (15 slot): rax pertama = highest, r15 terakhir = RSP ──
+    *(--p) = 0ULL;   // rax
+    *(--p) = 0ULL;   // rbx
+    *(--p) = 0ULL;   // rcx
+    *(--p) = 0ULL;   // rdx
+    *(--p) = 0ULL;   // rbp
+    *(--p) = 0ULL;   // rsi
+    *(--p) = 0ULL;   // rdi — bukan argumen: app mulai di main() tanpa trampoline
+    *(--p) = 0ULL;   // r8
+    *(--p) = 0ULL;   // r9
+    *(--p) = 0ULL;   // r10
+    *(--p) = 0ULL;   // r11
+    *(--p) = 0ULL;   // r12
+    *(--p) = 0ULL;   // r13
+    *(--p) = 0ULL;   // r14
+    *(--p) = 0ULL;   // r15  ← p = RSP yang disimpan di TCB
+
+    uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+
+    int slot = -1;
+    for (int i = 1; i < task_count; i++) {
+        if (tasks[i].state == TASK_DEAD) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot < 0 && task_count < MAX_TASKS) {
+        slot = task_count++;
+    }
+
+    if (slot < 0) {
+        spinlock_unlock_irqrestore(&scheduler_lock, flags);
+        kfree(stack);
+        return -1;
+    }
+
+    // Fallback reaper (pola create_task_prio): slot yang dimatikan di luar
+    // jalur task_exit normal tidak boleh mewariskan stack/heap metadata.
+    if (tasks[slot].stack_base != 0) {
+        kfree((void*)tasks[slot].stack_base);
+    }
+    uheap_reset(&tasks[slot]);
+
+    // Semua field terisi SEBELUM state=READY — lihat komentar di atas.
+    tasks[slot].id         = (uint32_t)slot;
+    tasks[slot].rsp        = (uint64_t)p;
+    tasks[slot].stack_base = (uint64_t)stack;
+    tasks[slot].state      = TASK_READY;
+    tasks[slot].pml4_phys  = pml4_phys;
+    tasks[slot].cookie     = cookie;
+    tasks[slot].wake_at_ms = 0;
+    tasks[slot].priority   = PRIO_NORMAL;
+    tasks[slot].kind       = TASK_KIND_SPAWNED;
+    task_strncpy(tasks[slot].name, name ? name : "app", 16);
+
+    spinlock_unlock_irqrestore(&scheduler_lock, flags);
+
+    uint32_t target = pick_target_cpu();
+    if (runq_push(target, slot) != 0) {
+        uint64_t reclaim = spinlock_lock_irqsave(&scheduler_lock);
+        tasks[slot].state = TASK_DEAD;
+        tasks[slot].rsp   = 0;
+        tasks[slot].stack_base = 0;   // stack di-free di bawah — jangan wariskan pointer
+        spinlock_unlock_irqrestore(&scheduler_lock, reclaim);
+        kfree(stack);
+        return -1;
+    }
+
+    if (target != smp_current_cpu_index()) {
+        kick_cpus[kick_count++] = target;
+    }
+
+    for (uint32_t i = 0; i < kick_count; i++) {
+        smp_mark_reschedule(kick_cpus[i]);
+        lapic_send_reschedule(kick_cpus[i]);
+    }
+
+    return slot;
 }
 
 void task_exit(void) {

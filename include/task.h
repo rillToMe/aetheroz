@@ -54,7 +54,10 @@ typedef struct registers {
 #define TASK_BLOCKED  4   // Untimed block: waiting on an object (wait queue / sync)
 
 #define MAX_TASKS       8
-#define TASK_STACK_SIZE 8192  // 8KB per task
+// 16KB (bukan 8KB): sejak Phase 5A, stack ini juga menjadi RSP0 task ring-3 —
+// rantai syscall app (exec → ELF → KFS → ATA) bisa dalam; ukuran disamakan
+// dengan per-CPU syscall stack (SYSCALL_STACK_SIZE) yang dulu menampungnya.
+#define TASK_STACK_SIZE 16384
 
 // ============================================================
 // TASK CONTROL BLOCK (TCB)
@@ -74,7 +77,12 @@ typedef struct task {
     // Stack app kini di user range AS (elf.c) — tidak perlu tracking kfree.
     uint64_t uheap_brk;       // vaddr bebas berikutnya (0 = belum pernah alloc)
     void*    uheap_regions;   // linked list uheap_region_t (node di heap kernel)
+    uint8_t  kind;            // TASK_KIND_* — asal-usul task (semantik sys_exit)
 } task_t;
+
+// task_t.kind — Phase 5A: pembeda semantik sys_exit (34).
+#define TASK_KIND_KERNEL  0   // task kernel / exec-chain shell: exit → longjmp ke user_shell
+#define TASK_KIND_SPAWNED 1   // app ring-3 hasil sys_spawn: exit → terminate task
 
 // Priority levels: higher value = scheduled first. Aging boosts long-waiting
 // READY tasks so low-priority work cannot starve indefinitely.
@@ -92,6 +100,14 @@ void tasking_init(void);
 void create_task(void (*func)(void), const char* name);
 void create_task_prio(void (*func)(void), const char* name, uint8_t priority);
 void task_exit(void) __attribute__((noreturn));
+
+// Phase 5A: buat task ring-3 BARU untuk app hasil sys_spawn — fake ISR frame
+// ber-CS=0x1B/SS=0x23 (iretq langsung ke entry ELF), AS per-proses terpasang
+// sebelum task terlihat scheduler (tidak ada race CR3). Semua field di-set
+// di dalam scheduler_lock sebelum state=READY.
+// Return: task id (>= 0), atau -1 jika gagal (OOM stack / slot penuh / runq penuh).
+int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
+                     phys_addr_t pml4_phys, uint32_t cookie, const char* name);
 void scheduler_dump(void);
 void scheduler_idle_loop(void) __attribute__((noreturn));
 

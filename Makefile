@@ -69,7 +69,11 @@ LWIP_OBJS      = $(LWIP_SRCS:.c=.o) $(E1000_OBJS)
 # 4. -mcmodel=kernel: wajib untuk higher-half kernel — mencegah R_X86_64_32
 #    relocation error saat simbol berada di atas 4GB (0xFFFFFFFF80000000)
 INCLUDE_DIR = include
-CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INCLUDE_DIR)
+# -MMD -MP: tulis file .d (dependensi header) di samping tiap .o — perubahan
+# header (mis. task.h) memicu rebuild semua .c yang meng-includenya. Tanpa
+# ini, object basi membaca struct dengan layout lama (pernah menggigit:
+# task_t tambah field, scheduler membaca tasks[] dengan stride basi).
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR)
 
 # Flags compiler untuk unit lwIP:
 #   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
@@ -98,6 +102,9 @@ C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c,$(C_SOURCES_RAW))
 # Ubah ekstensi sumber menjadi target object (.o)
 # Kernel + arch + drivers object files
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
+
+# Sertakan dependensi header hasil -MMD (diabaikan saat belum ada / setelah clean)
+-include $(OBJS:.o=.d) $(LWIP_OBJS:.o=.d)
 
 # File output
 TARGET = myos.bin

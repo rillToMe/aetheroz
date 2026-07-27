@@ -81,6 +81,11 @@ uint64_t sys_load_elf(char* filename);
 // OS yang free RAM lama, load app baru, lalu lompat langsung ke entry-nya.
 void sys_exec(char* filename);
 
+// sys_spawn (Phase 5A): jalankan ELF sebagai task ring-3 BARU yang konkuren —
+// caller TETAP jalan (beda dengan sys_exec yang menggantikan caller).
+// Return: task id (>= 0), atau -1 jika gagal (file tak ada, OOM, slot penuh).
+int sys_spawn(char* filename);
+
 // sys_exit: App selesai, kembali ke shell. TIDAK PERNAH kembali ke caller.
 void sys_exit(void);
 void sys_draw_string(const char* str, int x, int y, uint32_t color);
