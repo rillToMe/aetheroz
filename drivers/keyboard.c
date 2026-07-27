@@ -4,14 +4,38 @@
 
 extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
 
+// --- Tipe Event (harus cocok dengan userlib.h & kernel/event.c) ---
+#define EVENT_KEY_PRESS     1
+#define EVENT_KEY_RELEASE   5
+
+// --- Bitmask modifier (harus cocok dengan userlib.h) ---
+// Dikirim di P2 setiap EVENT_KEY_PRESS / EVENT_KEY_RELEASE.
+#define KEY_MOD_SHIFT   0x01
+#define KEY_MOD_CTRL    0x02
+#define KEY_MOD_ALT     0x04
+#define KEY_MOD_CAPS    0x08
+
+// Tombol modifier yang sedang DITAHAN, dilacak per sisi (kiri/kanan) agar
+// lepas-satu tidak membatalkan sisi yang masih ditekan.
+#define HELD_LSHIFT     0x01
+#define HELD_RSHIFT     0x02
+#define HELD_LCTRL      0x04
+#define HELD_RCTRL      0x08
+#define HELD_LALT       0x10
+#define HELD_RALT       0x20
+#define HELD_CAPS       0x40
+
 #define KBD_BUFFER_SIZE 256
 volatile uint8_t kbd_buffer[KBD_BUFFER_SIZE];
 volatile uint32_t kbd_head = 0;
 volatile uint32_t kbd_tail = 0;
 static spinlock_t kbd_lock = SPINLOCK_INIT;
 
-// Variabel pelacak status tombol modifier
-static uint8_t shift_pressed = 0;
+// State Phase 4 — hanya disentuh di dalam IRQ handler (satu konteks,
+// tidak reentrant) sehingga tidak butuh lock.
+static uint8_t kbd_held = 0;      // tombol modifier yang sedang ditahan (HELD_*)
+static uint8_t kbd_mods = 0;      // bitmask modifier aktif (KEY_MOD_*)
+static uint8_t kbd_extended = 0;  // prefix E0 diterima, scancode berikutnya extended
 
 // Tabel Scancode Normal (Tanpa Shift)
 const unsigned char kbdus[128] = {
@@ -43,41 +67,94 @@ void pic_remap() {
 
 void keyboard_handler() {
     uint8_t status = inb(0x64);
-    
+
     // Tambahkan pelindung: JANGAN BACA jika Bit 5 (Mouse) menyala!
     if ((status & 0x01) && !(status & 0x20)) {
         uint8_t scancode = inb(0x60);
-        
-        // 1. Cek apakah tombol yang ditekan adalah SHIFT Kiri (0x2A) atau SHIFT Kanan (0x36)
-        if (scancode == 0x2A || scancode == 0x36) {
-            shift_pressed = 1;
-        } 
-        // 2. Cek apakah tombol SHIFT Kiri/Kanan dilepas (Scancode + 0x80)
-        else if (scancode == 0xAA || scancode == 0xB6) {
-            shift_pressed = 0;
-        } 
-        // 3. Jika tombol biasa ditekan (bukan dilepas)
-        else if (!(scancode & 0x80)) { 
-            uint8_t ascii = 0;
-            
-            // Gunakan tabel yang sesuai dengan status Shift
-            if (shift_pressed) {
-                ascii = kbdus_shift[scancode];
-            } else {
-                ascii = kbdus[scancode];
-            }
 
-            if (ascii != 0) {
-                spinlock_lock(&kbd_lock);
-                uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
-                if (next_head != kbd_tail) { 
-                    kbd_buffer[kbd_head] = ascii;
-                    kbd_head = next_head;
+        // Prefix extended (E0): tandai — scancode sebenarnya menyusul di IRQ
+        // berikutnya. Bit 8 pada key_id menandai tombol extended (mis. Ctrl
+        // kanan, arrow keys) agar tidak tertukar dengan padanan non-extended.
+        if (scancode == 0xE0) {
+            kbd_extended = 1;
+            outb(0x20, 0x20);
+            return;
+        }
 
-                    push_event(1, ascii, 0, 0); // EVENT_KEY_PRESS (1) -> P1: Kode ASCII
+        uint8_t released = (scancode & 0x80) != 0;
+        uint8_t code     = scancode & 0x7F;
+        uint16_t key_id  = code | (kbd_extended ? 0x100 : 0);
+        kbd_extended = 0;
+
+        // 1. Update status modifier (dilacak per sisi)
+        switch (key_id) {
+            case 0x2A:   // Shift kiri
+                if (released) kbd_held &= ~HELD_LSHIFT; else kbd_held |= HELD_LSHIFT;
+                break;
+            case 0x36:   // Shift kanan
+                if (released) kbd_held &= ~HELD_RSHIFT; else kbd_held |= HELD_RSHIFT;
+                break;
+            case 0x1D:   // Ctrl kiri
+                if (released) kbd_held &= ~HELD_LCTRL; else kbd_held |= HELD_LCTRL;
+                break;
+            case 0x11D:  // Ctrl kanan (E0)
+                if (released) kbd_held &= ~HELD_RCTRL; else kbd_held |= HELD_RCTRL;
+                break;
+            case 0x38:   // Alt kiri
+                if (released) kbd_held &= ~HELD_LALT; else kbd_held |= HELD_LALT;
+                break;
+            case 0x138:  // Alt kanan (E0)
+                if (released) kbd_held &= ~HELD_RALT; else kbd_held |= HELD_RALT;
+                break;
+            case 0x3A:   // CapsLock — toggle SEKALI per tekan (tahan ≠ toggle ulang)
+                if (!released) {
+                    if (!(kbd_held & HELD_CAPS)) {
+                        kbd_mods ^= KEY_MOD_CAPS;
+                        kbd_held |= HELD_CAPS;
+                    }
+                } else {
+                    kbd_held &= ~HELD_CAPS;
                 }
-                spinlock_unlock(&kbd_lock);
+                break;
+        }
+
+        // Derive bitmask modifier publik dari tombol yang sedang ditahan
+        kbd_mods &= KEY_MOD_CAPS;
+        if (kbd_held & (HELD_LSHIFT | HELD_RSHIFT)) kbd_mods |= KEY_MOD_SHIFT;
+        if (kbd_held & (HELD_LCTRL  | HELD_RCTRL))  kbd_mods |= KEY_MOD_CTRL;
+        if (kbd_held & (HELD_LALT   | HELD_RALT))   kbd_mods |= KEY_MOD_ALT;
+
+        // 2. Terjemahkan ke ASCII
+        uint8_t ascii = kbdus[code];
+        if (!released) {
+            // Press: shift memilih tabel; CapsLock hanya memengaruhi huruf
+            // (XOR dengan shift — perilaku standar).
+            uint8_t upper = (kbd_mods & KEY_MOD_SHIFT) != 0;
+            if ((kbd_mods & KEY_MOD_CAPS) && ascii >= 'a' && ascii <= 'z')
+                upper = !upper;
+            if (upper) ascii = kbdus_shift[code];
+        }
+        // Release: P1 = ASCII dasar (tanpa shift/caps) sebagai identitas
+        // tombol — stabil terhadap urutan pelepasan modifier. Pairing
+        // press↔release yang pasti memakai P3 (key_id), bukan P1.
+
+        // 3. Push event untuk SEMUA tombol (printable maupun tidak).
+        //    Sengaja di luar kbd_lock dan TIDAK tergantung sisa ruang TTY
+        //    buffer — dulu event ikut mati setelah 256 keystroke saat app
+        //    GUI berjalan (buffer TTY penuh tak terbaca).
+        push_event(released ? EVENT_KEY_RELEASE : EVENT_KEY_PRESS,
+                   ascii, kbd_mods, key_id);
+
+        // 4. TTY buffer: hanya teks murni. Kombinasi Ctrl/Alt dianggap
+        //    shortcut (tetap terkirim sebagai event), bukan ketikan.
+        if (!released && ascii != 0 && !(kbd_mods & (KEY_MOD_CTRL | KEY_MOD_ALT))) {
+            spinlock_lock(&kbd_lock);
+            uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
+            if (next_head != kbd_tail) {
+                kbd_buffer[kbd_head] = ascii;
+                kbd_head = next_head;
             }
+            spinlock_unlock(&kbd_lock);
         }
     }
     outb(0x20, 0x20); // End of Interrupt
@@ -113,5 +190,7 @@ void init_keyboard() {
     // overwrite dengan pointer yang truncated (uint32_t).
     kbd_head = 0;
     kbd_tail = 0;
-    shift_pressed = 0;
+    kbd_held = 0;
+    kbd_mods = 0;
+    kbd_extended = 0;
 }

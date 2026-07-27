@@ -6,10 +6,22 @@
 
 // --- STRUKTUR PESAN EVENT (GUI) ---
 #define EVENT_NONE          0
-#define EVENT_KEY_PRESS     1
+#define EVENT_KEY_PRESS     1   // Key down. P1 = ASCII (shift/caps diterapkan; 0 = non-printable)
+                                // P2 = modifier bitmask (KEY_MOD_*), P3 = scancode
 #define EVENT_MOUSE_MOVE    2
 #define EVENT_MOUSE_CLICK   3
 #define EVENT_SCROLL        4   // P1 = delta wheel (+1 bawah / -1 atas)
+#define EVENT_KEY_RELEASE   5   // Key up. P1 = ASCII dasar (identitas tombol, tanpa shift/caps)
+                                // P2 = modifier bitmask (setelah release diproses), P3 = scancode
+
+// Bitmask modifier keyboard (P2 pada EVENT_KEY_PRESS / EVENT_KEY_RELEASE)
+#define KEY_MOD_SHIFT       0x01   // Shift kiri/kanan
+#define KEY_MOD_CTRL        0x02   // Ctrl kiri/kanan
+#define KEY_MOD_ALT         0x04   // Alt kiri/kanan
+#define KEY_MOD_CAPS        0x08   // CapsLock sedang aktif
+
+// P3 = scancode set-1; bit 0x100 menyala = tombol extended (prefix E0,
+// mis. Ctrl/Alt kanan, arrow keys). Pairing press↔release via P3, bukan P1.
 
 typedef struct {
     uint32_t type;    // Jenis Event (Key, Mouse, Click)
