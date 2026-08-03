@@ -5,7 +5,6 @@
 #include "spinlock.h"
 #include "task.h"
 
-// ============================================================
 // WAIT QUEUE (Fase 2) — fondasi untuk mutex, semaphore, condvar.
 //
 // Sebuah wait queue adalah antrian task yang menunggu suatu KONDISI. Kunci
@@ -33,7 +32,6 @@
 //
 // Urutan kunci (bebas deadlock): wq->lock → scheduler_lock → run-queue lock.
 // Tidak ada jalur yang mengunci ke arah sebaliknya.
-// ============================================================
 #define WAIT_QUEUE_CAPACITY MAX_TASKS
 
 typedef struct wait_queue {

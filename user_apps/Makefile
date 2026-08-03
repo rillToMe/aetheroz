@@ -35,7 +35,9 @@ INC_DIR   = $(ROOT_DIR)/include
 OUT_DIR   = $(ROOT_DIR)
 
 # --- Flags Compiler 64-bit ---
-CFLAGS_COMMON = --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -I$(INC_DIR)
+# -MMD -MP: header dependency tracking (pola Makefile top-level) — perubahan
+# include/*.h (mis. kyuzen_event_t di userlib.h) memaksa recompile semua app.
+CFLAGS_COMMON = --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INC_DIR)
 CFLAGS_APP    = $(CFLAGS_COMMON) -O0
 CFLAGS_LIB    = $(CFLAGS_COMMON) -O2
 
@@ -189,5 +191,9 @@ badptr: $(BADPTR_ELF)
 # ==========================================================
 clean:
 	@echo "[CLEAN] Membersihkan file objek user_apps..."
-	rm -f fileman.o viewer.o clock.o calc.o taskmgr.o badptr.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
+	rm -f $(APP_OBJS) $(APP_OBJS:.o=.d)
 	@echo "[CLEAN] Selesai."
+
+# --- Semua objek + header deps (harus sebelum -include) ---
+APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o
+-include $(APP_OBJS:.o=.d)

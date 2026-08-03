@@ -120,9 +120,10 @@ uint32_t sys_get_uid(void)         { return (uint32_t)current_uid; }
 uint64_t sys_load_elf(char* filename) {
     extern uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                                   phys_addr_t target_pml4);
-    extern void flush_event_queue(void);
+    extern void flush_event_queue(int task_id);
     extern void flush_kbd_buffer(void);
-    flush_event_queue();
+    extern int  smp_current_task_id(void);
+    flush_event_queue(smp_current_task_id());
     flush_kbd_buffer();
     // Direct-launch dari kernel: tidak ada per-process AS — map ke kernel PML4.
     return elf_load_file(filename, NULL, PHYS_NULL);

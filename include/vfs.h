@@ -4,14 +4,12 @@
 #include <stdint.h>
 #include "fs.h"
 
-// ============================================================
 // VFS fd layer (Fase 5) — per-task file descriptors over KyuzenFS.
 //
 // KyuzenFS is whole-file (create writes all, read reads all). The fd layer
 // buffers an open file in the heap: open loads it, read/write/lseek work on
 // the buffer, close flushes back if dirty. Descriptors are per task (keyed by
 // smp_current_task_id), so different tasks get independent fd namespaces.
-// ============================================================
 
 #define VFS_MAX_FDS      16     // per task
 #define VFS_MAX_PATH     23     // matches kfs filename limit (22 + null)

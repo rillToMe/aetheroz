@@ -233,6 +233,13 @@ void create_task_prio(void (*func)(void), const char* name, uint8_t priority) {
     // yang dimatikan di luar jalur normal tidak boleh mewariskan region list.
     uheap_reset(&tasks[slot]);
 
+    // Phase 5B: slot reuse — buang sisa event queue pemilik lama sebelum
+    // slot terlihat READY (task_exit normal juga sudah flush; ini defensif).
+    {
+        extern void flush_event_queue(int task_id);
+        flush_event_queue(slot);
+    }
+
     // p sekarang menunjuk ke r15, yang adalah RSP "benar" dari ISR frame ini
     tasks[slot].id         = (uint32_t)slot;
     tasks[slot].rsp        = (uint64_t)p;      // RSP = pointer ke r15 di fake frame
@@ -354,6 +361,13 @@ int create_user_task(uint64_t entry_rip, uint64_t user_rsp,
     }
     uheap_reset(&tasks[slot]);
 
+    // Phase 5B: slot reuse — buang sisa event queue pemilik lama sebelum
+    // slot terlihat READY.
+    {
+        extern void flush_event_queue(int task_id);
+        flush_event_queue(slot);
+    }
+
     // Semua field terisi SEBELUM state=READY — lihat komentar di atas.
     tasks[slot].id         = (uint32_t)slot;
     tasks[slot].rsp        = (uint64_t)p;
@@ -397,6 +411,13 @@ void task_exit(void) {
     // Flush and release any open fds before tearing the task down. Done outside
     // scheduler_lock: vfs has its own lock and must not nest under it.
     vfs_close_all(smp_current_task_id());
+
+    // Phase 5B: buang sisa event queue milik task yang mati — slot task bisa
+    // dipakai ulang; event app lama tidak boleh ikut ke pemilik baru.
+    {
+        extern void flush_event_queue(int task_id);
+        flush_event_queue(smp_current_task_id());
+    }
 
     void*       old_stack = NULL;
     phys_addr_t dead_pml4 = PHYS_NULL;

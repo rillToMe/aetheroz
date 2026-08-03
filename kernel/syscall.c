@@ -105,13 +105,13 @@ void syscall_handler(registers_t *r) {
         tty_clear();
     } 
     else if (syscall_num == 3) { // sys_read_keyboard
-        // Flush KEDUA buffer saat shell mulai baca:
-        //   - event queue  → sisa event GUI (keystroke notepad dll)
-        //   - kbd_buffer   → sisa karakter TTY (yang juga ditulis keyboard ISR)
-        extern void flush_event_queue(void);
-        extern void flush_kbd_buffer(void);
-        flush_event_queue();
-        flush_kbd_buffer();
+        // Phase 5B: flush kbd_buffer/event queue DIHAPUS dari titik baca ini.
+        // Routing keyboard kini eksklusif (window fokus → event queue; tidak
+        // ada fokus → TTY), jadi tidak ada lagi "sisa input app lama" yang
+        // harus dibersihkan di sini. Flush-per-baca juga race: karakter yang
+        // tiba di antara dua panggilan read_keyboard (mis. saat shell sibuk
+        // mengeksekusi perintah) terbuang percuma. Transisi lifecycle
+        // (exec/spawn/exit) tetap flush di jalurnya masing-masing.
         // Tahap 2: baca ke buffer kernel dulu — tulisan ke pointer user tidak
         // lagi terjadi di dalam kbd_lock (IRQ off). Validasi SEBELUM read
         // yang blocking, supaya input tidak terlanjur dikonsumsi lalu gagal.
@@ -302,10 +302,10 @@ void syscall_handler(registers_t *r) {
             return;
         }
 
-        // Flush KEDUA buffer sebelum app baru jalan
-        extern void flush_event_queue(void);
+        // Flush KEDUA buffer sebelum app baru jalan (Phase 5B: queue per-task)
+        extern void flush_event_queue(int task_id);
         extern void flush_kbd_buffer(void);
-        flush_event_queue();
+        flush_event_queue(smp_current_task_id());
         flush_kbd_buffer();
 
         // --- PER-PROCESS ISOLATION ---
@@ -369,35 +369,18 @@ void syscall_handler(registers_t *r) {
         }
         kyuzen_event_t kev;
 
-        // 1. Prioritaskan Event Queue asli (Keyboard IRQ + Mouse IRQ via push_event)
-        //    Semua keystroke dan klik mouse sudah dimasukkan ke queue oleh ISR.
-        extern int pop_event(kyuzen_event_t* out);
-        if (pop_event(&kev)) {
+        // Phase 5B: pop dari queue PER-TASK pemanggil — event sudah di-route
+        // KWM (keyboard→fokus, mouse/wheel→window di bawah kursor). Fallback
+        // sintesis MOUSE_MOVE dihapus: move asli kini terkirim per posisi, dan
+        // fallback itu sumber kebocoran event lintas app. Queue kosong →
+        // return 0; app tetap polling + sys_yield seperti biasa.
+        extern int pop_event(int task_id, kyuzen_event_t* out);
+        if (pop_event(smp_current_task_id(), &kev)) {
             copy_to_user(&uc, r->rbx, &kev, sizeof(kev));
             r->rax = 1;
             return; // Event berhasil diambil dari queue — langsung return
         }
-
-        // 2. Fallback: Queue kosong → kirim posisi mouse terkini agar hover GUI tetap responsif
-        //    (App pakai EVENT_MOUSE_MOVE untuk update highlight tombol, dll)
-        extern int32_t mouse_x, mouse_y;
-        extern uint8_t mouse_left_clicked;
-
-        if (mouse_left_clicked) {
-            kev.type   = EVENT_MOUSE_CLICK;
-            kev.param1 = 0;         // 0 = tombol kiri
-            kev.param2 = 1;         // 1 = ditekan
-            kev.param3 = mouse_x;   // koordinat X saat klik
-            mouse_left_clicked = 0;
-        } else {
-            // Selalu kirim posisi mouse agar app bisa track hover
-            kev.type   = EVENT_MOUSE_MOVE;
-            kev.param1 = mouse_x;
-            kev.param2 = mouse_y;
-            kev.param3 = 0;
-        }
-        copy_to_user(&uc, r->rbx, &kev, sizeof(kev));
-        r->rax = 1;
+        r->rax = 0;
         return;
     }
 
@@ -471,10 +454,11 @@ void syscall_handler(registers_t *r) {
         }
 
         // 1b. Flush input buffers so new app doesn't inherit old keystrokes
+        //     (Phase 5B: event queue per-task — flush milik task ini saja)
         {
-            extern void flush_event_queue(void);
+            extern void flush_event_queue(int task_id);
             extern void flush_kbd_buffer(void);
-            flush_event_queue();
+            flush_event_queue(smp_current_task_id());
             flush_kbd_buffer();
         }
 

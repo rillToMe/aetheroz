@@ -23,6 +23,46 @@ static int     dragged_win_id = -1;  // -1 = tidak ada drag
 static int32_t drag_offset_x  = 0;   // Offset klik dalam window (mencegah window "loncat")
 static int32_t drag_offset_y  = 0;
 
+// Phase 5B: window pemegang fokus keyboard (-1 = tidak ada → keyboard ke TTY).
+// Di-set saat create window & click-to-focus di kwm_process_mouse; tint
+// visual titlebar fokus = Phase 5C.
+static int focused_win_id = -1;
+
+// Caller MUST hold kwm_lock. Window aktif teratas (z tertinggi) di titik
+// (px, py), atau -1 jika tidak ada.
+static int kwm_hit_test_locked(int32_t px, int32_t py) {
+    int highest_z = -1;
+    int target    = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!kwm_windows[i].active) continue;
+        int32_t wx = kwm_windows[i].x;
+        int32_t wy = kwm_windows[i].y;
+        int32_t ww = (int32_t)kwm_windows[i].width;
+        int32_t wh = (int32_t)kwm_windows[i].height;
+        if (px >= wx && px < wx + ww && py >= wy && py < wy + wh) {
+            if ((int)kwm_windows[i].z_index > highest_z) {
+                highest_z = (int)kwm_windows[i].z_index;
+                target    = i;
+            }
+        }
+    }
+    return target;
+}
+
+// Caller MUST hold kwm_lock. Setelah window fokus hancur, pindahkan fokus ke
+// window aktif dengan z tertinggi (-1 jika tidak ada lagi).
+static void kwm_refocus_locked(void) {
+    int best = -1;
+    uint32_t best_z = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (kwm_windows[i].active && kwm_windows[i].z_index > best_z) {
+            best_z = kwm_windows[i].z_index;
+            best   = i;
+        }
+    }
+    focused_win_id = best;
+}
+
 // Caller MUST hold kwm_lock. FIX_004: canvas di-NULL-kan setelah free dan
 // drag session ke slot ini diputus — tidak ada pointer/state menggantung.
 static void kwm_free_slot(int i) {
@@ -66,6 +106,8 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].owner_task = owner;
             kwm_windows[i].z_index = next_z_index++;
             kwm_windows[i].active = 1;
+            // Phase 5B: window baru langsung memegang fokus keyboard.
+            focused_win_id = i;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
             screen_mark_dirty(x, y, width, height);
             return i;
@@ -132,7 +174,9 @@ void kwm_destroy_window(int win_id) {
     }
     int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
     uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
+    int was_focused = (focused_win_id == win_id);
     kwm_free_slot(win_id);
+    if (was_focused) kwm_refocus_locked();
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(mx, my, mw, mh);
 }
@@ -142,25 +186,18 @@ void kwm_destroy_window(int win_id) {
 // menghancurkan window task lain.
 void kwm_destroy_windows_of(int task_id) {
     uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    int focus_destroyed = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (kwm_windows[i].active && kwm_windows[i].owner_task == task_id) {
+            if (focused_win_id == i) focus_destroyed = 1;
             kwm_free_slot(i);
         }
     }
+    // Phase 5B: fokus hanya pindah jika window fokus ikut hancur — fokus
+    // kosong yang disengaja (klik desktop) tidak boleh dicuri ulang.
+    if (focus_destroyed) kwm_refocus_locked();
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(0, 0, fb_width, fb_height);
-}
-
-// Ada window aktif? Dipakai mouse IRQ untuk routing wheel: window aktif →
-// EVENT_SCROLL ke app; tidak ada → scrollback terminal (Phase 3D/4).
-int kwm_has_active_windows(void) {
-    spinlock_lock(&kwm_lock);   // konsisten dengan kwm_process_mouse (konteks IRQ)
-    int any = 0;
-    for (int i = 0; i < MAX_WINDOWS; i++) {
-        if (kwm_windows[i].active) { any = 1; break; }
-    }
-    spinlock_unlock(&kwm_lock);
-    return any;
 }
 
 // Destroy ALL KWM windows — hanya untuk path kernel/test, BUKAN syscall.
@@ -172,6 +209,7 @@ void kwm_destroy_all_windows(void) {
             kwm_free_slot(i);
         }
     }
+    focused_win_id = -1;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(0, 0, fb_width, fb_height);
 }
@@ -252,24 +290,11 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
 
     // 3. Mouse Down — hit-test, Z-bring-to-front, cek title bar drag
     if (left_down) {
-        int highest_z  = -1;
-        int target_win = -1;
+        int target_win = kwm_hit_test_locked(mouse_px, mouse_py);
 
-        for (int i = 0; i < MAX_WINDOWS; i++) {
-            if (!kwm_windows[i].active) continue;
-            int32_t wx  = kwm_windows[i].x;
-            int32_t wy  = kwm_windows[i].y;
-            int32_t ww  = (int32_t)kwm_windows[i].width;
-            int32_t wh  = (int32_t)kwm_windows[i].height;
-
-            if (mouse_px >= wx && mouse_px < wx + ww &&
-                mouse_py >= wy && mouse_py < wy + wh) {
-                if ((int)kwm_windows[i].z_index > highest_z) {
-                    highest_z  = (int)kwm_windows[i].z_index;
-                    target_win = i;
-                }
-            }
-        }
+        // Phase 5B: click-to-focus. Klik area kosong = fokus -1 → keyboard
+        // kembali ke TTY (shell). Tint visual titlebar fokus = Phase 5C.
+        focused_win_id = target_win;
 
         if (target_win != -1) {
             kwm_bring_to_front(target_win);
@@ -298,4 +323,42 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
 
     spinlock_unlock(&kwm_lock);
     return 0; // Klik di area kosong — teruskan
+}
+
+// ============================================================
+// Phase 5B — Routing Input Per-Task
+// Dipanggil dari IRQ keyboard/mouse SEBELUM push_event_to().
+// out_win_id = nilai untuk field win_id event (slot KWM + 1; 0 = tidak ada).
+// ============================================================
+
+// Keyboard → owner task dari window fokus. -1 = tidak ada fokus (driver
+// mengirim keystroke ke TTY buffer, bukan event queue).
+int kwm_route_keyboard(int* out_win_id) {
+    spinlock_lock(&kwm_lock);   // konteks IRQ — konsisten dengan kwm_process_mouse
+    int owner = -1;
+    int enc   = 0;
+    if (focused_win_id >= 0 && focused_win_id < MAX_WINDOWS &&
+        kwm_windows[focused_win_id].active) {
+        owner = kwm_windows[focused_win_id].owner_task;
+        enc   = focused_win_id + 1;
+    }
+    spinlock_unlock(&kwm_lock);
+    if (out_win_id) *out_win_id = enc;
+    return owner;
+}
+
+// Mouse move/click/wheel → owner task dari window di bawah kursor.
+// -1 = kursor di area kosong (event tidak diteruskan ke siapa pun).
+int kwm_route_mouse(int32_t x, int32_t y, int* out_win_id) {
+    spinlock_lock(&kwm_lock);
+    int w     = kwm_hit_test_locked(x, y);
+    int owner = -1;
+    int enc   = 0;
+    if (w >= 0) {
+        owner = kwm_windows[w].owner_task;
+        enc   = w + 1;
+    }
+    spinlock_unlock(&kwm_lock);
+    if (out_win_id) *out_win_id = enc;
+    return owner;
 }

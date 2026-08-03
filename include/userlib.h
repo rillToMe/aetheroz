@@ -13,6 +13,8 @@
 #define EVENT_SCROLL        4   // P1 = delta wheel (+1 bawah / -1 atas)
 #define EVENT_KEY_RELEASE   5   // Key up. P1 = ASCII dasar (identitas tombol, tanpa shift/caps)
                                 // P2 = modifier bitmask (setelah release diproses), P3 = scancode
+#define EVENT_WIN_CLOSE     6   // (Phase 5C — dicadangkan) WM meminta app menutup window.
+                                // win_id = window yang diminta; P1..P3 = 0.
 
 // Bitmask modifier keyboard (P2 pada EVENT_KEY_PRESS / EVENT_KEY_RELEASE)
 #define KEY_MOD_SHIFT       0x01   // Shift kiri/kanan
@@ -28,6 +30,8 @@ typedef struct {
     int32_t param1;   // Data 1 (ASCII huruf, atau X Mouse, atau Tombol Kiri/Kanan)
     int32_t param2;   // Data 2 (Y Mouse, atau Status Ditekan/Dilepas)
     int32_t param3;   // Tambahan
+    int32_t win_id;   // Phase 5B: window tujuan event, diisi KWM saat routing.
+                      // Nilai = id slot KWM + 1; 0 = tidak relevan.
 } kyuzen_event_t;
 // ----------------------------------
 

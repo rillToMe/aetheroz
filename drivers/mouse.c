@@ -83,10 +83,9 @@ void init_mouse() {
 uint8_t mouse_cycle = 0;
 int8_t mouse_byte[4];
 
-// Definisi global — di-extern oleh syscall.c untuk polling sederhana
-uint8_t mouse_left_clicked = 0;
-
-extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
+// Phase 5B: event dikirim per-task — KWM me-route ke window di bawah kursor.
+extern void push_event_to(int task_id, uint32_t type, int32_t p1, int32_t p2, int32_t p3, int32_t win_id);
+extern int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id);
 // KWM V2: intercept mouse events untuk drag & z-index sebelum dikirim ke app
 extern int kwm_process_mouse(int32_t mx, int32_t my, uint8_t left_down, uint8_t left_up);
 
@@ -130,41 +129,49 @@ void mouse_handler() {
             // Return 0 = teruskan event ke app seperti biasa.
             int kwm_consumed = kwm_process_mouse(mouse_x, mouse_y, left_down, left_up);
 
+            // Phase 5B: semua event mouse di-route ke owner window di bawah
+            // kursor (hover tetap jalan). Klik/gerak di area kosong tidak
+            // diteruskan ke siapa pun.
             if (!kwm_consumed) {
                 // Klik kiri — kirim ke app jika KWM tidak mengonsumsinya
                 if (left_click != last_left_click) {
                     // EVENT_MOUSE_CLICK (3) → P1: 0 (kiri), P2: 1=ditekan / 0=dilepas
-                    push_event(3, 0, left_click, 0);
-                    if (left_click) mouse_left_clicked = 1;
+                    int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                    if (target >= 0) push_event_to(target, 3, 0, left_click, 0, win);
                 }
             } else if (left_up) {
                 // Selalu kirim mouse-up ke app agar state tombol tidak terjebak "pressed"
-                push_event(3, 0, 0, 0);
-                mouse_left_clicked = 0;
+                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                if (target >= 0) push_event_to(target, 3, 0, 0, 0, win);
             }
 
             // Klik kanan — selalu teruskan ke app (KWM tidak menggunakannya)
             if (right_click != last_right_click) {
-                push_event(3, 1, right_click, 0);
+                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                if (target >= 0) push_event_to(target, 3, 1, right_click, 0, win);
                 last_right_click = right_click;
             }
 
             last_left_click = left_click;
 
-            // Pergerakan mouse selalu dikirim agar Window Manager bisa melacaknya
-            push_event(2, mouse_x, mouse_y, 0); // EVENT_MOUSE_MOVE (2)
+            // Pergerakan mouse dikirim ke window di bawah kursor (hover)
+            {
+                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                if (target >= 0) push_event_to(target, 2, mouse_x, mouse_y, 0, win); // EVENT_MOUSE_MOVE (2)
+            }
 
             spinlock_unlock(&mouse_state_lock);
 
-            // --- Phase 3D/4: routing scroll wheel (di luar mouse_state_lock —
+            // --- Phase 3D/4/5B: routing scroll wheel (di luar mouse_state_lock —
             // scrollback me-render layar, terlalu berat untuk dipegang lock) ---
             // PS/2: Z = +1 wheel ke bawah, -1 wheel ke atas.
+            // Phase 5B: wheel → window DI BAWAH KURSOR; area kosong → scrollback terminal.
             if (wheel_z != 0) {
-                extern int  kwm_has_active_windows(void);
                 extern void tty_scroll_view(int32_t delta_lines);
-                if (kwm_has_active_windows()) {
+                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                if (target >= 0) {
                     // EVENT_SCROLL (4) → P1: delta (+1 bawah / -1 atas), P2/P3: posisi
-                    push_event(4, (int32_t)wheel_z, mouse_x, mouse_y);
+                    push_event_to(target, 4, (int32_t)wheel_z, mouse_x, mouse_y, win);
                 } else {
                     // Terminal: wheel atas (Z<0) = masuk riwayat (offset naik)
                     tty_scroll_view((int32_t)(-wheel_z) * 3);

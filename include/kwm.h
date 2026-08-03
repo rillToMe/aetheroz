@@ -29,7 +29,10 @@ void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y);
 int  kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
                        uint8_t left_down, uint8_t left_up);
 
-// 1 jika ada window aktif — routing wheel scroll (mouse IRQ).
-int  kwm_has_active_windows(void);
+// Phase 5B — routing input per-task (dipanggil dari IRQ keyboard/mouse).
+// out_win_id menerima nilai untuk field win_id event (slot KWM + 1;
+// 0 = tidak relevan). Return: owner task id, atau -1 jika tidak ada target.
+int  kwm_route_keyboard(int* out_win_id);                 // owner window fokus
+int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id); // owner window di bawah kursor
 
 #endif

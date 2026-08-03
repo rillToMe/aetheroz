@@ -2,7 +2,9 @@
 #include <stdint.h>
 #include "spinlock.h"
 
-extern void push_event(uint32_t type, int32_t p1, int32_t p2, int32_t p3);
+// Phase 5B: event dikirim per-task — KWM menentukan tujuan (routing).
+extern void push_event_to(int task_id, uint32_t type, int32_t p1, int32_t p2, int32_t p3, int32_t win_id);
+extern int  kwm_route_keyboard(int* out_win_id);
 
 // --- Tipe Event (harus cocok dengan userlib.h & kernel/event.c) ---
 #define EVENT_KEY_PRESS     1
@@ -138,16 +140,24 @@ void keyboard_handler() {
         // tombol — stabil terhadap urutan pelepasan modifier. Pairing
         // press↔release yang pasti memakai P3 (key_id), bukan P1.
 
-        // 3. Push event untuk SEMUA tombol (printable maupun tidak).
-        //    Sengaja di luar kbd_lock dan TIDAK tergantung sisa ruang TTY
-        //    buffer — dulu event ikut mati setelah 256 keystroke saat app
-        //    GUI berjalan (buffer TTY penuh tak terbaca).
-        push_event(released ? EVENT_KEY_RELEASE : EVENT_KEY_PRESS,
-                   ascii, kbd_mods, key_id);
+        // 3. Routing Phase 5B (keputusan #6): ada window fokus → keystroke
+        //    HANYA menjadi event ke queue task pemilik fokus; tidak ada
+        //    window fokus → HANYA masuk TTY buffer (shell). Klik area kosong
+        //    mengosongkan fokus = jalan kembali ke shell.
+        int kbd_win = 0;
+        int kbd_target = kwm_route_keyboard(&kbd_win);
 
-        // 4. TTY buffer: hanya teks murni. Kombinasi Ctrl/Alt dianggap
-        //    shortcut (tetap terkirim sebagai event), bukan ketikan.
-        if (!released && ascii != 0 && !(kbd_mods & (KEY_MOD_CTRL | KEY_MOD_ALT))) {
+        if (kbd_target >= 0) {
+            // Push event untuk SEMUA tombol (printable maupun tidak).
+            //    Sengaja di luar kbd_lock dan TIDAK tergantung sisa ruang TTY
+            //    buffer — dulu event ikut mati setelah 256 keystroke saat app
+            //    GUI berjalan (buffer TTY penuh tak terbaca).
+            push_event_to(kbd_target,
+                          released ? EVENT_KEY_RELEASE : EVENT_KEY_PRESS,
+                          ascii, kbd_mods, key_id, kbd_win);
+        } else if (!released && ascii != 0 && !(kbd_mods & (KEY_MOD_CTRL | KEY_MOD_ALT))) {
+            // 4. TTY buffer: hanya teks murni. Kombinasi Ctrl/Alt dianggap
+            //    shortcut, bukan ketikan.
             spinlock_lock(&kbd_lock);
             uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
             if (next_head != kbd_tail) {
