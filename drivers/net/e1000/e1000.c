@@ -564,10 +564,6 @@ void e1000_poll(void) {
 
         /* Hanya proses paket lengkap (EOP=1) dan tidak error */
         if ((desc->status & E1000_RXSTA_EOP) && desc->errors == 0 && pkt_len > 0) {
-            /* DEBUG: tampilkan setiap paket yang masuk */
-            kprint("[e1000] RX pkt len=");
-            kprint_num(pkt_len);
-            kprint("\n");
             /* Inject ke lwIP via callback — kyuzen_netif.c meng-override ini */
             e1000_rx_callback(e1000.rx_bufs[next], pkt_len);
         }
