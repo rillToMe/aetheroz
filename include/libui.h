@@ -67,6 +67,39 @@ void ui_label_set_text(ui_widget_t* widget, const char* text);
 ui_widget_t* ui_button_create(ui_window_t* win, const char* text);
 void ui_button_set_click(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 
+// --- TextBox (Phase 7) ---
+// Input teks satu baris, h=24. Klik memberi fokus (border accent);
+// tombol masuk lewat EVENT_KEY_PRESS (P1 = char printable, P3 = scancode).
+ui_widget_t* ui_textbox_create(ui_window_t* win, int width);
+void ui_textbox_set_text(ui_widget_t* widget, const char* text);
+const char* ui_textbox_text(ui_widget_t* widget);      // pointer buffer internal
+void ui_textbox_set_enter(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- CheckBox (Phase 7) ---
+// Kotak centang + label; klik men-toggle dan memanggil toggle_cb.
+ui_widget_t* ui_checkbox_create(ui_window_t* win, const char* label);
+void ui_checkbox_set_checked(ui_widget_t* widget, int checked);
+int ui_checkbox_checked(ui_widget_t* widget);
+void ui_checkbox_set_toggle(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- Slider (Phase 7) ---
+// Track horizontal + handle yang bisa diseret. w=160, h=20.
+// change_cb dipanggil saat nilai berubah (klik langsung / drag).
+ui_widget_t* ui_slider_create(ui_window_t* win, int min, int max);
+void ui_slider_set_value(ui_widget_t* widget, int value);
+int ui_slider_value(ui_widget_t* widget);
+void ui_slider_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- ProgressBar (Phase 7) ---
+// Fill horizontal 0..100, read-only. w ditentukan caller, h=16.
+ui_widget_t* ui_progressbar_create(ui_window_t* win, int width);
+void ui_progressbar_set_value(ui_widget_t* widget, int value);   // clamp 0..100
+
+// --- Image (Phase 7) ---
+// Menampilkan PNG dari KyuzenFS, diskalakan nearest-neighbor ke rect w×h.
+// File hilang / decode gagal -> kotak kosong (bukan crash).
+ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int h);
+
 // --- Layout ---
 // VBox: susun anaknya vertikal (masing-masing setinggi ukurannya,
 // diberi spacing pixel). Win disediakan agar API seragam tapi

@@ -63,6 +63,7 @@ APP_BASE = 0x4000000
 USERLIB_OBJ = userlib.o
 LIBGUI_OBJ  = libgui.o
 LIBUI_OBJ   = libui.o   # Widget Toolkit Modern C++ (apps/libui.cpp)
+PNG_OBJ     = png.o     # Dekoder PNG bersama (apps/png.c, stb_image)
 
 # --- Target ELF Akhir ---
 FILEMAN_ELF = $(OUT_DIR)/fileman.elf
@@ -109,6 +110,14 @@ $(LIBGUI_OBJ): $(APPS_DIR)/libgui.c
 $(LIBUI_OBJ): $(APPS_DIR)/libui.cpp
 	@echo "[CXX] Mengompilasi libui (Widget Toolkit, C++ freestanding)..."
 	$(CXX) $(CXXFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
+
+# ==========================================================
+# COMPILE PNG — dekoder bersama (apps/png.c, stb_image)
+# Dipakai Image widget (libui) — dilink ke app yang memakainya.
+# ==========================================================
+$(PNG_OBJ): $(APPS_DIR)/png.c
+	@echo "[CC] Mengompilasi png.c (stb_image decode)..."
+	$(CC) $(CFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
 
 # ==========================================================
 # FILEMAN — File Manager (virtual 0x4000000, phys by OS)
@@ -216,9 +225,9 @@ widget_demo.o: widget_demo.c
 	@echo "[CC] Mengompilasi widget_demo.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(WIDGET_ELF): widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ)
-	@echo "[LD] Linking widget_demo.elf (app C + libui C++ toolkit)..."
-	$(LD) $(LDFLAGS) widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) -o $@
+$(WIDGET_ELF): widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking widget_demo.elf (app C + libui C++ toolkit + png)..."
+	$(LD) $(LDFLAGS) widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] widget_demo.elf siap!"
 
 widget_demo: $(WIDGET_ELF)
@@ -232,5 +241,5 @@ clean:
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---
-APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o
+APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o
 -include $(APP_OBJS:.o=.d)
