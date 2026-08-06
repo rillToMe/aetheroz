@@ -329,6 +329,182 @@ public:
 };
 
 // ------------------------------------------------------------
+// TextEdit — editor multi-baris (Phase 10). Buffer teks polos 8K,
+// kursor + scroll roda/otomatis, opsional readonly (terminal output).
+// Font 8x16: 8px/kolom, 16px/baris.
+// ------------------------------------------------------------
+class TextEdit : public Widget {
+public:
+    enum { MAX_TEXT = 8192, LINE_H = 16, CHAR_W = 8 };
+    char text[MAX_TEXT];
+    int len;
+    int cur;
+    int scroll_top;    // baris pertama yang tampak
+    bool readonly;
+
+    TextEdit(int width, int height) : len(0), cur(0), scroll_top(0),
+                                      readonly(false) {
+        w = width; h = height;
+        text[0] = '\0';
+        cursor_kind = UI_CURSOR_IBEAM;
+    }
+    // Readonly (output terminal) tak boleh mencuri fokus dari input.
+    virtual bool focusable() override { return !readonly; }
+
+    // --- utilitas baris ---
+    int line_at(int idx) const {
+        int ln = 0;
+        for (int i = 0; i < idx && i < len; i++) if (text[i] == '\n') ln++;
+        return ln;
+    }
+    int line_start(int idx) const {
+        int i = idx;
+        while (i > 0 && text[i - 1] != '\n') i--;
+        return i;
+    }
+    int total_lines() const {
+        int ln = 1;
+        for (int i = 0; i < len; i++) if (text[i] == '\n') ln++;
+        return ln;
+    }
+    int vis_lines() const { int v = h / LINE_H; return v < 1 ? 1 : v; }
+
+    // --- edit buffer ---
+    void insert_at(int idx, char c) {
+        if (len >= MAX_TEXT - 1) return;
+        for (int i = len; i > idx; i--) text[i] = text[i - 1];
+        text[idx] = c;
+        len++;
+        text[len] = '\0';
+    }
+    void delete_at(int idx) {
+        if (idx < 0 || idx >= len) return;
+        for (int i = idx; i < len; i++) text[i] = text[i + 1];
+        len--;
+        text[len] = '\0';
+    }
+    void append(const char* s) {
+        for (int i = 0; s[i] && len < MAX_TEXT - 1; i++) text[len++] = s[i];
+        text[len] = '\0';
+        cur = len;
+        scroll_top = total_lines() - vis_lines();   // ikut ujung (terminal)
+        clamp_scroll();
+    }
+    void clear() { len = 0; cur = 0; scroll_top = 0; text[0] = '\0'; }
+
+    // --- scroll ---
+    void clamp_scroll() {
+        int mt = total_lines() - vis_lines();
+        if (mt < 0) mt = 0;
+        if (scroll_top > mt) scroll_top = mt;
+        if (scroll_top < 0) scroll_top = 0;
+    }
+    void ensure_cursor_visible() {
+        int line = line_at(cur);
+        if (line < scroll_top) scroll_top = line;
+        else if (line >= scroll_top + vis_lines())
+            scroll_top = line - vis_lines() + 1;
+        clamp_scroll();
+    }
+
+    virtual void on_click(int mx, int my) override {
+        int col = (mx - x - 4) / CHAR_W; if (col < 0) col = 0;
+        int row = (my - y) / LINE_H + scroll_top;
+        int idx = 0, ln = 0;
+        while (ln < row && idx < len) {
+            if (text[idx] == '\n') ln++;
+            idx++;
+        }
+        int c = 0;
+        while (idx < len && text[idx] != '\n' && c < col) { idx++; c++; }
+        cur = idx;
+        ensure_cursor_visible();
+    }
+    virtual bool on_scroll(int delta) override {
+        int old = scroll_top;
+        scroll_top += delta;        // +1 roda bawah = lihat output lebih bawah
+        clamp_scroll();
+        return scroll_top != old;
+    }
+    virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
+        if (mods & KEY_MOD_CTRL) {
+            if (ascii == 'a' || ascii == 'A') { cur = line_start(cur); return; }  // Home baris
+            if (ascii == 'e' || ascii == 'E') {                                  // End baris
+                int i = cur;
+                while (i < len && text[i] != '\n') i++;
+                cur = i; return;
+            }
+            return;
+        }
+        uint32_t sc = scancode & 0xFF;
+        if (ascii >= 32) {                    // printable → sisip
+            if (!readonly) { insert_at(cur, (char)ascii); cur++; }
+        } else if (sc == 0x0E) {              // Backspace
+            if (!readonly && cur > 0) { delete_at(cur - 1); cur--; }
+        } else if (ascii == '\n' || ascii == '\r' || sc == 0x1C) {  // Enter
+            if (!readonly) { insert_at(cur, '\n'); cur++; }
+        } else if (sc == 0x4B) { if (cur > 0) cur--; }               // Left
+        else if (sc == 0x4D) { if (cur < len) cur++; }               // Right
+        else if (sc == 0x48) {                                       // Up
+            int col = cur - line_start(cur);
+            int ls = line_start(cur);
+            if (ls > 0) {
+                int ps = line_start(ls - 1), pe = ps;
+                while (pe < len && text[pe] != '\n') pe++;
+                cur = ps + col; if (cur > pe) cur = pe;
+            }
+        } else if (sc == 0x50) {                                       // Down
+            int col = cur - line_start(cur);
+            int le = cur;
+            while (le < len && text[le] != '\n') le++;
+            if (le < len) {
+                int ns = le + 1, ne = ns;
+                while (ne < len && text[ne] != '\n') ne++;
+                cur = ns + col; if (cur > ne) cur = ne;
+            }
+        } else if (sc == 0x47) { cur = line_start(cur); }             // Home
+        else if (sc == 0x4F) {                                        // End
+            int i = cur; while (i < len && text[i] != '\n') i++; cur = i;
+        } else if (sc == 0x49) { scroll_top -= vis_lines(); clamp_scroll(); }  // PgUp
+        else if (sc == 0x51) { scroll_top += vis_lines(); clamp_scroll(); }    // PgDn
+        else return;                    // tombol lain: tanpa redraw
+        ensure_cursor_visible();
+    }
+    virtual void draw(Painter& p) override {
+        clamp_scroll();
+        p.rect(x, y, w, h, p.theme.button_bg);
+        p.set_clip(x, y, w, h);
+        int colw = (w - 8) / CHAR_W;    // kolom yang muat (margin 4px)
+        int idx = 0, ln = 0;
+        while (ln < scroll_top && idx < len) {
+            if (text[idx] == '\n') ln++;
+            idx++;
+        }
+        int vy = y;
+        while (vy < y + h && idx < len) {
+            int cx = x + 4;
+            for (int c = 0; c < colw && idx < len && text[idx] != '\n'; c++, idx++) {
+                char t[2] = { text[idx], '\0' };
+                p.text(t, cx, vy + 1, p.theme.fg);
+                cx += CHAR_W;
+            }
+            if (idx < len && text[idx] == '\n') idx++;
+            vy += LINE_H;
+        }
+        // caret — kolom/baris dari `cur`, digambar sekali
+        if (has_focus) {
+            int crow = line_at(cur) - scroll_top;
+            if (crow * LINE_H < h) {
+                int cx = x + 4 + (cur - line_start(cur)) * CHAR_W;
+                if (cx >= x + w) cx = x + w - 1;
+                p.rect(cx, y + crow * LINE_H, 1, LINE_H, p.theme.accent);
+            }
+        }
+        p.clear_clip();
+    }
+};
+
+// ------------------------------------------------------------
 // CheckBox — kotak centang + label; klik toggle (Phase 7)
 // ------------------------------------------------------------
 class CheckBox : public Widget {
@@ -443,6 +619,19 @@ public:
         px = png_decode(filename, &iw, &ih);
     }
     virtual ~Image() { png_free(px); }
+    // Phase 10: zoom viewer — target display size dihitung ulang dari ukuran
+    // natural PNG (persen 10..400). `w`/`h` jadi area target yang digambar.
+    void set_scale(int percent) {
+        if (percent < 10) percent = 10;
+        if (percent > 400) percent = 400;
+        if (iw > 0) { w = iw * percent / 100; h = ih * percent / 100; }
+    }
+    // Phase 10: ganti file PNG (viewer galeri) — muat ulang, reset zoom 100%.
+    void set_file(const char* filename) {
+        png_free(px);
+        px = png_decode(filename, &iw, &ih);
+        if (iw > 0) { w = iw; h = ih; }   // natural size; ScrollView menyesuaikan
+    }
     virtual void draw(Painter& p) override {
         if (!px || iw <= 0 || ih <= 0) { p.rect(x, y, w, h, p.theme.button_bg); return; }
         p.image(x, y, w, h, px, iw, ih);
@@ -493,6 +682,27 @@ public:
             cy += children[i]->h + spacing;
         }
         h = cy - y;   // ukuran diri = isi; dipakai ScrollView untuk hitung scroll
+    }
+};
+
+// ------------------------------------------------------------
+// HBox — susun anak horizontal (grid tombol kalkulator, Phase 10)
+// ------------------------------------------------------------
+class HBox : public Layout {
+public:
+    int spacing;
+    HBox(int s) : spacing(s) { w = 0; h = 0; }
+    virtual void arrange() override {
+        int cx = x;
+        int mh = 0;
+        for (int i = 0; i < count; i++) {
+            children[i]->x = cx;
+            children[i]->y = y;
+            cx += children[i]->w + spacing;
+            if (children[i]->h > mh) mh = children[i]->h;
+        }
+        w = cx - x;
+        h = mh;   // VBox luar memakai h ini untuk stack
     }
 };
 
@@ -719,6 +929,12 @@ public:
         for (int c = n; c < ncols; c++) cells[nrows][c] = 0;
         nrows++;
         set_scroll_view(nrows * ROW_H, h - HEADER_H - BAR_W);
+    }
+    void clear() {
+        for (int r = 0; r < nrows; r++)
+            for (int c = 0; c < ncols; c++) { _ui_free(cells[r][c]); cells[r][c] = 0; }
+        nrows = 0;
+        set_scroll_view(0, h - HEADER_H - BAR_W);
     }
     void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
     virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
@@ -1200,6 +1416,10 @@ public:
     struct Shortcut { uint8_t mods, key; ui_click_cb cb; void* data; };
     Shortcut shortcuts[16];
     int n_shortcuts;
+    // Phase 10: tick periodik tiap iterasi event loop. Callback return 1 =
+    // ada perubahan → toolkit render (jam/task manager refresh tanpa event).
+    ui_tick_cb tick_cb;
+    void* tick_data;
 
     Window(uint32_t width, uint32_t height)
         : gw(gui_create_window(width, height)), root(0),
@@ -1207,7 +1427,8 @@ public:
           focused(0), grabbed(0), popup(0), n_bars(0), bar_h(0),
           dialog(0), notify_text(0), notify_until(0),
           drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
-          cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0) {
+          cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0),
+          tick_cb(0), tick_data(0) {
         for (int i = 0; i < 4; i++) top_bars[i] = 0;
         for (int i = 0; i < 16; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
     }
@@ -1408,6 +1629,8 @@ public:
             // Phase 9: auto-expire notifikasi. Loop bangun ~60/s via
             // sys_yield + timer IRQ → cukup cek tiap iterasi, tanpa timer infra.
             if (notify_text && sys_uptime() >= notify_until) notify_dismiss();
+            // Phase 10: tick periodik — jam/task manager render hanya saat berubah.
+            if (tick_cb && tick_cb(tick_data)) render();
             if (sys_get_event(&ev)) {
                 switch (ev.type) {
                 case EVENT_MOUSE_MOVE:
@@ -1579,6 +1802,19 @@ void ui_window_run(ui_window_t* win) {
     reinterpret_cast<ui::Window*>(win)->run();
 }
 
+// Phase 10: judul window (titlebar + taskbar).
+void ui_window_set_title(ui_window_t* win, const char* title) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    if (w && w->gw) gui_set_window_title(w->gw, title);
+}
+
+// Phase 10: callback periodik tiap iterasi loop (~60/s). Return 1 = berubah →
+// toolkit render (jam/task manager refresh tanpa event mouse/keyboard).
+void ui_window_set_tick(ui_window_t* win, ui_tick_cb cb, void* userdata) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    if (w) { w->tick_cb = cb; w->tick_data = userdata; }
+}
+
 ui_widget_t* ui_label_create(ui_window_t* win, const char* text) {
     (void)win;
     return reinterpret_cast<ui_widget_t*>(new ui::Label(text));
@@ -1665,9 +1901,64 @@ ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int 
     return reinterpret_cast<ui_widget_t*>(new ui::Image(filename, w, h));
 }
 
+// Phase 10: zoom — target display size = natural PNG × percent/100.
+void ui_image_set_scale(ui_widget_t* widget, int percent) {
+    reinterpret_cast<ui::Image*>(widget)->set_scale(percent);
+}
+
+// Phase 10: ganti file PNG yang ditampilkan (viewer galeri), reset zoom.
+void ui_image_set_file(ui_widget_t* widget, const char* filename) {
+    reinterpret_cast<ui::Image*>(widget)->set_file(filename);
+}
+
+// --- TextEdit (Phase 10) ---
+ui_widget_t* ui_textedit_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::TextEdit(w, h));
+}
+
+void ui_textedit_set_text(ui_widget_t* widget, const char* text) {
+    ui::TextEdit* te = reinterpret_cast<ui::TextEdit*>(widget);
+    te->len = 0;
+    while (text[te->len] && te->len < ui::TextEdit::MAX_TEXT - 1) {
+        te->text[te->len] = text[te->len];
+        te->len++;
+    }
+    te->text[te->len] = '\0';
+    te->cur = te->len;
+}
+
+const char* ui_textedit_text(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TextEdit*>(widget)->text;
+}
+
+void ui_textedit_set_readonly(ui_widget_t* widget, int ro) {
+    reinterpret_cast<ui::TextEdit*>(widget)->readonly = ro != 0;
+}
+
+void ui_textedit_append(ui_widget_t* widget, const char* text) {
+    reinterpret_cast<ui::TextEdit*>(widget)->append(text);
+}
+
+void ui_textedit_clear(ui_widget_t* widget) {
+    reinterpret_cast<ui::TextEdit*>(widget)->clear();
+}
+
 ui_widget_t* ui_vbox_create(ui_window_t* win, int spacing) {
     (void)win;
     return reinterpret_cast<ui_widget_t*>(new ui::VBox(spacing));
+}
+
+// Phase 10: HBox — susun anak horizontal (grid tombol kalkulator).
+ui_widget_t* ui_hbox_create(ui_window_t* win, int spacing) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::HBox(spacing));
+}
+
+// Phase 10: paksa ukuran widget (tombol kalkulator seragam dalam grid).
+void ui_widget_set_size(ui_widget_t* widget, int w, int h) {
+    ui::Widget* wid = reinterpret_cast<ui::Widget*>(widget);
+    wid->w = w; wid->h = h;
 }
 
 void ui_layout_add(ui_widget_t* layout, ui_widget_t* child) {
@@ -1719,6 +2010,11 @@ void ui_table_add_column(ui_widget_t* widget, const char* title, int width) {
 
 void ui_table_add_row(ui_widget_t* widget, const char* const* cells, int n) {
     reinterpret_cast<ui::Table*>(widget)->add_row(cells, n);
+}
+
+// Phase 10: kosongkan semua baris (refresh daftar file Explorer).
+void ui_table_clear(ui_widget_t* widget) {
+    reinterpret_cast<ui::Table*>(widget)->clear();
 }
 
 int ui_table_selected(ui_widget_t* widget) {

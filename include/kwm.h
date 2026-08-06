@@ -39,4 +39,29 @@ int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id,
 // routing. Return 1 = dikonsumsi KWM (jangan di-route/ke TTY), 0 = lanjut.
 int  kwm_handle_shortcut(uint8_t mods, uint8_t released, uint16_t key_id);
 
+// ============================================================
+// Phase 10 — Desktop window + taskbar support
+// ============================================================
+// Info window utk syscall 61 (layout identik dgn kwm_window_info_t di
+// userlib.h — ABI x86_64, tanpa #pragma pack).
+typedef struct {
+    uint32_t win_id;      // slot KWM + 1; 0 = kosong (konvensi event win_id)
+    uint8_t  active;
+    uint8_t  focused;     // 1 = window pemegang fokus keyboard (tint titlebar)
+    int32_t  x, y;
+    uint32_t width, height, z_index;
+    int32_t  owner_task;
+    uint32_t flags;
+    char     title[32];
+} kwm_window_info_t;
+
+// Window desktop: full-screen, frameless, z=0, no-focus. Satu-satunya.
+int  kwm_create_desktop(void);
+// Set judul window (titlebar + taskbar). Hanya pemilik. 0 / -1.
+int  kwm_set_title(int win_id, const char* title);
+// Isi buffer dgn window aktif. Return jumlah / -1.
+int  kwm_get_windows(kwm_window_info_t* buf, int max);
+// Bring-to-front + fokus (klik taskbar). Desktop ditolak. 0 / -1.
+int  kwm_activate_window(int win_id);
+
 #endif

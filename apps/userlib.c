@@ -120,6 +120,43 @@ int sys_kwm_set_cursor(int kind) {
     return ret;
 }
 
+// --- Phase 10: desktop window + taskbar (syscall 59-63) ---
+
+// sys_kwm_create_desktop: window desktop full-screen frameless z=0 no-focus.
+int sys_kwm_create_desktop(void) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(59));
+    return ret;
+}
+
+// sys_kwm_set_title: judul titlebar + taskbar (hanya pemilik window).
+int sys_kwm_set_title(int win_id, const char* title) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(60), "b"((uint64_t)win_id), "c"((uint64_t)title));
+    return ret;
+}
+
+// sys_kwm_get_windows: isi buffer dgn info window aktif (pola sys_get_file_list).
+int sys_kwm_get_windows(kwm_window_info_t* buffer, int max) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(61), "b"((uint64_t)buffer), "c"((uint64_t)max));
+    return ret;
+}
+
+// sys_kwm_activate_window: bring-to-front + fokus (klik taskbar).
+int sys_kwm_activate_window(int win_id) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(62), "b"((uint64_t)win_id));
+    return ret;
+}
+
+// sys_get_screen_size: ukuran framebuffer (untuk window desktop).
+int sys_get_screen_size(uint32_t* w, uint32_t* h) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(63), "b"((uint64_t)w), "c"((uint64_t)h));
+    return ret;
+}
+
 // sys_exit: App selesai, kembali ke shell.
 // Kernel membebaskan RAM app dan jump langsung ke shell command loop.
 __attribute__((noreturn))
@@ -145,6 +182,11 @@ __attribute__((weak)) void* memset(void* dest, int val, size_t count) {
     uint8_t* d = (uint8_t*)dest;
     for (size_t i = 0; i < count; i++) d[i] = (uint8_t)val;
     return dest;
+}
+
+__attribute__((weak)) int strcmp(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
 }
 
 void sys_shutdown(void) {

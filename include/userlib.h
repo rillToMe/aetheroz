@@ -115,6 +115,26 @@ void sys_kwm_destroy_window(int win_id);
 // sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
 int sys_kwm_set_cursor(int kind);
 
+// --- Phase 10: Desktop window + taskbar (syscall 59-63) ---
+// Info window utk syscall 61 (layout identik dgn kwm_window_info_t di
+// include/kwm.h — ABI x86_64, tanpa #pragma pack).
+typedef struct {
+    uint32_t win_id;      // slot KWM + 1; 0 = kosong (konvensi event win_id)
+    uint8_t  active;
+    uint8_t  focused;     // 1 = pemegang fokus keyboard (tint titlebar)
+    int32_t  x, y;
+    uint32_t width, height, z_index;
+    int32_t  owner_task;
+    uint32_t flags;
+    char     title[32];
+} kwm_window_info_t;
+
+int sys_kwm_create_desktop(void);        // -> win_id / -1 (frameless full-screen z=0)
+int sys_kwm_set_title(int win_id, const char* title);   // 0 / -1 (hanya pemilik)
+int sys_kwm_get_windows(kwm_window_info_t* buf, int max);   // -> jumlah / -1
+int sys_kwm_activate_window(int win_id); // bring-to-front + fokus; 0 / -1
+int sys_get_screen_size(uint32_t* w, uint32_t* h);   // -> 0 / -1
+
 void sys_shutdown(void);
 void sys_reboot(void);
 

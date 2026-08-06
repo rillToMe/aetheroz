@@ -50,6 +50,14 @@ extern void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t hei
 extern void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
 extern void kwm_set_cursor(int kind);  // Phase 9: bentuk kursor global
+// Phase 10 — desktop window + taskbar (syscall 59-62)
+extern int kwm_create_desktop(void);
+extern int kwm_set_title(int win_id, const char* title);
+extern int kwm_get_windows(kwm_window_info_t*, int);
+extern int kwm_activate_window(int win_id);
+// Phase 10 — sys_get_screen_size (syscall 63); didefinisikan di kernel/gfx/fb.c
+extern uint32_t fb_width;
+extern uint32_t fb_height;
 
 #include "timer.h"  // timer_get_ticks(), timer_get_cpu_usage()
 
@@ -779,6 +787,48 @@ void syscall_handler(registers_t *r) {
             kwm_set_cursor(kind);
             ret_val = 0;
         }
+    }
+    // ============================================================
+    // Phase 10 — Desktop window + taskbar (syscall 59-63)
+    // ============================================================
+    else if (syscall_num == 59) { // sys_kwm_create_desktop
+        ret_val = (uint64_t)kwm_create_desktop();
+    }
+    else if (syscall_num == 60) { // sys_kwm_set_title
+        char ktitle[32];
+        if (strncpy_from_user(&uc, ktitle, r->rcx, sizeof(ktitle)) >= 0)
+            ret_val = (uint64_t)kwm_set_title((int)r->rbx, ktitle);
+        else
+            ret_val = (uint64_t)-1;
+    }
+    else if (syscall_num == 61) { // sys_kwm_get_windows — enum utk taskbar
+        int maxn = (int)r->rcx;
+        if (maxn > 16) maxn = 16;
+        uint64_t bytes = (uint64_t)maxn * sizeof(kwm_window_info_t);
+        if (maxn > 0 && user_range_ok(&uc, r->rbx, bytes)) {
+            kwm_window_info_t* bounce =
+                (kwm_window_info_t*)kmalloc((uint32_t)bytes);
+            if (bounce) {
+                int count = kwm_get_windows(bounce, maxn);
+                if (count > 0 && copy_to_user(&uc, r->rbx, bounce,
+                        (uint64_t)count * sizeof(kwm_window_info_t)) != 0)
+                    count = 0;
+                ret_val = (uint64_t)count;
+                kfree(bounce);
+            }
+        }
+    }
+    else if (syscall_num == 62) { // sys_kwm_activate_window — klik taskbar
+        ret_val = (uint64_t)kwm_activate_window((int)r->rbx);
+    }
+    else if (syscall_num == 63) { // sys_get_screen_size(uint32_t* w, uint32_t* h)
+        // DUA pointer terpisah (rbx=w, rcx=h) — bukan satu array 2 elemen.
+        // Menulis 8 byte ke rbx dulu menimpa 4 byte SETELAH variabel w milik
+        // app (di settings.c itu variabel lain di stack → pointer widget
+        // rusak → #PF). copy_to_user memvalidasi range sendiri.
+        uint32_t w = fb_width, h = fb_height;
+        ret_val = (copy_to_user(&uc, r->rbx, &w, 4) == 0 &&
+                   copy_to_user(&uc, r->rcx, &h, 4) == 0) ? 0 : (uint64_t)-1;
     }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)

@@ -1,24 +1,16 @@
 // ============================================================
-// calc.c — Kyuzen Calculator App (libgui standard)
-// Kalkulator GUI dengan operasi: +, -, ×, ÷, %, +/-
+// calc.c — Kalkulator (Phase 10): operasi +,-,×,÷,%,+/- (libui).
+// Display Label + grid tombol (HBox per baris). State machine
+// diambil utuh dari versi libgui sebelumnya.
+//
+// Build: calc.o + userlib.o + libgui.o + libui.o + png.o
 // ============================================================
 #include "userlib.h"
-#include "libgui.h"
+#include "libui.h"
 
-// --- Ukuran ---
-#define WIN_W  320
-#define WIN_H  450
-
-// --- Warna ---
-#define COL_BG      0x1A1A2E
-#define COL_DISPLAY 0x16213E
-#define COL_BTN_NUM 0x0F3460
-#define COL_BTN_OP  0xE94560
-#define COL_BTN_EQ  0x533483
-#define COL_BTN_CLR 0x111122
-#define COL_BTN_SPC 0x24305E
-#define COL_TEXT    0xE0E0E0
-#define COL_HOVER   0x2A4A7E
+#define BTN_W   68
+#define BTN_H   48
+#define BTN_PAD 6
 
 // --- State kalkulator ---
 static double accumulator = 0;
@@ -29,38 +21,16 @@ static int    decimal     = 0;
 static int    dec_place   = 1;
 static int    just_result = 0;
 
-// --- Layout tombol ---
-#define BTN_COLS  4
-#define BTN_ROWS  5
-#define BTN_W     68
-#define BTN_H     58
-#define BTN_PAD   8
-#define BTN_OFF_X 10
-#define BTN_OFF_Y 156  // relatif ke area isi (di bawah title bar)
+static ui_widget_t* g_disp;
+static ui_widget_t* g_status;
 
-static const char* btn_labels[BTN_ROWS][BTN_COLS] = {
+static const char* btn_labels[5][4] = {
     { "C",  "+/-", "%",  "/" },
     { "7",  "8",   "9",  "*" },
     { "4",  "5",   "6",  "-" },
     { "1",  "2",   "3",  "+" },
     { "0",  ".",   "CE", "=" },
 };
-static const int btn_type[BTN_ROWS][BTN_COLS] = {
-    { 3, 4, 4, 1 }, { 0, 0, 0, 1 }, { 0, 0, 0, 1 },
-    { 0, 0, 0, 1 }, { 0, 4, 3, 2 },
-};
-static uint32_t btn_bg(int type) {
-    switch(type) {
-        case 1: return COL_BTN_OP;
-        case 2: return COL_BTN_EQ;
-        case 3: return COL_BTN_CLR;
-        case 4: return COL_BTN_SPC;
-        default: return COL_BTN_NUM;
-    }
-}
-
-// --- Helpers ---
-static int _str_len(const char* s) { int n=0; while(s[n]) n++; return n; }
 
 static void double_to_str(double v, char* buf, int maxlen) {
     int i = 0;
@@ -82,41 +52,6 @@ static void double_to_str(double v, char* buf, int maxlen) {
         if (i>1&&buf[i-1]=='.') i--;
     }
     buf[i]='\0';
-}
-
-// Gambar teks rata kanan di canvas (koordinat absolut)
-static void draw_r(gui_window_t* win, const char* s, int rx, int y, uint32_t col) {
-    extern const unsigned char font8x16[256][16];
-    int len = _str_len(s);
-    int sx = rx - len*8;
-    int W = (int)win->width, H = (int)win->height;
-    uint32_t solid = col | 0xFF000000;
-    for (int ci=0; ci<len; ci++) {
-        char ch = s[ci]; if (ch<0||ch>127) continue;
-        const unsigned char* bm = font8x16[(int)(unsigned char)ch];
-        for (int row=0;row<16;row++)
-            for (int bit=0;bit<8;bit++)
-                if (bm[row]&(0x80>>bit)) {
-                    int px=sx+ci*8+bit, py=y+row;
-                    if (px>=0&&px<W&&py>=0&&py<H) win->canvas[py*W+px]=solid;
-                }
-    }
-}
-
-// --- Hit test ---
-static int hit_col(int rx) {
-    for (int c=0;c<BTN_COLS;c++) {
-        int x = BTN_OFF_X + c*(BTN_W+BTN_PAD);
-        if (rx>=x && rx<x+BTN_W) return c;
-    }
-    return -1;
-}
-static int hit_row(int ry) {
-    for (int r=0;r<BTN_ROWS;r++) {
-        int y = BTN_OFF_Y + r*(BTN_H+BTN_PAD);
-        if (ry>=y && ry<y+BTN_H) return r;
-    }
-    return -1;
 }
 
 // --- Proses tombol ---
@@ -158,107 +93,55 @@ static void press(int col, int row) {
     }
 }
 
-// --- Render ---
-static int hover_col = -1, hover_row = -1;
+static void refresh_disp(void) {
+    char disp[24]; double_to_str(input_val, disp, 24);
+    ui_label_set_text(g_disp, disp);
 
-void calc_render(gui_window_t* win) {
-    int W = (int)win->width;
-
-    // Background
-    gui_draw_rect(win, 0, 0, W, (int)win->inner_h, COL_BG);
-
-    // Display area (relatif ke area isi)
-    gui_draw_rect(win, 0, 0, W, 120, COL_DISPLAY);
-    gui_draw_rect(win, 0, 119, W, 2, 0x0A0A20);
-
-    // Op indicator + accumulator
+    char st[32]; int k = 0;
     const char* op_str = "";
     if (op==1) op_str="[+]"; else if(op==2) op_str="[-]";
     else if(op==3) op_str="[*]"; else if(op==4) op_str="[/]";
-    if (op!=0&&!just_result) {
-        char acc_s[24]; double_to_str(accumulator, acc_s, 24);
-        draw_r(win, acc_s, W-12, 20, 0x6688AA);
-        gui_draw_text(win, op_str, 12, 20, 0xE94560);
+    if (op!=0 && !just_result) {
+        char acc[24]; double_to_str(accumulator, acc, 24);
+        for (int i = 0; acc[i] && k < 14; i++) st[k++] = acc[i];
+        for (int i = 0; op_str[i] && k < 20; i++) st[k++] = op_str[i];
     }
+    st[k] = '\0';
+    ui_label_set_text(g_status, st);
+}
 
-    // Angka utama (2x scale, kanan-rata)
-    char disp[24]; double_to_str(input_val, disp, 24);
-    int len=_str_len(disp), scale=(len>8)?1:2;
-    int total_w=len*8*scale, sx=W-12-total_w, sy=60;
-    extern const unsigned char font8x16[256][16];
-    int H = (int)win->height;
-    for (int ci=0;ci<len;ci++) {
-        char ch=disp[ci]; if(ch<0||ch>127) continue;
-        const unsigned char* bm=font8x16[(int)(unsigned char)ch];
-        for(int row=0;row<16;row++)
-            for(int bit=0;bit<8;bit++)
-                if(bm[row]&(0x80>>bit))
-                    for(int dy=0;dy<scale;dy++)
-                        for(int dx=0;dx<scale;dx++){
-                            int px=sx+ci*8*scale+bit*scale+dx;
-                            int py=sy+row*scale+dy;
-                            if(px>=0&&px<W&&py>=0&&py<H)
-                                win->canvas[py*W+px]=0xFFFFFFFF;
-                        }
-    }
-
-    // Tombol-tombol
-    for (int r=0;r<BTN_ROWS;r++) {
-        for (int c=0;c<BTN_COLS;c++) {
-            int bx = BTN_OFF_X + c*(BTN_W+BTN_PAD);
-            int by = BTN_OFF_Y + r*(BTN_H+BTN_PAD);
-            uint32_t bc = (c==hover_col&&r==hover_row) ? COL_HOVER : btn_bg(btn_type[r][c]);
-            // Shadow
-            gui_draw_rect(win, bx+3, by+3, BTN_W, BTN_H, 0x050510);
-            // Body
-            gui_draw_rect(win, bx, by, BTN_W, BTN_H, bc);
-            // Label (tengah tombol)
-            const char* lbl = btn_labels[r][c];
-            int llen = _str_len(lbl);
-            int lx = bx + (BTN_W - llen*8)/2;
-            int ly = by + (BTN_H - 16)/2;
-            gui_draw_text(win, lbl, lx, ly, 0xFFFFFF);
-        }
-    }
+static void on_btn(void* userdata) {
+    int key = (int)(uintptr_t)userdata;
+    press(key % 4, key / 4);
+    refresh_disp();
 }
 
 void main(void) {
-    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
-    if (!app) { sys_exit(); return; }
+    ui_window_t* win = ui_window_create(320, 400);
+    if (!win) { sys_exit(); }
+    ui_window_set_title(win, "Kalkulator");
 
-    gui_set_render(app, calc_render);
+    ui_widget_t* box = ui_vbox_create(win, 6);
+    g_status = ui_label_create(win, "");
+    ui_layout_add(box, g_status);
+    g_disp = ui_label_create(win, "0");
+    ui_widget_set_size(g_disp, 300, 32);
+    ui_layout_add(box, g_disp);
 
-    kyuzen_event_t ev;
-    while (app->is_running) {
-        if (sys_get_event(&ev)) {
-            if (ev.type == EVENT_MOUSE_MOVE) {
-                app->mouse_x = ev.param1;
-                app->mouse_y = ev.param2;
-                // Phase 5C: koordinat window-local konten (dari KWM)
-                int rel_x = app->mouse_x;
-                int rel_y = app->mouse_y;
-                int nc = hit_col(rel_x), nr = hit_row(rel_y);
-                if (nc!=hover_col||nr!=hover_row) {
-                    hover_col=nc; hover_row=nr;
-                    calc_render(app); gui_flush(app);
-                }
-            }
-
-            if (ev.type == EVENT_MOUSE_CLICK && ev.param1==0 && ev.param2==1) {
-                if (ev.param3!=0) app->mouse_x=ev.param3;
-                // Koordinat window-local konten
-                int rel_x = app->mouse_x;
-                int rel_y = app->mouse_y;
-                int cc=hit_col(rel_x), cr=hit_row(rel_y);
-                if (cc>=0&&cr>=0) { press(cc,cr); calc_render(app); gui_flush(app); }
-            }
-
-            if (ev.type==EVENT_WIN_CLOSE) { app->is_running=0; break; }
-            if (ev.type==EVENT_KEY_PRESS&&ev.param1==27) { app->is_running=0; break; }
+    for (int r = 0; r < 5; r++) {
+        ui_widget_t* row = ui_hbox_create(win, BTN_PAD);
+        for (int c = 0; c < 4; c++) {
+            ui_widget_t* b = ui_button_create(win, btn_labels[r][c]);
+            ui_widget_set_size(b, BTN_W, BTN_H);
+            ui_button_set_click(b, on_btn, (void*)(uintptr_t)(r * 4 + c));
+            ui_layout_add(row, b);
         }
-        sys_yield();
+        ui_layout_add(box, row);
     }
 
-    gui_destroy(app);
+    ui_window_add(win, box);
+    refresh_disp();
+    ui_window_run(win);   // blocking; keluar via X / ESC
+    ui_window_destroy(win);
     sys_exit();
 }

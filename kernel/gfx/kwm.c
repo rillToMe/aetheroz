@@ -40,9 +40,10 @@ int focused_win_id = -1;
 static void kwm_frame_dirty(int i) {
     if (i < 0 || i >= MAX_WINDOWS) return;
     if (!kwm_windows[i].active) return;
+    // Phase 10: desktop frameless — frame = konten saja (tanpa titlebar).
+    uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
     screen_mark_dirty(kwm_windows[i].x, kwm_windows[i].y,
-                      kwm_windows[i].width,
-                      kwm_windows[i].height + KWM_TITLEBAR_H);
+                      kwm_windows[i].width, kwm_windows[i].height + tb);
 }
 
 // Caller MUST hold kwm_lock. Window aktif teratas (z tertinggi) di titik
@@ -56,7 +57,9 @@ static int kwm_hit_test_locked(int32_t px, int32_t py) {
         int32_t wy = kwm_windows[i].y;
         int32_t ww = (int32_t)kwm_windows[i].width;
         // Phase 5C: frame = konten + titlebar di atasnya.
-        int32_t wh = (int32_t)kwm_windows[i].height + KWM_TITLEBAR_H;
+        // Phase 10: desktop frameless — frame = konten saja.
+        int32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+        int32_t wh = (int32_t)kwm_windows[i].height + tb;
         if (px >= wx && px < wx + ww && py >= wy && py < wy + wh) {
             if ((int)kwm_windows[i].z_index > highest_z) {
                 highest_z = (int)kwm_windows[i].z_index;
@@ -73,7 +76,9 @@ static void kwm_refocus_locked(void) {
     int best = -1;
     uint32_t best_z = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
-        if (kwm_windows[i].active && kwm_windows[i].z_index > best_z) {
+        // Phase 10: desktop tak pernah jadi fokus keyboard.
+        if (kwm_windows[i].active && !(kwm_windows[i].flags & KWM_WIN_DESKTOP) &&
+            kwm_windows[i].z_index > best_z) {
             best_z = kwm_windows[i].z_index;
             best   = i;
         }
@@ -90,6 +95,8 @@ static void kwm_free_slot(int i) {
     }
     kwm_windows[i].active = 0;
     kwm_windows[i].owner_task = -1;
+    kwm_windows[i].flags = 0;
+    kwm_windows[i].title[0] = '\0';
     if (dragged_win_id == i) dragged_win_id = -1;
 }
 
@@ -123,6 +130,8 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].canvas = canvas;
             kwm_windows[i].owner_task = owner;
             kwm_windows[i].z_index = next_z_index++;
+            kwm_windows[i].flags = 0;
+            kwm_windows[i].title[0] = '\0';
             kwm_windows[i].active = 1;
             // Phase 5B/5C: window baru memegang fokus — yang lama kehilangan
             // tint titlebar-nya.
@@ -136,6 +145,116 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
     }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     return -1;
+}
+
+// ============================================================
+// Phase 10 — Desktop window (full-screen, frameless, z=0, no-focus)
+// ============================================================
+
+// Buat window desktop. Hanya SATU yang boleh ada. Owner = caller.
+// z=0 (paling bawah), ukuran = layar penuh, tanpa titlebar/close,
+// klik tidak refokus (tetap diteruskan ke app utk ikon/taskbar).
+int kwm_create_desktop(void) {
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (kwm_windows[i].active && (kwm_windows[i].flags & KWM_WIN_DESKTOP)) {
+            spinlock_unlock_irqrestore(&kwm_lock, flags);
+            return -1;   // desktop sudah ada
+        }
+    if (fb_width == 0 || fb_height == 0) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!kwm_windows[i].active) {
+            DisplayBuffer* canvas =
+                display_buffer_create(fb_width, fb_height, COLOR_FORMAT_XRGB8888);
+            if (!canvas) {
+                spinlock_unlock_irqrestore(&kwm_lock, flags);
+                return -1;
+            }
+            kwm_windows[i].x = 0;
+            kwm_windows[i].y = 0;
+            kwm_windows[i].width = fb_width;
+            kwm_windows[i].height = fb_height;
+            kwm_windows[i].canvas = canvas;
+            kwm_windows[i].owner_task = smp_current_task_id();
+            kwm_windows[i].z_index = 0;          // selalu paling bawah
+            kwm_windows[i].flags = KWM_WIN_DESKTOP;
+            kwm_windows[i].title[0] = '\0';
+            kwm_windows[i].active = 1;
+            spinlock_unlock_irqrestore(&kwm_lock, flags);
+            screen_mark_dirty(0, 0, fb_width, fb_height);
+            return i;
+        }
+    }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    return -1;
+}
+
+// Set judul window (titlebar + taskbar). Hanya pemilik. -1 = gagal.
+int kwm_set_title(int win_id, const char* title) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS || !title) return -1;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active ||
+        kwm_windows[win_id].owner_task != smp_current_task_id()) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+    int n = 0;
+    while (title[n] && n < (int)sizeof(kwm_windows[win_id].title) - 1) n++;
+    for (int i = 0; i < n; i++) kwm_windows[win_id].title[i] = title[i];
+    kwm_windows[win_id].title[n] = '\0';
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    kwm_frame_dirty(win_id);   // titlebar digambar compositor → repaint frame
+    return 0;
+}
+
+// Isi buffer dgn info window aktif (pemakaian syscall 61, pola kfs_get_file_list).
+// Return jumlah window aktif, atau -1. Caller menyediakan buf berkapasitas max.
+int kwm_get_windows(kwm_window_info_t* buf, int max) {
+    if (!buf || max <= 0) return -1;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    int n = 0;
+    for (int i = 0; i < MAX_WINDOWS && n < max; i++) {
+        if (!kwm_windows[i].active) continue;
+        kwm_window_info_t* o = &buf[n];
+        o->win_id     = (uint32_t)i + 1;
+        o->active     = 1;
+        o->focused    = (i == focused_win_id) ? 1 : 0;
+        o->x          = kwm_windows[i].x;
+        o->y          = kwm_windows[i].y;
+        o->width      = kwm_windows[i].width;
+        o->height     = kwm_windows[i].height;
+        o->z_index    = kwm_windows[i].z_index;
+        o->owner_task = kwm_windows[i].owner_task;
+        o->flags      = kwm_windows[i].flags;
+        for (int j = 0; j < 32; j++) {
+            o->title[j] = kwm_windows[i].title[j];
+            if (!kwm_windows[i].title[j]) break;
+        }
+        n++;
+    }
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    return n;
+}
+
+// Bawa window ke depan + beri fokus (klik taskbar). Desktop ditolak.
+int kwm_activate_window(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return -1;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[win_id].active ||
+        (kwm_windows[win_id].flags & KWM_WIN_DESKTOP)) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return -1;
+    }
+    int old_focus = focused_win_id;
+    kwm_windows[win_id].z_index = next_z_index++;   // bring-to-front
+    focused_win_id = win_id;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    kwm_frame_dirty(win_id);
+    if (old_focus >= 0 && old_focus != win_id) kwm_frame_dirty(old_focus);
+    return 0;
 }
 
 // Ukuran canvas window dalam byte (0 jika slot kosong/id invalid).
@@ -182,8 +301,10 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
     user_access_end();
     // Phase 5C: konten murni di bawah titlebar — hanya rect konten yang
     // berubah (titlebar digambar compositor, tidak ikut update).
+    // Phase 10: desktop frameless — konten mulai dari y window.
+    int32_t tb = (kwm_windows[win_id].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
     int32_t mx = kwm_windows[win_id].x;
-    int32_t my = kwm_windows[win_id].y + KWM_TITLEBAR_H;
+    int32_t my = kwm_windows[win_id].y + tb;
     uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(mx, my, mw, mh);
@@ -311,11 +432,19 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
             spinlock_lock(&kwm_lock);
             target_win  = kwm_hit_test_locked(mouse_px, mouse_py);
             old_focus   = focused_win_id;
-            // Phase 5B: click-to-focus. Klik area kosong = fokus -1 → keyboard
-            // kembali ke TTY (shell).
-            focused_win_id = target_win;
+            // Phase 10: desktop tak pernah refokus & tak bring-to-front —
+            // klik wallpaper tetap diteruskan ke desktop (return 0).
+            int is_desktop = (target_win >= 0 &&
+                              (kwm_windows[target_win].flags & KWM_WIN_DESKTOP));
+            if (is_desktop) {
+                focused_win_id = old_focus;
+            } else {
+                // Phase 5B: click-to-focus. Klik area kosong = fokus -1 → keyboard
+                // kembali ke TTY (shell).
+                focused_win_id = target_win;
+            }
 
-            if (target_win != -1) {
+            if (target_win != -1 && !is_desktop) {
                 kwm_bring_to_front(target_win);
 
                 int32_t fx = kwm_windows[target_win].x;
@@ -394,7 +523,9 @@ int kwm_route_mouse(int32_t sx, int32_t sy, int* out_win_id,
         owner = kwm_windows[w].owner_task;
         enc   = w + 1;
         if (out_lx) *out_lx = sx - kwm_windows[w].x;
-        if (out_ly) *out_ly = sy - (kwm_windows[w].y + KWM_TITLEBAR_H);
+        // Phase 10: desktop frameless — konten mulai di y window.
+        uint32_t tb = (kwm_windows[w].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+        if (out_ly) *out_ly = sy - (kwm_windows[w].y + (int32_t)tb);
     }
     spinlock_unlock(&kwm_lock);
     if (out_win_id) *out_win_id = enc;
@@ -430,16 +561,19 @@ static void kwm_cycle_focus_locked(void) {
 
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!kwm_windows[i].active) continue;
+        if (kwm_windows[i].flags & KWM_WIN_DESKTOP) continue;   // Phase 10
         int z = (int)kwm_windows[i].z_index;
         if (z < lowest_z) { lowest_z = z; lowest_win = i; }
         if (cur_z >= 0 && z > cur_z && z < next_z) { next_z = z; target = i; }
     }
 
     if (cur_z < 0) {
-        // Tidak ada fokus → window teratas.
+        // Tidak ada fokus → window teratas (bukan desktop).
         int hi = -1;
         for (int i = 0; i < MAX_WINDOWS; i++)
-            if (kwm_windows[i].active && (int)kwm_windows[i].z_index > hi)
+            if (kwm_windows[i].active &&
+                !(kwm_windows[i].flags & KWM_WIN_DESKTOP) &&
+                (int)kwm_windows[i].z_index > hi)
                 { hi = (int)kwm_windows[i].z_index; target = i; }
     } else if (target < 0) {
         target = lowest_win;   // wrap: fokus kembali ke paling bawah

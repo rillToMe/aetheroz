@@ -74,13 +74,16 @@ TASKMGR_ELF = $(OUT_DIR)/taskmgr.elf
 NOTEPAD_ELF = $(OUT_DIR)/notepad.elf
 BADPTR_ELF  = $(OUT_DIR)/badptr.elf
 WIDGET_ELF  = $(OUT_DIR)/widget_demo.elf
+DESKTOP_ELF  = $(OUT_DIR)/desktop.elf
+TERMINAL_ELF = $(OUT_DIR)/terminal.elf
+SETTINGS_ELF = $(OUT_DIR)/settings.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
-.PHONY: all fileman viewer clock calc taskmgr notepad badptr widget_demo clean
+.PHONY: all fileman viewer clock calc taskmgr notepad badptr widget_demo desktop terminal settings clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF) $(WIDGET_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF) $(WIDGET_ELF) $(DESKTOP_ELF) $(TERMINAL_ELF) $(SETTINGS_ELF)
 	@echo ""
 	@echo "[USER APPS] Build selesai! Semua app di virtual 0x4000000"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
@@ -90,6 +93,9 @@ all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTE
 	@echo "  taskmgr.elf → $(TASKMGR_ELF)"
 	@echo "  notepad.elf → $(NOTEPAD_ELF)"
 	@echo "  widget_demo.elf → $(WIDGET_ELF)"
+	@echo "  desktop.elf → $(DESKTOP_ELF)"
+	@echo "  terminal.elf → $(TERMINAL_ELF)"
+	@echo "  settings.elf → $(SETTINGS_ELF)"
 	@echo "  OS akan otomatis alokasi physical RAM saat dijalankan."
 
 # COMPILE SHARED USERLIB
@@ -126,9 +132,9 @@ fileman.o: fileman.c
 	@echo "[CC] Mengompilasi fileman.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(FILEMAN_ELF): fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
-	@echo "[LD] Linking fileman.elf ke $(APP_BASE) (physical RAM dicari otomatis)..."
-	$(LD) $(LDFLAGS) fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+$(FILEMAN_ELF): fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking fileman.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) fileman.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] fileman.elf siap!"
 
 fileman: $(FILEMAN_ELF)
@@ -140,9 +146,9 @@ viewer.o: viewer.c
 	@echo "[CC] Mengompilasi viewer.c (O2)..."
 	$(CC) $(CFLAGS_LIB) -c $< -o $@
 
-$(VIEWER_ELF): viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
-	@echo "[LD] Linking viewer.elf ke $(APP_BASE) (physical RAM dicari otomatis)..."
-	$(LD) $(LDFLAGS) viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+$(VIEWER_ELF): viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking viewer.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) viewer.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] viewer.elf siap!"
 
 viewer: $(VIEWER_ELF)
@@ -154,9 +160,9 @@ clock.o: clock.c
 	@echo "[CC] Mengompilasi clock.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(CLOCK_ELF): clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
-	@echo "[LD] Linking clock.elf ke $(APP_BASE) (physical RAM dicari otomatis)..."
-	$(LD) $(LDFLAGS) clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+$(CLOCK_ELF): clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking clock.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) clock.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] clock.elf siap!"
 
 clock: $(CLOCK_ELF)
@@ -168,9 +174,9 @@ calc.o: calc.c
 	@echo "[CC] Mengompilasi calc.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(CALC_ELF): calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
-	@echo "[LD] Linking calc.elf ke $(APP_BASE)..."
-	$(LD) $(LDFLAGS) calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+$(CALC_ELF): calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking calc.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) calc.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] calc.elf siap!"
 
 calc: $(CALC_ELF)
@@ -182,9 +188,9 @@ taskmgr.o: taskmgr.c
 	@echo "[CC] Mengompilasi taskmgr.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
-	@echo "[LD] Linking taskmgr.elf ke $(APP_BASE)..."
-	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+$(TASKMGR_ELF): taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking taskmgr.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) taskmgr.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] taskmgr.elf siap!"
 
 taskmgr: $(TASKMGR_ELF)
@@ -196,12 +202,57 @@ notepad.o: notepad.c
 	@echo "[CC] Mengompilasi notepad.c..."
 	$(CC) $(CFLAGS_APP) -c $< -o $@
 
-$(NOTEPAD_ELF): notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
-	@echo "[LD] Linking notepad.elf ke $(APP_BASE)..."
-	$(LD) $(LDFLAGS) notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+$(NOTEPAD_ELF): notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking notepad.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) notepad.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
 	@echo "[OK] notepad.elf siap!"
 
 notepad: $(NOTEPAD_ELF)
+
+# ==========================================================
+# DESKTOP — Desktop Environment (Phase 10, renderer libgui)
+# Shell DE: wallpaper + launcher ikon + taskbar. Event loop
+# custom (render hanya saat berubah) — full-screen canvas mahal.
+# ==========================================================
+desktop.o: desktop.c
+	@echo "[CC] Mengompilasi desktop.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(DESKTOP_ELF): desktop.o $(USERLIB_OBJ) $(LIBGUI_OBJ)
+	@echo "[LD] Linking desktop.elf (libgui renderer)..."
+	$(LD) $(LDFLAGS) desktop.o $(USERLIB_OBJ) $(LIBGUI_OBJ) -o $@
+	@echo "[OK] desktop.elf siap!"
+
+desktop: $(DESKTOP_ELF)
+
+# ==========================================================
+# TERMINAL — Console window (Phase 10, libui)
+# Output TextEdit readonly + input TextBox; command loop userspace.
+# ==========================================================
+terminal.o: terminal.c
+	@echo "[CC] Mengompilasi terminal.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(TERMINAL_ELF): terminal.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking terminal.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) terminal.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	@echo "[OK] terminal.elf siap!"
+
+terminal: $(TERMINAL_ELF)
+
+# ==========================================================
+# SETTINGS — Tema + info sistem (Phase 10, libui)
+# ==========================================================
+settings.o: settings.c
+	@echo "[CC] Mengompilasi settings.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(SETTINGS_ELF): settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ)
+	@echo "[LD] Linking settings.elf (libui toolkit + png)..."
+	$(LD) $(LDFLAGS) settings.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) -o $@
+	@echo "[OK] settings.elf siap!"
+
+settings: $(SETTINGS_ELF)
 
 # ==========================================================
 # BADPTR — Uji boundary copy syscall (FIX_005 Tahap 2)
@@ -241,5 +292,5 @@ clean:
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---
-APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o
+APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) $(PNG_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o desktop.o terminal.o settings.o
 -include $(APP_OBJS:.o=.d)

@@ -53,7 +53,8 @@ typedef struct registers {
 #define TASK_DEAD     3
 #define TASK_BLOCKED  4   // Untimed block: waiting on an object (wait queue / sync)
 
-#define MAX_TASKS       8
+// Phase 10: 16 (dari 8) — desktop + shell + ≥6 app GUI konkuren.
+#define MAX_TASKS       16
 // 16KB (bukan 8KB): sejak Phase 5A, stack ini juga menjadi RSP0 task ring-3 —
 // rantai syscall app (exec → ELF → KFS → ATA) bisa dalam; ukuran disamakan
 // dengan per-CPU syscall stack (SYSCALL_STACK_SIZE) yang dulu menampungnya.

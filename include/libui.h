@@ -58,6 +58,15 @@ void ui_window_set_theme(ui_window_t* win, const ui_theme_t* theme); // 0 = defa
 void ui_window_add(ui_window_t* win, ui_widget_t* widget);   // tambah ke layout root
 void ui_window_run(ui_window_t* win);   // blocking sampai window ditutup (X / ESC)
 
+// Phase 10: judul window (titlebar WM + taskbar desktop).
+void ui_window_set_title(ui_window_t* win, const char* title);
+
+// Phase 10: callback periodik tiap iterasi event loop (~60/s, via sys_yield
+// + timer IRQ). Return 1 = ada perubahan → toolkit render; 0 = tetap.
+// Dipakai jam / task manager untuk refresh tanpa event mouse/keyboard.
+typedef int (*ui_tick_cb)(void* userdata);
+void ui_window_set_tick(ui_window_t* win, ui_tick_cb cb, void* userdata);
+
 // --- Label ---
 // text di-copy oleh toolkit — caller boleh pakai stack buffer.
 ui_widget_t* ui_label_create(ui_window_t* win, const char* text);
@@ -99,12 +108,31 @@ void ui_progressbar_set_value(ui_widget_t* widget, int value);   // clamp 0..100
 // Menampilkan PNG dari KyuzenFS, diskalakan nearest-neighbor ke rect w×h.
 // File hilang / decode gagal -> kotak kosong (bukan crash).
 ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int h);
+// Phase 10: zoom — target display = natural PNG × percent/100 (10..400).
+// Ukuran widget dihitung ulang; perlu di-scroll bila melebihi view.
+void ui_image_set_scale(ui_widget_t* widget, int percent);
+// Phase 10: ganti file PNG yang ditampilkan (viewer galeri), reset zoom 100%.
+void ui_image_set_file(ui_widget_t* widget, const char* filename);
+
+// --- TextEdit (Phase 10) ---
+// Editor multi-baris. Buffer teks polos 8K; kursor + scroll roda/otomatis.
+// Klik memberi fokus. readonly = tampilan output (terminal) — ketikan ditolak.
+ui_widget_t* ui_textedit_create(ui_window_t* win, int w, int h);
+void ui_textedit_set_text(ui_widget_t* widget, const char* text);
+const char* ui_textedit_text(ui_widget_t* widget);      // pointer buffer internal
+void ui_textedit_set_readonly(ui_widget_t* widget, int ro);
+void ui_textedit_append(ui_widget_t* widget, const char* text);  // + auto-scroll bawah
+void ui_textedit_clear(ui_widget_t* widget);
 
 // --- Layout ---
 // VBox: susun anaknya vertikal (masing-masing setinggi ukurannya,
 // diberi spacing pixel). Win disediakan agar API seragam tapi
 // widget hasilnya milik caller (bukan window).
 ui_widget_t* ui_vbox_create(ui_window_t* win, int spacing);
+// HBox (Phase 10): susun anaknya horizontal (grid tombol kalkulator).
+ui_widget_t* ui_hbox_create(ui_window_t* win, int spacing);
+// Paksa ukuran widget (tombol seragam dalam grid, display calc).
+void ui_widget_set_size(ui_widget_t* widget, int w, int h);
 void ui_layout_add(ui_widget_t* layout, ui_widget_t* child);
 
 // --- Phase 8: Advanced Widgets ---
@@ -128,6 +156,7 @@ void ui_listview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata)
 ui_widget_t* ui_table_create(ui_window_t* win, int w, int h);
 void ui_table_add_column(ui_widget_t* widget, const char* title, int width);
 void ui_table_add_row(ui_widget_t* widget, const char* const* cells, int n);
+void ui_table_clear(ui_widget_t* widget);   // hapus semua baris (refresh)
 int ui_table_selected(ui_widget_t* widget);
 void ui_table_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
 

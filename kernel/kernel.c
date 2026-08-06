@@ -160,11 +160,13 @@ void kernel_main(void) {
     init_keyboard();
     init_tty();
     kfs_init();
-#ifdef HEAP_WATCH_DEBUG
+    // Serial COM1 selalu diinit — panic dump (panic.c) dan watchdog memakainya,
+    // bukan hanya mode HEAP_WATCH. Aman dipanggil kapan pun.
     extern void serial_init(void);
     extern void serial_print(const char* s);
     serial_init();
-    serial_print("\n[HEAP_WATCH_DEBUG] serial ready\n");
+    serial_print("\n[SERIAL] ready\n");
+#ifdef HEAP_WATCH_DEBUG
     // Pasang hardware watchpoint DR0 (per-CPU!) di BSP SEBELUM AP online.
     // Setiap AP memasang DR0-nya sendiri di smp_ap_main().
     extern void heap_watch_set(uint64_t addr, int len_bytes);

@@ -153,9 +153,12 @@ void user_login() {
             sys_set_uid(active_uid);
             timer_sleep_ms(1000); // Jeda 1 detik sebelum masuk shell
 
+            // Phase 10: spawn desktop shell (task sendiri, jalan konkuren).
+            // Gagal (file tak ada) → fallback natural ke shell CLI.
+            sys_spawn("desktop.elf");
 
             clear_screen();
-            user_shell(); 
+            user_shell();
         } else {
             print("  [DENIED] Akses Ditolak: Username atau Password salah!\n");
             timer_sleep_ms(2000); // Jeda 2 detik, tampilkan pesan error

@@ -7,6 +7,8 @@
 extern int32_t mouse_x;
 extern int32_t mouse_y;
 extern const uint8_t cursor_bitmap[16][12];
+// Font VGA 8x16 (didefinisikan di kernel/gfx/fb.c) — teks judul titlebar.
+extern const unsigned char font8x16[256][16];
 
 #define CURSOR_WIDTH  12
 #define CURSOR_HEIGHT 16
@@ -105,18 +107,44 @@ static void titlebar_line(uint32_t* fb, int pitch4,
     }
 }
 
+// Teks judul window di titlebar (Phase 10). Digambar karakter per karakter
+// (font 8x16), clamp ke `max_x` (area sebelum tombol close) + clip rect.
+static void titlebar_text(uint32_t* fb, int pitch4, int x, int y,
+                          const char* str, int max_x, uint32_t color, Rect clip) {
+    for (int i = 0; str[i] && x + 8 <= max_x; i++) {
+        unsigned char c = (unsigned char)str[i];
+        if (c > 127) { x += 8; continue; }
+        const unsigned char* bmp = font8x16[c];
+        for (int row = 0; row < 16; row++) {
+            int py = y + row;
+            if (py < (int)clip.y || py >= (int)(clip.y + clip.height)) continue;
+            for (int col = 0; col < 8; col++) {
+                if (!(bmp[row] & (0x80 >> col))) continue;
+                int px = x + col;
+                if (px < (int)clip.x || px >= (int)(clip.x + clip.width)) continue;
+                fb[py * pitch4 + px] = color;
+            }
+        }
+        x += 8;
+    }
+}
+
 // Composite every window overlapping `r` (z-order low→high) onto the backbuffer.
 // Caller must hold kwm_lock. Phase 5C: frame window = konten + titlebar milik
 // WM; titlebar digambar di sini (tint beda untuk window fokus + tombol close).
 static void composite_windows_in_rect(Rect r, int pitch4) {
-    for (uint32_t z = 1; z <= next_z_index; z++) {
+    // Phase 10: z=0 adalah window desktop (paling bawah).
+    for (uint32_t z = 0; z <= next_z_index; z++) {
         for (int w = 0; w < MAX_WINDOWS; w++) {
             if (!(kwm_windows[w].active && kwm_windows[w].z_index == z && kwm_windows[w].canvas))
                 continue;
 
             const int32_t win_x = kwm_windows[w].x;
             const int32_t win_y = kwm_windows[w].y;              // frame atas
-            const int32_t cty    = win_y + KWM_TITLEBAR_H;       // konten mulai
+            // Phase 10: desktop frameless — konten mulai di y window.
+            const uint32_t wflags = kwm_windows[w].flags;
+            const uint32_t tb_h = (wflags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
+            const int32_t cty    = win_y + (int32_t)tb_h;        // konten mulai
             const uint32_t cw    = kwm_windows[w].width;
             const uint32_t ch    = kwm_windows[w].height;
             const DisplayBuffer* canvas = kwm_windows[w].canvas;
@@ -139,25 +167,33 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
                 }
             }
 
-            // --- Titlebar milik WM ---
-            Rect tb = { win_x, win_y, cw, KWM_TITLEBAR_H };
-            if (rect_intersect(tb, r, &clip)) {
-                fill_rect_clip(backbuffer, pitch4, tb,
-                               (w == focused_win_id) ? KWM_TITLEBAR_COLOR
-                                                     : KWM_TITLEBAR_INACT,
-                               r);
-                Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W, win_y,
-                            KWM_CLOSE_BTN_W, KWM_TITLEBAR_H };
-                fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_COLOR, r);
-                // Glyph "X" di dalam tombol close.
-                titlebar_line(backbuffer, pitch4,
-                              cb.x + 6, cb.y + 4,
-                              cb.x + KWM_CLOSE_BTN_W - 7, cb.y + KWM_TITLEBAR_H - 5,
-                              0xFFFFFF, r);
-                titlebar_line(backbuffer, pitch4,
-                              cb.x + KWM_CLOSE_BTN_W - 7, cb.y + 4,
-                              cb.x + 6, cb.y + KWM_TITLEBAR_H - 5,
-                              0xFFFFFF, r);
+            // --- Titlebar milik WM (kecuali desktop: frameless) ---
+            if (!(wflags & KWM_WIN_DESKTOP)) {
+                Rect tb = { win_x, win_y, cw, KWM_TITLEBAR_H };
+                if (rect_intersect(tb, r, &clip)) {
+                    fill_rect_clip(backbuffer, pitch4, tb,
+                                   (w == focused_win_id) ? KWM_TITLEBAR_COLOR
+                                                         : KWM_TITLEBAR_INACT,
+                                   r);
+                    Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W, win_y,
+                                KWM_CLOSE_BTN_W, KWM_TITLEBAR_H };
+                    fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_COLOR, r);
+                    // Glyph "X" di dalam tombol close.
+                    titlebar_line(backbuffer, pitch4,
+                                  cb.x + 6, cb.y + 4,
+                                  cb.x + KWM_CLOSE_BTN_W - 7, cb.y + KWM_TITLEBAR_H - 5,
+                                  0xFFFFFF, r);
+                    titlebar_line(backbuffer, pitch4,
+                                  cb.x + KWM_CLOSE_BTN_W - 7, cb.y + 4,
+                                  cb.x + 6, cb.y + KWM_TITLEBAR_H - 5,
+                                  0xFFFFFF, r);
+                    // Phase 10: teks judul, clamp ke area sebelum tombol close.
+                    if (kwm_windows[w].title[0])
+                        titlebar_text(backbuffer, pitch4, win_x + 4, win_y + 4,
+                                      kwm_windows[w].title,
+                                      win_x + (int32_t)cw - KWM_CLOSE_BTN_W - 8,
+                                      0xFFFFFF, r);
+                }
             }
         }
     }

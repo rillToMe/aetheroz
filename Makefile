@@ -217,7 +217,7 @@ boot_image.iso: $(TARGET) apps limine.conf kyuzen.png logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf desktop.elf terminal.elf settings.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \
@@ -233,6 +233,27 @@ run: boot_image.iso
 		-drive file=disk.img,format=raw,index=0,media=disk \
 		-drive file=boot_image.iso,media=cdrom,index=2 \
 		-nic user,model=e1000
+
+# run + serial stdio: tangkap panic dump ke terminal (bukan cuma framebuffer BSOD)
+.PHONY: run-serial
+run-serial: boot_image.iso
+	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
+		-smp 4 \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000 \
+		-serial stdio
+
+# run + serial ke FILE (lebih andal di Windows daripada stdio): panic dump
+# tertulis ke serial.log — buka & paste setelah QEMU berhenti.
+.PHONY: run-wd
+run-wd: boot_image.iso
+	qemu-system-x86_64.exe -cpu max -m 1G -boot d \
+		-smp 4 \
+		-drive file=disk.img,format=raw,index=0,media=disk \
+		-drive file=boot_image.iso,media=cdrom,index=2 \
+		-nic user,model=e1000 \
+		-serial file:serial.log
 
 # Stress test: recursive make with STRESS_TEST flag + debug/ sources
 .PHONY: stress

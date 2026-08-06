@@ -1,20 +1,18 @@
 // ============================================================
-// clock.c — Kyuzen Clock App (libgui standard)
-// Jam digital real-time menggunakan RTC.
-// Tampilkan HH:MM:SS dan tanggal, update setiap detik.
+// clock.c — Jam (Phase 10): jam digital + tanggal (libui).
+// Refresh 1×/dtk lewat ui_window_set_tick (render hanya saat
+// detik berubah). Tanpa infra timer kernel — tick dibangkitkan
+// event loop (~60/s) dan ditolak bila detik belum berubah.
+//
+// Build: clock.o + userlib.o + libgui.o + libui.o + png.o
 // ============================================================
 #include "userlib.h"
-#include "libgui.h"
+#include "libui.h"
 
-// Warna tema
-#define BG_BODY    0x121212
-#define BG_CLOCK   0x1E1E2E
-#define COL_CYAN   0x00E5FF
-#define COL_SEP    0x00BFA5
-#define COL_WHITE  0xFFFFFF
-#define COL_GRAY   0x888888
+static ui_widget_t* g_time;
+static ui_widget_t* g_date;
+static uint32_t last_sec = 0xFF;
 
-// Nama hari / bulan (Indonesia)
 static const char* BULAN[13] = {
     "", "Jan","Feb","Mar","Apr","Mei","Jun","Jul","Agu","Sep","Okt","Nov","Des"
 };
@@ -22,7 +20,6 @@ static const char* HARI[7] = {
     "Min","Sen","Sel","Rab","Kam","Jum","Sab"
 };
 
-// Hitung hari dalam seminggu (Zeller)
 static int day_of_week(int y, int m, int d) {
     if (m < 3) { m += 12; y--; }
     int k = y % 100, j = y / 100;
@@ -30,140 +27,60 @@ static int day_of_week(int y, int m, int d) {
     return (h + 6) % 7;
 }
 
-// State waktu global
-static uint32_t waktu[6];
-static uint32_t last_sec = 0xFF;
+static void fmt2(uint32_t v, char* b) { b[0]='0'+(v/10); b[1]='0'+(v%10); b[2]='\0'; }
 
-// Gambar digit jam 2x scale langsung ke canvas (koordinat absolut dalam canvas)
-static void draw_scaled_char(gui_window_t* win, char ch, int ox, int oy,
-                              uint32_t col, int scale) {
-    if (ch < 0 || ch > 127) return;
-    // Gunakan font8x16 — diekspos oleh libgui via canvas manipulation
-    // Kita tulis pixel langsung ke win->canvas
-    // (font extern di-link dari libgui.o)
-    extern const unsigned char font8x16[256][16];
-    const unsigned char* bm = font8x16[(int)(unsigned char)ch];
-    uint32_t solid = col | 0xFF000000;
-    int W = (int)win->width, H = (int)win->height;
-    for (int row = 0; row < 16; row++)
-        for (int bit = 0; bit < 8; bit++)
-            if (bm[row] & (0x80 >> bit))
-                for (int dy = 0; dy < scale; dy++)
-                    for (int dx = 0; dx < scale; dx++) {
-                        int px = ox + bit*scale + dx;
-                        int py = oy + row*scale + dy;
-                        if (px >= 0 && px < W && py >= 0 && py < H)
-                            win->canvas[py * W + px] = solid;
-                    }
-}
+// "HH:MM:SS" + tanggal "Rab, 06 Agu 2026" — pusatkan dgn spasi depan.
+static int tick(void* userdata) {
+    (void)userdata;
+    uint32_t t[6];   // [year, month, day, hour, min, sec]
+    sys_get_time(t);
+    if (t[5] == last_sec && last_sec != 0xFF) return 0;   // detik sama → tetap
+    last_sec = t[5];
 
-static void put_str_abs(gui_window_t* win, const char* s, int x, int y, uint32_t col) {
-    for (int i = 0; s[i]; i++) {
-        extern const unsigned char font8x16[256][16];
-        char ch = s[i];
-        if (ch < 0 || ch > 127) continue;
-        const unsigned char* bm = font8x16[(int)(unsigned char)ch];
-        uint32_t solid = col | 0xFF000000;
-        int W = (int)win->width, H = (int)win->height;
-        for (int row = 0; row < 16; row++)
-            for (int bit = 0; bit < 8; bit++)
-                if (bm[row] & (0x80 >> bit)) {
-                    int px = x + i*8 + bit, py = y + row;
-                    if (px >= 0 && px < W && py >= 0 && py < H)
-                        win->canvas[py*W+px] = solid;
-                }
-    }
-}
+    char hh[3], mm[3], ss[3];
+    fmt2(t[3], hh); fmt2(t[4], mm); fmt2(t[5], ss);
+    char tb[20];
+    int k = 0;
+    for (int i = 0; i < 6; i++) tb[k++] = ' ';   // pusatkan di window 260px
+    tb[k++] = hh[0]; tb[k++] = hh[1]; tb[k++] = ':';
+    tb[k++] = mm[0]; tb[k++] = mm[1]; tb[k++] = ':';
+    tb[k++] = ss[0]; tb[k++] = ss[1];
+    tb[k] = '\0';
+    ui_label_set_text(g_time, tb);
 
-static void fmt_2d(int n, char* buf) {
-    buf[0] = '0' + (n / 10); buf[1] = '0' + (n % 10); buf[2] = '\0';
-}
-static void fmt_4d(int n, char* buf) {
-    buf[0] = '0' + ((n/1000)%10); buf[1] = '0' + ((n/100)%10);
-    buf[2] = '0' + ((n/10)%10);   buf[3] = '0' + (n%10);
-    buf[4] = '\0';
-}
-
-void clock_render(gui_window_t* win) {
-    int W = (int)win->width;
-
-    // Background isi
-    gui_draw_rect(win, 0, 0, W, (int)win->inner_h, BG_BODY);
-
-    // Panel jam
-    gui_draw_rect(win, 10, 8, W - 20, 72, BG_CLOCK);
-
-    // HH:MM:SS dalam 2x scale (absolut di bawah titlebar)
-    int jam = waktu[3], mnt = waktu[4], dtk = waktu[5];
-    char timebuf[9];
-    timebuf[0] = '0' + (jam/10); timebuf[1] = '0' + (jam%10);
-    timebuf[2] = ':';
-    timebuf[3] = '0' + (mnt/10); timebuf[4] = '0' + (mnt%10);
-    timebuf[5] = ':';
-    timebuf[6] = '0' + (dtk/10); timebuf[7] = '0' + (dtk%10);
-    timebuf[8] = '\0';
-
-    int ox = 18, oy = 18;
-    for (int ci = 0; timebuf[ci]; ci++) {
-        uint32_t col = (timebuf[ci] == ':') ? COL_SEP : COL_CYAN;
-        draw_scaled_char(win, timebuf[ci], ox + ci*20, oy, col, 2);
-    }
-
-    // Tanggal
-    int dow = day_of_week(waktu[0], waktu[1], waktu[2]);
-    char buf2d[3], buf4d[5];
-    fmt_2d(waktu[2], buf2d);
-    fmt_4d(waktu[0], buf4d);
-
-    put_str_abs(win, HARI[dow], 16, 88, COL_GRAY);
-    put_str_abs(win, ",", 40, 88, COL_GRAY);
-    put_str_abs(win, buf2d, 56, 88, COL_WHITE);
-    put_str_abs(win, BULAN[waktu[1]], 80, 88, COL_CYAN);
-    put_str_abs(win, buf4d, 112, 88, COL_WHITE);
-
-    // Garis bawah
-    gui_draw_rect(win, 10, (int)win->inner_h - 8, W - 20, 2, 0x1A237E);
+    char dd[3]; fmt2(t[2], dd);
+    char db[24];
+    k = 0;
+    for (int i = 0; i < 8; i++) db[k++] = ' ';
+    const char* d = HARI[day_of_week(t[0], t[1], t[2])];
+    for (int i = 0; d[i] && k < 14; i++) db[k++] = d[i];
+    db[k++] = ','; db[k++] = ' ';
+    db[k++] = dd[0]; db[k++] = dd[1]; db[k++] = ' ';
+    const char* m = BULAN[t[1]];
+    for (int i = 0; m[i] && k < 21; i++) db[k++] = m[i];
+    db[k++] = ' ';
+    db[k++] = '0' + (t[0]/1000)%10; db[k++] = '0' + (t[0]/100)%10;
+    db[k++] = '0' + (t[0]/10)%10;   db[k++] = '0' + t[0]%10;
+    db[k] = '\0';
+    ui_label_set_text(g_date, db);
+    return 1;
 }
 
 void main(void) {
-    // === ISOLATION TEST (dynamic — OS assigns unique PID per address space) ===
-    print("[clock] CR3=");
-    print_num((uint32_t)(sys_get_cr3() >> 12));
-    print(" pid=");
-    print_num(sys_get_pid());
-    print("\n");
-    // === END TEST ===
+    ui_window_t* win = ui_window_create(260, 120);
+    if (!win) { sys_exit(); }
+    ui_window_set_title(win, "Jam");
 
-    gui_window_t* app = gui_create_window(300, 160);
-    if (!app) { sys_exit(); return; }
+    ui_widget_t* box = ui_vbox_create(win, 8);
+    g_time = ui_label_create(win, "--:--:--");
+    ui_layout_add(box, g_time);
+    g_date = ui_label_create(win, "");
+    ui_layout_add(box, g_date);
+    ui_window_add(win, box);
 
-    gui_set_render(app, clock_render);
-
-    // Custom mainloop: cek waktu, render hanya jika detik berubah
-    kyuzen_event_t ev;
-    while (app->is_running) {
-        sys_get_time(waktu);
-        if (waktu[5] != last_sec) {
-            last_sec = waktu[5];
-            clock_render(app);
-            gui_flush(app);
-        }
-
-        if (sys_get_event(&ev)) {
-            if (ev.type == EVENT_MOUSE_MOVE) {
-                app->mouse_x = ev.param1;
-                app->mouse_y = ev.param2;
-            }
-            // Phase 5C: WM minta tutup (tombol close titlebar)
-            if (ev.type == EVENT_WIN_CLOSE) {
-                app->is_running = 0;
-            }
-            if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27)
-                app->is_running = 0;
-        }
-        sys_yield();
-    }
-
-    gui_destroy(app);
+    ui_window_set_tick(win, tick, 0);
+    tick(0);   // render nilai awal (sebelum detik pertama berubah)
+    ui_window_run(win);   // blocking; keluar via X / ESC
+    ui_window_destroy(win);
     sys_exit();
 }

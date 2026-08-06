@@ -1,159 +1,90 @@
 // ============================================================
-// fileman.c — Kyuzen File Manager (libgui standard)
-// Menampilkan daftar file KyuzenFS, klik untuk memilih & buka.
+// fileman.c — Explorer (Phase 10): File Manager KyuzenFS (libui).
+// Table nama+ukuran; klik pilih; Buka/Refresh. .elf → spawn,
+// .png → view.tmp + viewer.elf, .txt → edit.tmp + notepad.elf.
+//
+// Build: fileman.o + userlib.o + libgui.o + libui.o + png.o
 // ============================================================
 #include "userlib.h"
-#include "libgui.h"
+#include "libui.h"
 
-#define WIN_W 400
-#define WIN_H 320
+#define MAX_FILES 16
 
-// Warna
-#define BG_COLOR   0xFFFFFF
-#define HDR_COLOR  0xEEEEEE
-#define SEL_COLOR  0x111111
-#define TEXT_DARK  0x000000
-#define TEXT_LIGHT 0xFFFFFF
-#define TEXT_GRAY  0x555555
-#define BUKA_COLOR 0x00AEEF
+static ui_window_t* g_win;
+static ui_widget_t* g_table;
+static file_info_t g_files[MAX_FILES];
+static int g_nfiles = 0;
 
-// State
-static file_info_t files[16];
-static int total_files   = 0;
-static int selected_file = -1;
+static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
+static void itoa(uint32_t n, char* b) {
+    if (n == 0) { b[0] = '0'; b[1] = '\0'; return; }
+    char t[16]; int i = 0;
+    while (n > 0 && i < 15) { t[i++] = '0' + (n % 10); n /= 10; }
+    int j = 0; while (i > 0) b[j++] = t[--i]; b[j] = '\0';
+}
 
-// Gambar satu baris file
-#define LIST_START_Y  40    // relatif ke area isi
-#define LIST_ROW_H    20
-
-void fileman_render(gui_window_t* win) {
-    int W = (int)win->inner_w;
-    int H = (int)win->inner_h;
-
-    // Background
-    gui_draw_rect(win, 0, 0, W, H, BG_COLOR);
-
-    // Header info
-    gui_draw_rect(win, 0, 0, W, 30, HDR_COLOR);
-    gui_draw_text(win, "Isi Penyimpanan KZFS:", 15, 7, TEXT_GRAY);
-
-    // Daftar file
-    int sy = LIST_START_Y;
-    for (int i = 0; i < total_files; i++) {
-        if (i == selected_file) {
-            gui_draw_rect(win, 10, sy - 2, W - 20, 20, SEL_COLOR);
-            gui_draw_text(win, ">", 15, sy, TEXT_LIGHT);
-            gui_draw_text(win, files[i].filename, 30, sy, TEXT_LIGHT);
-        } else {
-            gui_draw_text(win, ">", 15, sy, TEXT_GRAY);
-            gui_draw_text(win, files[i].filename, 30, sy, TEXT_DARK);
-        }
-        sy += LIST_ROW_H;
-    }
-
-    // Status bar
-    gui_draw_rect(win, 0, H - 30, W, 30, HDR_COLOR);
-    if (selected_file != -1) {
-        gui_draw_text(win, "Terpilih: ", 10, H - 22, TEXT_GRAY);
-        gui_draw_text(win, files[selected_file].filename, 90, H - 22, TEXT_DARK);
-
-        // Tombol BUKA
-        gui_draw_rect(win, W - 70, H - 27, 60, 22, BUKA_COLOR);
-        gui_draw_text(win, "BUKA", W - 55, H - 23, TEXT_LIGHT);
+static void fill_table(void) {
+    ui_table_clear(g_table);
+    g_nfiles = sys_get_file_list(g_files, MAX_FILES);
+    for (int i = 0; i < g_nfiles; i++) {
+        char sz[16]; itoa(g_files[i].size, sz);
+        const char* cells[2] = { g_files[i].filename, sz };
+        ui_table_add_row(g_table, cells, 2);
     }
 }
 
-void main(void) {
-    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
-    if (!app) { sys_exit(); return; }
+static void do_open(void* userdata) {
+    (void)userdata;
+    int sel = ui_table_selected(g_table);
+    if (sel < 0 || sel >= g_nfiles) return;
+    char* fname = g_files[sel].filename;
+    int len = slen(fname);
 
-    total_files = sys_get_file_list(files, 16);
-    fileman_render(app);
-    gui_flush(app);
-
-    kyuzen_event_t ev;
-    while (app->is_running) {
-        if (sys_get_event(&ev)) {
-            if (ev.type == EVENT_MOUSE_MOVE) {
-                app->mouse_x = ev.param1;
-                app->mouse_y = ev.param2;
-            }
-
-            if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
-                if (ev.param3 != 0) app->mouse_x = ev.param3;
-
-                // Phase 5C: koordinat sudah window-local konten.
-                int rel_x = app->mouse_x;
-                int rel_y = app->mouse_y;
-
-                // Klik daftar file
-                int list_x0 = 10, list_x1 = (int)app->inner_w - 10;
-                int list_y0 = LIST_START_Y;
-                int list_y1 = list_y0 + total_files * LIST_ROW_H;
-                // Baris yang tergambar di balik status bar TIDAK boleh bisa
-                // diklik — dengan >11 file, zona daftar menimpa tombol BUKA
-                // dan klik BUKA diam-diam memilih file tersembunyi terakhir.
-                int vis_y1 = (int)app->inner_h - 30;   // batas atas status bar
-                if (list_y1 > vis_y1) list_y1 = vis_y1;
-
-                if (rel_x >= list_x0 && rel_x <= list_x1 &&
-                    rel_y >= list_y0 && rel_y <  list_y1) {
-                    int idx = (rel_y - list_y0) / LIST_ROW_H;
-                    if (idx >= 0 && idx < total_files) {
-                        selected_file = idx;
-                        fileman_render(app);
-                        gui_flush(app);
-                    }
-                }
-
-                // Klik tombol BUKA
-                if (selected_file != -1) {
-                    int H = (int)app->inner_h;
-                    int bx0 = (int)app->inner_w - 70;
-                    int bx1 = (int)app->inner_w - 10;
-                    int by0 = H - 27, by1 = H - 5;
-                    if (rel_x >= bx0 && rel_x <= bx1 &&
-                        rel_y >= by0 && rel_y <= by1) {
-                        char* fname = files[selected_file].filename;
-                        int len = 0; while (fname[len]) len++;
-
-                        if (len > 4 && fname[len-4]=='.' && fname[len-3]=='e' &&
-                            fname[len-2]=='l' && fname[len-1]=='f') {
-                            gui_destroy(app);
-                            sys_exec(fname);
-                            return;
-                        } else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='p' &&
-                                   fname[len-2]=='n' && fname[len-1]=='g') {
-                            if (sys_file_exists("view.tmp")) fs_delete("view.tmp");
-                            sys_create_file("view.tmp", fname, len);
-                            gui_destroy(app);
-                            sys_exec("viewer.elf");
-                            return;
-                        }
-                         else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='t' &&
-                                   fname[len-2]=='x' && fname[len-1]=='t') {
-                            if (sys_file_exists("edit.tmp")) fs_delete("edit.tmp");
-                            sys_create_file("edit.tmp", fname, len); // Kasih tau notepad file apa yg mau dibuka
-                            gui_destroy(app);
-                            sys_exec("notepad.elf");
-                            return;
-                        }
-                    }
-                }
-            }
-
-            // Phase 5C: WM minta tutup (tombol close titlebar)
-            if (ev.type == EVENT_WIN_CLOSE) {
-                app->is_running = 0; break;
-            }
-
-            if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27) {
-                app->is_running = 0; break;
-            }
-        }
-        sys_yield();
+    if (len > 4 && fname[len-4]=='.' && fname[len-3]=='e' &&
+        fname[len-2]=='l' && fname[len-1]=='f') {
+        ui_window_destroy(g_win);
+        sys_exec(fname);            // tak pernah kembali
+    } else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='p' &&
+               fname[len-2]=='n' && fname[len-1]=='g') {
+        if (sys_file_exists("view.tmp")) fs_delete("view.tmp");
+        sys_create_file("view.tmp", fname, len);   // arg ke viewer
+        ui_window_destroy(g_win);
+        sys_exec("viewer.elf");
+    } else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='t' &&
+               fname[len-2]=='x' && fname[len-1]=='t') {
+        if (sys_file_exists("edit.tmp")) fs_delete("edit.tmp");
+        sys_create_file("edit.tmp", fname, len);   // arg ke notepad
+        ui_window_destroy(g_win);
+        sys_exec("notepad.elf");
     }
+}
 
-    gui_destroy(app);
+static void do_refresh(void* userdata) { (void)userdata; fill_table(); }
+
+void main(void) {
+    g_win = ui_window_create(400, 320);
+    if (!g_win) { sys_exit(); }
+    ui_window_set_title(g_win, "Explorer");
+
+    ui_widget_t* box = ui_vbox_create(g_win, 6);
+    g_table = ui_table_create(g_win, 380, 240);
+    ui_table_add_column(g_table, "Nama", 270);
+    ui_table_add_column(g_table, "Ukuran", 100);
+    ui_layout_add(box, g_table);
+
+    ui_widget_t* btns = ui_hbox_create(g_win, 8);
+    ui_widget_t* b = ui_button_create(g_win, "Buka");
+    ui_button_set_click(b, do_open, 0);
+    ui_layout_add(btns, b);
+    b = ui_button_create(g_win, "Refresh");
+    ui_button_set_click(b, do_refresh, 0);
+    ui_layout_add(btns, b);
+    ui_layout_add(box, btns);
+
+    ui_window_add(g_win, box);
+    fill_table();
+
+    ui_window_run(g_win);   // blocking; keluar via X / ESC
+    ui_window_destroy(g_win);
     sys_exit();
 }

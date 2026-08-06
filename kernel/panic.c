@@ -1,7 +1,25 @@
 #include <stdint.h>
 #include "task.h"
+#include "serial.h"
 
 // registers_t is provided by task.h — must match PUSHA64 in isr_macro.inc
+
+// =======================================================================
+// SERIAL MIRROR PANIC — dump ke COM1 (-serial stdio) agar teks panic
+// selamat walau framebuffer BSOD langsung ketimpa kompositor (desktop).
+// =======================================================================
+static void ser_hex(uint64_t v) {
+    const char* d = "0123456789ABCDEF";
+    char buf[19] = "0x0000000000000000";
+    for (int i = 17; i >= 2; i--) { buf[i] = d[v & 0xF]; v >>= 4; }
+    serial_print(buf);
+}
+static void ser_dec(uint64_t v) {
+    char buf[22]; int i = 20; buf[21] = '\0';
+    if (v == 0) { serial_print("0"); return; }
+    while (v > 0 && i >= 0) { buf[i--] = '0' + (v % 10); v /= 10; }
+    serial_print(&buf[i + 1]);
+}
 
 extern uint32_t* fb_ptr;
 extern uint32_t fb_width;
@@ -157,6 +175,32 @@ void exception_handler(registers_t *r) {
     // Read CR2 (page fault address)
     uint64_t cr2 = 0;
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+
+    // --- Serial mirror (COM1) ---
+    serial_print("\n==== KERNEL PANIC (serial dump) ====\nEXCEPTION: ");
+    serial_print(int_num < 15 ? exception_names[int_num] : "Unknown");
+    serial_print("\nINT: "); ser_dec(int_num);
+    serial_print("  ERR: "); ser_hex(error_code);
+    if (int_num == 14) {
+        serial_print("\nCR2: "); ser_hex(cr2);
+        serial_print("  PF: ");
+        serial_print(paging_is_mapped(cr2) ? "PROT" : "NONP");
+        serial_print(error_code & 2 ? " WRITE" : " READ");
+        serial_print(error_code & 4 ? " USER" : " KERNEL");
+    }
+    serial_print("\nRIP: "); ser_hex(r->rip);
+    serial_print("  RSP: "); ser_hex(r->rsp);
+    serial_print("  CS: "); ser_hex(r->cs);
+    serial_print("  SS: "); ser_hex(r->ss);
+    serial_print("\nRAX: "); ser_hex(r->rax);
+    serial_print("  RBX: "); ser_hex(r->rbx);
+    serial_print("  RCX: "); ser_hex(r->rcx);
+    serial_print("  RDX: "); ser_hex(r->rdx);
+    serial_print("\nRSI: "); ser_hex(r->rsi);
+    serial_print("  RDI: "); ser_hex(r->rdi);
+    serial_print("  RBP: "); ser_hex(r->rbp);
+    serial_print("  R8:  "); ser_hex(r->r8);
+    serial_print("\n");
 
     // SMP context (safe: reads volatile, no lock)
     uint32_t panic_cpu  = smp_current_cpu_index();
@@ -317,6 +361,13 @@ __attribute__((weak))
 void kernel_panic(const char* title, const char* desc, uint64_t code) {
     __asm__ volatile("cli");
     if (!fb_ptr) { while(1) { __asm__ volatile("hlt"); } }
+
+    // --- Serial mirror (COM1) ---
+    serial_print("\n==== KERNEL PANIC (serial dump) ====\nREASON: ");
+    serial_print(title);
+    serial_print("\nDETAILS: "); serial_print(desc);
+    serial_print("\nCODE: "); ser_hex(code);
+    serial_print("\n");
 
     uint32_t BG   = 0x001144;
     uint32_t FG   = 0xFFFFFF;

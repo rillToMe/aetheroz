@@ -31,7 +31,13 @@ typedef struct {
     DisplayBuffer* canvas;
     uint32_t z_index;
     int32_t owner_task;   // FIX_004: task pemilik window (-1 = tidak ada)
+    uint32_t flags;       // Phase 10: KWM_WIN_DESKTOP dll.
+    char     title[32];   // Phase 10: judul titlebar + taskbar ("" = kosong)
 } kwm_window_t;
+
+// Phase 10: window desktop — full-screen, frameless (tanpa titlebar/close),
+// z=0 (selalu di belakang), klik tidak refokus, tidak ikut Alt-Tab.
+#define KWM_WIN_DESKTOP 0x1
 
 extern kwm_window_t kwm_windows[MAX_WINDOWS];
 extern uint32_t next_z_index;

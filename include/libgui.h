@@ -52,6 +52,13 @@ struct gui_window_t {
 // WM) dihitung kernel. Dekorasi digambar compositor, bukan di canvas app.
 gui_window_t* gui_create_window(uint32_t width, uint32_t height);
 
+// Phase 10: buat window DESKTOP — full-screen, frameless (tanpa titlebar),
+// z=0, no-focus. Canvas = ukuran layar penuh. Dipakai app shell desktop.
+gui_window_t* gui_create_desktop(void);
+
+// Phase 10: set judul window (ditampilkan di titlebar + taskbar). 0 / -1.
+int gui_set_window_title(gui_window_t* win, const char* title);
+
 // Set fungsi render — dipanggil tiap frame.
 void gui_set_render(gui_window_t* win, gui_render_fn fn);
 

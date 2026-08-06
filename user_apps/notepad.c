@@ -1,185 +1,83 @@
+// ============================================================
+// notepad.c — Text Editor (Phase 10): editor teks polos (libui).
+// Menu File: Baru / Buka / Simpan. Nama file di TextBox, isi di
+// TextEdit. Dari Explorer (edit.tmp) → muat file itu; tutup →
+// kembali ke Explorer (kalau memang dibuka dari sana).
+//
+// Build: notepad.o + userlib.o + libgui.o + libui.o + png.o
+// ============================================================
 #include "userlib.h"
-#include "libgui.h"
+#include "libui.h"
 
-#define WIN_W 420
-#define WIN_H 340
+static ui_window_t* g_win;
+static ui_widget_t* g_name;
+static ui_widget_t* g_edit;
+static int g_from_fileman = 0;
 
-#define BG_COLOR    0xFFFFFF
-#define TEXT_COLOR  0x111111
-#define TOOLBAR_BG  0xE0E0E0
-#define BTN_SAVE_BG 0x4CAF50
-#define BTN_TEXT    0xFFFFFF
-#define HIGHLIGHT   0xBBBBBB
-
-static char text_buffer[4096];
-static int text_len = 0;
-static char current_file[64] = "catatan.txt";
-static int file_len = 11;
-
-// State Machine
-static int editing_filename = 0;
-
-void render_notepad(gui_window_t* win) {
-    int W = (int)win->inner_w;
-    int H = (int)win->inner_h;
-
-    // 1. Background Kertas
-    gui_draw_rect(win, 0, 0, W, H, BG_COLOR);
-
-    // 2. Toolbar Atas
-    gui_draw_rect(win, 0, 0, W, 30, TOOLBAR_BG);
-    
-    // 3. Render Filename Box (Berubah warna jika sedang diedit)
-    if (editing_filename) {
-        gui_draw_rect(win, 5, 4, 180, 22, HIGHLIGHT);
-        if ((sys_uptime() / 500) % 2 == 0) {
-            gui_draw_rect(win, 10 + (file_len * 8), 7, 8, 16, 0x000000); // Kursor filename
-        }
-    }
-    gui_draw_text(win, current_file, 10, 7, 0x222222);
-
-    // 4. Tombol SAVE
-    gui_draw_rect(win, W - 70, 4, 60, 22, BTN_SAVE_BG);
-    gui_draw_text(win, "SAVE", W - 55, 7, BTN_TEXT);
-
-    // 5. Render Teks Isi
-    int x = 5;
-    int y = 35;
-    for (int i = 0; i < text_len; i++) {
-        if (text_buffer[i] == '\n') { x = 5; y += 16; } 
-        else {
-            gui_draw_char(win, text_buffer[i], x, y, TEXT_COLOR);
-            x += 8;
-        }
-        if (x >= W - 10) { x = 5; y += 16; } // Wrap
-    }
-
-    // 6. Kursor Teks Isi
-    if (!editing_filename && (sys_uptime() / 500) % 2 == 0) {
-        gui_draw_rect(win, x, y, 8, 16, TEXT_COLOR);
-    }
+static void menu_new(void* userdata) {
+    (void)userdata;
+    ui_textbox_set_text(g_name, "catatan.txt");
+    ui_textedit_clear(g_edit);
+}
+static void menu_open(void* userdata) {
+    (void)userdata;
+    const char* fname = ui_textbox_text(g_name);
+    if (!fname[0]) return;
+    if (!sys_file_exists((char*)fname)) return;
+    uint32_t sz = sys_file_size((char*)fname);
+    if (sz > 4096) sz = 4096;
+    char* buf = (char*)sys_alloc(sz + 1);
+    if (!buf) return;
+    sys_read_file_to_buffer((char*)fname, buf, sz + 1);
+    buf[sz] = '\0';
+    ui_textedit_set_text(g_edit, buf);
+    sys_free(buf);
+}
+static void menu_save(void* userdata) {
+    (void)userdata;
+    const char* fname = ui_textbox_text(g_name);
+    if (!fname[0]) return;
+    const char* txt = ui_textedit_text(g_edit);
+    int len = 0; while (txt[len]) len++;
+    if (sys_file_exists((char*)fname)) fs_delete((char*)fname);
+    sys_create_file((char*)fname, (char*)txt, len);
 }
 
 void main(void) {
-    // === ISOLATION TEST (dynamic — OS assigns unique PID per address space) ===
-    print("[notepad] CR3=");
-    print_num((uint32_t)(sys_get_cr3() >> 12));
-    print(" pid=");
-    print_num(sys_get_pid());
-    print("\n");
-    // === END TEST ===
-
+    char fname[64] = "catatan.txt";
     if (sys_file_exists("edit.tmp")) {
-        uint32_t tmp_size = sys_file_size("edit.tmp");
-        if (tmp_size > 0 && tmp_size < 64) {
-            sys_read_file_to_buffer("edit.tmp", current_file, sizeof(current_file));
-            current_file[tmp_size] = '\0';
-            file_len = (int)tmp_size;
+        uint32_t ts = sys_file_size("edit.tmp");
+        if (ts > 0 && ts < 63) {
+            sys_read_file_to_buffer("edit.tmp", fname, sizeof(fname));
+            fname[ts] = '\0';
+            g_from_fileman = 1;
         }
-        // Selalu hapus .tmp — agar tidak mempengaruhi peluncuran berikutnya
         fs_delete("edit.tmp");
     }
 
-    if (sys_file_exists(current_file)) {
-        text_len = sys_file_size(current_file);
-        if (text_len > 4095) text_len = 4095;
-        sys_read_file_to_buffer(current_file, text_buffer, sizeof(text_buffer));
-        text_buffer[text_len] = '\0';
-    } else {
-        text_len = 0;
-        text_buffer[0] = '\0';
-    }
+    g_win = ui_window_create(420, 340);
+    if (!g_win) { sys_exit(); }
+    ui_window_set_title(g_win, "Text Editor");
 
-    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
-    if (!app) { sys_exit(); return; }
+    ui_widget_t* mb = ui_menubar_create(g_win);
+    ui_widget_t* m = ui_menubar_add_menu(mb, "File");
+    ui_menu_add_item(m, "Baru", menu_new, 0);
+    ui_menu_add_item(m, "Buka", menu_open, 0);
+    ui_menu_add_item(m, "Simpan", menu_save, 0);
+    ui_window_add_bar(g_win, mb);
 
-    kyuzen_event_t ev;
-    uint32_t last_uptime = 0;
+    ui_widget_t* box = ui_vbox_create(g_win, 6);
+    g_name = ui_textbox_create(g_win, 400);
+    ui_layout_add(box, g_name);
+    g_edit = ui_textedit_create(g_win, 400, 250);
+    ui_layout_add(box, g_edit);
+    ui_window_add(g_win, box);
 
-    while (app->is_running) {
-        uint32_t now = sys_uptime();
-        if (now - last_uptime >= 500) { // Paksa refresh untuk kursor
-            last_uptime = now;
-            render_notepad(app);
-            gui_flush(app);
-        }
+    ui_textbox_set_text(g_name, fname);
+    menu_open(0);   // muat isi file kalau ada
 
-        if (sys_get_event(&ev)) {
-            // --- MOUSE MOVE: selalu update cache posisi ---
-            if (ev.type == EVENT_MOUSE_MOVE) {
-                app->mouse_x = ev.param1;
-                app->mouse_y = ev.param2;
-            }
-
-            // --- MOUSE CLICK ---
-            if (ev.type == EVENT_MOUSE_CLICK && ev.param2 == 1) {
-                if (ev.param3 != 0) app->mouse_x = ev.param3;
-                // Phase 5C: koordinat sudah window-local konten (dari KWM).
-                int rel_x = app->mouse_x;
-                int rel_y = app->mouse_y;
-
-                // Cek Klik Area Toolbar (Filename Edit Mode)
-                if (rel_y >= 0 && rel_y <= 30 && rel_x < (int)app->inner_w - 80) {
-                    editing_filename = 1;
-                }
-                // Cek Klik Area Teks (Keluar dari Edit Mode)
-                else if (rel_y > 30) {
-                    editing_filename = 0;
-                }
-
-                // Cek Klik SAVE
-                if (rel_x >= (int)app->inner_w - 70 && rel_x <= (int)app->inner_w - 10 && rel_y >= 4 && rel_y <= 26) {
-                    if (sys_file_exists(current_file)) fs_delete(current_file);
-                    sys_create_file(current_file, text_buffer, text_len);
-                    editing_filename = 0; // Selesai edit nama saat di save
-                }
-
-                render_notepad(app);
-                gui_flush(app);
-            }
-
-            // --- Phase 5C: WM minta tutup (tombol close titlebar) ---
-            if (ev.type == EVENT_WIN_CLOSE) {
-                app->is_running = 0; break;
-            }
-
-            // --- KEYBOARD ---
-            if (ev.type == EVENT_KEY_PRESS) {
-                char c = (char)ev.param1;
-                
-                if (c == 27) { // ESC
-                    app->is_running = 0; break;
-                }
-
-                if (editing_filename) {
-                    // Logika Edit Nama File
-                    if (c == '\n' || c == '\r') {
-                        editing_filename = 0; // Enter = Selesai
-                    } else if (c == 8 && file_len > 0) { // Backspace
-                        current_file[--file_len] = '\0';
-                    } else if (c >= 32 && c <= 126 && c != '/' && file_len < 30) {
-                        current_file[file_len++] = c;
-                        current_file[file_len] = '\0';
-                    }
-                } else {
-                    // Logika Edit Teks Utama
-                    if (c == 8 && text_len > 0) {
-                        text_buffer[--text_len] = '\0';
-                    } else if ((c == '\n' || c == '\r') && text_len < 4095) {
-                        text_buffer[text_len++] = '\n';
-                        text_buffer[text_len] = '\0';
-                    } else if (c >= 32 && c <= 126 && text_len < 4095) {
-                        text_buffer[text_len++] = c;
-                        text_buffer[text_len] = '\0';
-                    }
-                }
-                
-                render_notepad(app);
-                gui_flush(app);
-            }
-        }
-        sys_yield();
-    }
-    gui_destroy(app);
-    sys_exec("fileman.elf");
+    ui_window_run(g_win);   // blocking; keluar via X / ESC
+    ui_window_destroy(g_win);
+    if (g_from_fileman) sys_exec("fileman.elf");
+    else sys_exit();
 }

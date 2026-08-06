@@ -113,6 +113,48 @@ gui_window_t* gui_create_window(uint32_t width, uint32_t height) {
     return win;
 }
 
+// Phase 10: window DESKTOP — full-screen, frameless (z=0, no-focus).
+gui_window_t* gui_create_desktop(void) {
+    uint32_t sw = 0, sh = 0;
+    if (sys_get_screen_size(&sw, &sh) != 0 || sw == 0 || sh == 0) return 0;
+
+    gui_window_t* win = (gui_window_t*)sys_alloc(sizeof(gui_window_t));
+    if (!win) return 0;
+
+    win->canvas = (uint32_t*)sys_alloc(sw * sh * 4);
+    if (!win->canvas) { sys_free(win); return 0; }
+
+    win->width    = sw;
+    win->height   = sh;
+    win->inner_w  = sw;
+    win->inner_h  = sh;
+    win->is_running = 1;
+    win->mouse_x  = 0;
+    win->mouse_y  = 0;
+    win->rel_x    = 0;
+    win->rel_y    = 0;
+    win->on_render = 0;
+
+    win->win_id = sys_kwm_create_desktop();
+    if (win->win_id < 0) {
+        sys_free(win->canvas);
+        sys_free(win);
+        return 0;
+    }
+
+    // Latar awal (wallpaper default) lalu update.
+    _lgui_fill_rect(win, 0, 0, (int)sw, (int)sh, 0x1E293B);
+    sys_kwm_update_window(win->win_id, win->canvas);
+
+    return win;
+}
+
+// Phase 10: judul window (titlebar + taskbar).
+int gui_set_window_title(gui_window_t* win, const char* title) {
+    if (!win) return -1;
+    return sys_kwm_set_title(win->win_id, title);
+}
+
 void gui_set_render(gui_window_t* win, gui_render_fn fn) {
     if (win) win->on_render = fn;
 }

@@ -1,69 +1,95 @@
 // ============================================================
-// taskmgr.c — Kyuzen Task Manager
+// taskmgr.c — Task Manager (Phase 10): monitor RAM/CPU/Disk (libui).
+// Bar progress + label, refresh 2×/dtk via ui_window_set_tick
+// (render hanya saat ≥500ms berlalu). Tanpa per-task table:
+// kernel tak mengekspos daftar task + usage per-task (ponytail:
+// tambah syscall daftar task bila fase berikutnya butuh).
 //
-// Menggunakan Kyuzen GUI Framework (libgui).
-// Tidak ada while-loop manual, tidak ada canvas alloc manual,
-// tidak ada event-parsing kompleks — semuanya di-handle libgui.
+// Build: taskmgr.o + userlib.o + libgui.o + libui.o + png.o
 // ============================================================
-
 #include "userlib.h"
-#include "libgui.h"
+#include "libui.h"
 
-#define WIN_W 340
-#define WIN_H 280
+static ui_widget_t* g_ram;   static ui_widget_t* g_rambar;
+static ui_widget_t* g_cpu;   static ui_widget_t* g_cpubar;
+static ui_widget_t* g_disk;  static ui_widget_t* g_diskbar;
+static ui_widget_t* g_up;
+static uint64_t last_refresh = 0;
 
-// Warna tema Task Manager
-#define BG_COLOR   0x1A1A2E   // Dark navy
-#define TEXT_COLOR 0xE0E0E0   // Putih terang
-#define RAM_COLOR  0x00BCD4   // Cyan
-#define CPU_COLOR  0x4CAF50   // Hijau
-#define DISK_COLOR 0xFF9800   // Oranye
+static void itoa(uint32_t n, char* b) {
+    if (n == 0) { b[0] = '0'; b[1] = '\0'; return; }
+    char t[16]; int i = 0;
+    while (n > 0 && i < 15) { t[i++] = '0' + (n % 10); n /= 10; }
+    int j = 0; while (i > 0) b[j++] = t[--i]; b[j] = '\0';
+}
 
-// Dipanggil setiap frame oleh gui_mainloop
-void render(gui_window_t* win) {
-    int W = (int)win->inner_w;
+// "RAM : 42 MB / 1024 MB"
+static void label_ratio(ui_widget_t* lbl, const char* pre, uint32_t used,
+                        uint32_t tot, const char* suf) {
+    char b[48]; int k = 0;
+    for (int i = 0; pre[i] && k < 20; i++) b[k++] = pre[i];
+    char n[16]; itoa(used, n);
+    for (int i = 0; n[i] && k < 30; i++) b[k++] = n[i];
+    const char* sep = " MB / ";
+    for (int i = 0; sep[i] && k < 38; i++) b[k++] = sep[i];
+    itoa(tot, n);
+    for (int i = 0; n[i] && k < 44; i++) b[k++] = n[i];
+    for (int i = 0; suf[i] && k < 47; i++) b[k++] = suf[i];
+    b[k] = '\0';
+    ui_label_set_text(lbl, b);
+}
 
-    // 1. Background area isi
-    gui_draw_rect(win, 0, 0, W, (int)win->inner_h, BG_COLOR);
+static int tick(void* userdata) {
+    (void)userdata;
+    uint64_t now = sys_uptime();
+    if (now - last_refresh < 500) return 0;
+    last_refresh = now;
 
-    // 2. Data RAM
-    uint32_t total_ram = sys_total_ram() / (1024 * 1024);
-    uint32_t used_ram  = sys_used_ram()  / (1024 * 1024);
-    if (!total_ram) total_ram = 1;
+    uint32_t tram = sys_total_ram() / 1024 / 1024;
+    uint32_t uram = sys_used_ram()  / 1024 / 1024;
+    if (!tram) tram = 1;
+    label_ratio(g_ram, "RAM : ", uram, tram, " MB");
+    ui_progressbar_set_value(g_rambar, uram * 100 / tram);
 
-    gui_draw_label_num(win, "RAM: ", used_ram, " MB", 10, 10, TEXT_COLOR);
-    gui_draw_bar(win, 10, 30, W - 20, 16, used_ram, total_ram, RAM_COLOR);
+    uint32_t cpu = sys_get_cpu_usage();
+    label_ratio(g_cpu, "CPU : ", cpu, 100, " %");
+    ui_progressbar_set_value(g_cpubar, cpu);
 
-    // 3. Data CPU
-    uint32_t cpu_usage = sys_get_cpu_usage();
-    gui_draw_label_num(win, "CPU: ", cpu_usage, " %", 10, 60, TEXT_COLOR);
-    gui_draw_bar(win, 10, 80, W - 20, 16, cpu_usage, 100, CPU_COLOR);
+    uint32_t tdisk = sys_get_total_disk() / 1024 / 1024;
+    uint32_t udisk = sys_get_used_disk()  / 1024 / 1024;
+    if (!tdisk) tdisk = 1;
+    label_ratio(g_disk, "Disk: ", udisk, tdisk, " MB");
+    ui_progressbar_set_value(g_diskbar, udisk * 100 / tdisk);
 
-    // 4. Data Disk
-    uint32_t total_disk = sys_get_total_disk() / (1024 * 1024);
-    uint32_t used_disk  = sys_get_used_disk()  / (1024 * 1024);
-    if (!total_disk) total_disk = 1;
-
-    gui_draw_label_num(win, "Disk: ", used_disk, " MB", 10, 110, TEXT_COLOR);
-    gui_draw_bar(win, 10, 130, W - 20, 16, used_disk, total_disk, DISK_COLOR);
-
-    // 5. Garis separator
-    gui_draw_rect(win, 10, 160, W - 20, 1, 0x444466);
-
-    // 6. Info footer
-    uint32_t uptime_ms = sys_uptime();
-    uint32_t uptime_s  = uptime_ms / 1000;
-    gui_draw_label_num(win, "Uptime: ", uptime_s, " s", 10, 170, 0x888888);
-    gui_draw_text(win, "Kyuzen OS v0.1 - Preemptive", 10, 190, 0x555577);
+    label_ratio(g_up, "Uptime: ", (uint32_t)(now / 1000), 0, " s");
+    return 1;
 }
 
 void main(void) {
-    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
-    if (!app) { sys_exit(); return; }
+    ui_window_t* win = ui_window_create(340, 260);
+    if (!win) { sys_exit(); }
+    ui_window_set_title(win, "Task Manager");
 
-    gui_set_render(app, render);
-    gui_mainloop(app);   // blocks sampai user klik X atau ESC
+    ui_widget_t* box = ui_vbox_create(win, 6);
+    g_ram = ui_label_create(win, "RAM : -");
+    ui_layout_add(box, g_ram);
+    g_rambar = ui_progressbar_create(win, 300);
+    ui_layout_add(box, g_rambar);
+    g_cpu = ui_label_create(win, "CPU : -");
+    ui_layout_add(box, g_cpu);
+    g_cpubar = ui_progressbar_create(win, 300);
+    ui_layout_add(box, g_cpubar);
+    g_disk = ui_label_create(win, "Disk: -");
+    ui_layout_add(box, g_disk);
+    g_diskbar = ui_progressbar_create(win, 300);
+    ui_layout_add(box, g_diskbar);
+    g_up = ui_label_create(win, "Uptime: -");
+    ui_layout_add(box, g_up);
+    ui_window_add(win, box);
 
-    gui_destroy(app);
+    ui_window_set_tick(win, tick, 0);
+    tick(0);   // render nilai awal
+    ui_window_run(win);   // blocking; keluar via X / ESC
+    ui_window_destroy(win);
     sys_exit();
 }
