@@ -65,12 +65,10 @@ void first_time_setup() {
     int p_idx = 0;
 
     clear_screen();
-    print("\n  ==========================================\n");
-    print("      INSTALASI KYUZEN OS (FIRST BOOT)\n");
-    print("  ==========================================\n\n");
-    print("  Sistem mendeteksi instalasi Hard Disk baru.\n");
-    print("  Silakan buat password untuk akun 'root'.\n\n");
-    print("  Password Root Baru : ");
+    print("INSTALASI KYUZEN OS (FIRST BOOT)\n");
+    print("Sistem mendeteksi instalasi Hard Disk baru.\n");
+    print("Silakan buat password untuk akun 'root'.\n\n");
+    print("Password Root Baru : ");
 
     while (1) {
         if (read_keyboard(&c, 1) > 0) {
@@ -99,7 +97,7 @@ void first_time_setup() {
 
     sys_create_file("users.sys", data, len);
     
-    print("\n\n  [OK] File users.sys dibuat! Akun root dikonfigurasi.\n");
+    print("\n\n[OK] File users.sys dibuat! Akun root dikonfigurasi.\n");
     print("  Sistem siap digunakan. Memuat halaman login...\n");
     timer_sleep_ms(2000); // Jeda 2 detik
 
@@ -120,11 +118,9 @@ void user_login() {
 
     while (1) {
         clear_screen();
-        print("\n  ==========================================\n");
-        print("         SISTEM KEAMANAN KYUZEN OS\n");
-        print("  ==========================================\n\n");
+        print("SISTEM KEAMANAN KYUZEN OS\n");
 
-        print("  Username : ");
+        print("Username : ");
         u_idx = 0;
         while (1) {
             if (read_keyboard(&c, 1) > 0) {
@@ -135,7 +131,7 @@ void user_login() {
             sys_yield();
         }
 
-        print("\n  Password : ");
+        print("\nPassword : ");
         p_idx = 0;
         while (1) {
             if (read_keyboard(&c, 1) > 0) {
@@ -146,7 +142,7 @@ void user_login() {
             sys_yield();
         }
 
-        print("\n\n  Mencocokkan data...\n");
+        print("\n\nMencocokkan data...\n");
 
         uint32_t active_uid = 0;
         if (parse_auth(username, password, &active_uid)) {
@@ -160,7 +156,7 @@ void user_login() {
             clear_screen();
             user_shell();
         } else {
-            print("  [DENIED] Akses Ditolak: Username atau Password salah!\n");
+            print("[DENIED] Akses Ditolak: Username atau Password salah!\n");
             timer_sleep_ms(2000); // Jeda 2 detik, tampilkan pesan error
 
 

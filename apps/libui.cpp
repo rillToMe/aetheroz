@@ -30,6 +30,10 @@ extern "C" {
 // libui.h punya guard extern "C" sendiri — aman di-include dari C++.
 #include "libui.h"
 
+// Math blend/AA dibagi dengan compositor kernel (kernel/gfx/compositor.c).
+// Semua static inline, integer saja — aman di-include dari C++.
+#include "aa_math.h"
+
 // Dekoder PNG bersama (apps/png.c, stb_image) — dilink oleh app yang memakai
 // Image widget. Di-declare extern "C" karena png.c adalah file C.
 extern "C" uint32_t* png_decode(const char* filename, int* out_w, int* out_h);
@@ -90,6 +94,11 @@ struct Theme {
     Theme() : bg(0x1A1A2E), fg(0xE0E0E0), accent(0xE94560),
               button_bg(0x0F3460), button_fg(0xFFFFFF), button_hover(0x2A4A7E) {}
 };
+
+// ------------------------------------------------------------
+// Warna: aa_mix / aa_shade / aa_cov dari include/aa_math.h — INTEGER saja,
+// dibagi dengan compositor kernel (app juga -mno-sse -msoft-float).
+// ------------------------------------------------------------
 
 // ------------------------------------------------------------
 // Painter — satu-satunya jembatan widget -> renderer (libgui C)
@@ -155,6 +164,87 @@ public:
                 int sx = q * iw / w;
                 win->canvas[(y + py) * cw + x + q] = px[sy * iw + sx];
             }
+        }
+    }
+
+    // ----- Primitif "modern" (blend / gradient / rounded / shadow) -----
+    // Compositor kernel memakai byte alpha canvas sebagai MASK opaque
+    // (0 = tembus), bukan faktor blend → blending harus dilakukan di sini:
+    // baca pixel canvas, campur, tulis kembali.
+    void blend(int px, int py, uint32_t c, uint32_t a) {
+        if (a == 0) return;
+        if (px < 0 || py < 0 || px >= (int)win->width || py >= (int)win->height) return;
+        if (clip_on && (px < clip_x || py < clip_y ||
+                        px >= clip_x + clip_w || py >= clip_y + clip_h)) return;
+        uint32_t* d = &win->canvas[py * (int)win->width + px];
+        *d = aa_mix(c, *d, a) | 0xFF000000;
+    }
+    void blend_rect(int x, int y, int w, int h, uint32_t c, uint32_t a) {
+        for (int iy = y; iy < y + h; iy++)
+            for (int ix = x; ix < x + w; ix++) blend(ix, iy, c, a);
+    }
+    // Gradient vertikal (lerp integer per baris).
+    void vgrad(int x, int y, int w, int h, uint32_t top, uint32_t bot) {
+        for (int iy = 0; iy < h; iy++)
+            rect(x, y + iy, w, 1, aa_mix(bot, top, (uint32_t)(iy * 255 / (h > 1 ? h - 1 : 1))));
+    }
+    // Coverage 0..255 pixel (px,py) di dalam rounded-rect (aa_math.h:
+    // supersample 4x4 integer — pengganti Wu yang butuh float).
+    static uint32_t rr_cov(int px, int py, int x, int y, int w, int h, int r) {
+        return aa_cov(px, py, x, y, w, h, r, r);
+    }
+    // Rounded rect + gradient vertikal, sudut anti-alias.
+    void rrect_grad(int x, int y, int w, int h, int r, uint32_t top, uint32_t bot) {
+        if (w <= 0 || h <= 0) return;
+        if (r > w / 2) r = w / 2;
+        if (r > h / 2) r = h / 2;
+        for (int iy = y; iy < y + h; iy++) {
+            uint32_t c = (top == bot) ? top
+                       : aa_mix(bot, top, (uint32_t)((iy - y) * 255 / (h > 1 ? h - 1 : 1)));
+            if (iy >= y + r && iy < y + h - r) { rect(x, iy, w, 1, c); continue; }
+            rect(x + r, iy, w - 2 * r, 1, c);
+            for (int k = 0; k < r; k++) {
+                blend(x + k, iy, c, rr_cov(x + k, iy, x, y, w, h, r));
+                blend(x + w - 1 - k, iy, c, rr_cov(x + w - 1 - k, iy, x, y, w, h, r));
+            }
+        }
+    }
+    void rrect(int x, int y, int w, int h, int r, uint32_t c) {
+        rrect_grad(x, y, w, h, r, c, c);
+    }
+    // Border 1px halus mengikuti sudut bulat (alpha, bukan garis keras).
+    void rrect_border(int x, int y, int w, int h, int r, uint32_t c, uint32_t a) {
+        if (w <= 0 || h <= 0) return;
+        if (r > w / 2) r = w / 2;
+        if (r > h / 2) r = h / 2;
+        for (int iy = y; iy < y + h; iy++) {
+            if (iy >= y + r && iy < y + h - r) {
+                blend(x, iy, c, a); blend(x + w - 1, iy, c, a);
+                continue;
+            }
+            for (int k = 0; k < r; k++) {
+                // Tepi arc = pixel dengan coverage partial.
+                uint32_t cl = rr_cov(x + k, iy, x, y, w, h, r);
+                if (cl && cl < 255) blend(x + k, iy, c, a * cl / 255);
+                uint32_t cr = rr_cov(x + w - 1 - k, iy, x, y, w, h, r);
+                if (cr && cr < 255) blend(x + w - 1 - k, iy, c, a * cr / 255);
+            }
+        }
+        blend_rect(x + r, y, w - 2 * r, 1, c, a);
+        blend_rect(x + r, y + h - 1, w - 2 * r, 1, c, a);
+    }
+    // Drop shadow: 4 ring alpha menurun, offset 3px ke bawah (blur semu).
+    // Gambar SEBELUM isi widget — ring di dalam rect ditimpa widget.
+    // ponytail: ring 1px, bukan gaussian blur; cukup untuk kesan kedalaman.
+    void shadow(int x, int y, int w, int h) {
+        static const uint32_t A[4] = { 52, 38, 24, 12 };
+        for (int k = 1; k <= 4; k++) {
+            int sx = x - k, sy = y - k + 3, sw = w + 2 * k, sh = h + 2 * k;
+            uint32_t a = A[k - 1];
+            blend_rect(sx, sy, sw, 1, 0, a);
+            blend_rect(sx, sy + sh - 1, sw, 1, 0, a);
+            blend_rect(sx, sy + 1, 1, sh - 2, 0, a);
+            blend_rect(sx + sw - 1, sy + 1, 1, sh - 2, 0, a);
         }
     }
 };
@@ -249,22 +339,39 @@ public:
 };
 
 // ------------------------------------------------------------
-// Button — rect solid + label, hover state, klik -> callback
+// Button — rounded rect + gradient halus, state normal/hover/pressed
 // ------------------------------------------------------------
 class Button : public Widget {
 public:
     char* text;
     bool hover;
-    Button(const char* t) : text(_ui_strdup(t)), hover(false) {
-        w = _ui_strlen(text) * 8 + 16; h = 24;
+    bool pressed;
+    Button(const char* t) : text(_ui_strdup(t)), hover(false), pressed(false) {
+        // Grid 8px: padding 12px kiri/kanan, tinggi 28 (teks 16 + 6/6).
+        w = _ui_strlen(text) * 8 + 24; h = 28;
         cursor_kind = UI_CURSOR_HAND;
     }
     virtual ~Button() { _ui_free(text); }
     virtual void draw(Painter& p) override {
-        p.rect(x, y, w, h, hover ? p.theme.button_hover : p.theme.button_bg);
-        p.text(text, x + 8, y + 4, p.theme.button_fg);
+        uint32_t base = pressed ? aa_shade(p.theme.button_bg, -18)
+                      : hover   ? p.theme.button_hover
+                                : p.theme.button_bg;
+        // Gradient ~10% (terang di atas; dibalik saat pressed) + sudut 6px.
+        p.rrect_grad(x, y, w, h, 6,
+                     aa_shade(base, pressed ? -5 : 10),
+                     aa_shade(base, pressed ?  5 : -10));
+        p.rrect_border(x, y, w, h, 6, 0x000000, pressed ? 90 : 55);
+        // Inset shadow tipis di tepi atas saat ditekan.
+        if (pressed) p.blend_rect(x + 6, y + 1, w - 12, 1, 0x000000, 60);
+        p.text(text, x + (w - _ui_strlen(text) * 8) / 2,
+               y + (h - 16) / 2 + (pressed ? 1 : 0), p.theme.button_fg);
     }
-    virtual void set_hover(bool on) override { hover = on; }
+    virtual void set_hover(bool on) override { hover = on; if (!on) pressed = false; }
+    virtual void on_click(int mx, int my) override {
+        pressed = true;             // render() dipanggil Window setelah ini
+        Widget::on_click(mx, my);
+    }
+    virtual void on_release() override { pressed = false; }
 };
 
 // ------------------------------------------------------------
@@ -1614,8 +1721,11 @@ public:
         p.rect(0, 0, (int)gw->width, (int)gw->height, theme.bg);
         for (int i = 0; i < n_bars; i++) top_bars[i]->draw(p);
         if (root) root->draw(p);
-        if (popup) popup->draw(p);
-        if (dialog) dialog->draw(p);      // modal di atas popup
+        if (popup) { p.shadow(popup->x, popup->y, popup->w, popup->h); popup->draw(p); }
+        if (dialog) {                     // modal di atas popup
+            p.shadow(dialog->x, dialog->y, dialog->w, dialog->h);
+            dialog->draw(p);
+        }
         if (notify_text) draw_notify(p);  // toast paling atas
         if (drag_src) draw_drag_ghost(p); // ghost drag
         gui_flush(gw);

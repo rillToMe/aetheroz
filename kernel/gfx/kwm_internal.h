@@ -20,6 +20,14 @@
 #define KWM_TITLEBAR_INACT  0x3A3A3A   // tidak fokus
 #define KWM_CLOSE_COLOR     0xE53935
 
+// --- Dekorasi modern (Phase 11 rendering) ---
+// Titlebar digambar bergradient dengan sudut ATAS membulat, dan setiap frame
+// window mendapat drop shadow yang meluber KWM_SHADOW_MARGIN px di luar frame.
+// Semua dirty-rect frame HARUS diperlebar margin ini (kwm.c: frame_dirty_area)
+// agar sisa shadow tidak tertinggal saat window pindah/hilang.
+#define KWM_CORNER_R        8
+#define KWM_SHADOW_MARGIN   6
+
 typedef struct {
     uint8_t active;
     // Posisi FRAME (termasuk titlebar): (x, y) = sudut kiri-atas titlebar.

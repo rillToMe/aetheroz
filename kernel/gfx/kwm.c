@@ -34,6 +34,13 @@ static int32_t drag_offset_y  = 0;
 // dibaca compositor.c untuk tint titlebar (fokus vs tidak).
 int focused_win_id = -1;
 
+// Frame + margin drop-shadow (compositor menggambar shadow di luar frame).
+// Semua repaint frame HARUS lewat sini agar sisa shadow tidak tertinggal.
+static void frame_dirty_area(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    int32_t m = KWM_SHADOW_MARGIN;
+    screen_mark_dirty(x - m, y - m, w + 2 * (uint32_t)m, h + 2 * (uint32_t)m);
+}
+
 // Caller MUST TIDAK memegang kwm_lock. Menandai area layar yang ditempati
 // frame window (konten + titlebar) sebagai dirty. Dipanggil setiap kali
 // penampilan window berubah di layar (create/move/destroy/fokus).
@@ -42,8 +49,8 @@ static void kwm_frame_dirty(int i) {
     if (!kwm_windows[i].active) return;
     // Phase 10: desktop frameless — frame = konten saja (tanpa titlebar).
     uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
-    screen_mark_dirty(kwm_windows[i].x, kwm_windows[i].y,
-                      kwm_windows[i].width, kwm_windows[i].height + tb);
+    frame_dirty_area(kwm_windows[i].x, kwm_windows[i].y,
+                     kwm_windows[i].width, kwm_windows[i].height + tb);
 }
 
 // Caller MUST hold kwm_lock. Window aktif teratas (z tertinggi) di titik
@@ -328,7 +335,7 @@ void kwm_destroy_window(int win_id) {
     }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     // Frame penuh (konten + titlebar) harus direpaint — window hilang.
-    screen_mark_dirty(mx, my, mw, mh + KWM_TITLEBAR_H);
+    frame_dirty_area(mx, my, mw, mh + KWM_TITLEBAR_H);
     if (was_focused && new_focus >= 0) kwm_frame_dirty(new_focus);
 }
 
@@ -420,8 +427,8 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         kwm_windows[dragged_win_id].x = new_x;
         kwm_windows[dragged_win_id].y = new_y;
         spinlock_unlock(&kwm_lock);
-        screen_mark_dirty(old_x, old_y, fw, fh);
-        screen_mark_dirty(new_x, new_y, fw, fh);
+        frame_dirty_area(old_x, old_y, fw, fh);
+        frame_dirty_area(new_x, new_y, fw, fh);
         return 1; // Konsumsi event — jangan sampai app salah deteksi klik
     }
 

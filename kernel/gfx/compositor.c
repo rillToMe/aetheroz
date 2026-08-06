@@ -3,6 +3,7 @@
 #include "kwm_internal.h"
 #include "display.h"
 #include "spinlock.h"
+#include "aa_math.h"
 
 extern int32_t mouse_x;
 extern int32_t mouse_y;
@@ -91,6 +92,82 @@ static void fill_rect_clip(uint32_t* fb, int pitch4, Rect area, uint32_t color,
     }
 }
 
+// --- Primitif modern: blend / gradient / rounded ---
+// Math (mix/shade/coverage) di include/aa_math.h — dibagi dengan toolkit
+// userspace apps/libui.cpp, integer saja (tanpa SSE/float).
+static inline void blend_px(uint32_t* fb, int pitch4, int x, int y,
+                            uint32_t c, uint32_t a, Rect clip) {
+    if (a == 0) return;
+    if (x < clip.x || x >= clip.x + (int)clip.width ||
+        y < clip.y || y >= clip.y + (int)clip.height) return;
+    uint32_t* d = &fb[y * pitch4 + x];
+    *d = aa_mix(c, *d, a);
+}
+
+static void blend_rect_clip(uint32_t* fb, int pitch4, Rect area, uint32_t c,
+                            uint32_t a, Rect clip) {
+    Rect k;
+    if (a == 0 || !rect_intersect(area, clip, &k)) return;
+    for (uint32_t yy = 0; yy < k.height; yy++) {
+        uint32_t* dst = fb + ((uint32_t)k.y + yy) * (uint32_t)pitch4 + (uint32_t)k.x;
+        for (uint32_t xx = 0; xx < k.width; xx++) dst[xx] = aa_mix(c, dst[xx], a);
+    }
+}
+
+static inline uint32_t rr_cov(int px, int py, Rect a, int rt, int rb) {
+    return aa_cov(px, py, a.x, a.y, (int)a.width, (int)a.height, rt, rb);
+}
+
+// Fill rounded-rect + gradient vertikal (top→bot), sudut anti-alias, dipotong
+// ke `clip`. rt/rb = radius sudut atas/bawah (0 = kotak).
+static void round_grad_fill(uint32_t* fb, int pitch4, Rect a,
+                            uint32_t top, uint32_t bot, int rt, int rb, Rect clip) {
+    int W = (int)a.width, H = (int)a.height;
+    if (W <= 0 || H <= 0) return;
+    if (rt > W / 2) rt = W / 2;
+    if (rb > W / 2) rb = W / 2;
+    for (int iy = a.y; iy < a.y + H; iy++) {
+        uint32_t c = (top == bot) ? top
+                   : aa_mix(bot, top, (uint32_t)((iy - a.y) * 255 / (H > 1 ? H - 1 : 1)));
+        int r = (rt && iy < a.y + rt) ? rt
+              : (rb && iy >= a.y + H - rb) ? rb : 0;
+        if (!r) {
+            Rect row = { a.x, iy, a.width, 1 };
+            fill_rect_clip(fb, pitch4, row, c, clip);
+            continue;
+        }
+        Rect mid = { a.x + r, iy, (uint32_t)(W - 2 * r), 1 };
+        fill_rect_clip(fb, pitch4, mid, c, clip);
+        for (int k = 0; k < r; k++) {
+            blend_px(fb, pitch4, a.x + k, iy, c, rr_cov(a.x + k, iy, a, rt, rb), clip);
+            blend_px(fb, pitch4, a.x + W - 1 - k, iy, c,
+                     rr_cov(a.x + W - 1 - k, iy, a, rt, rb), clip);
+        }
+    }
+}
+
+// Drop shadow frame window: KWM_SHADOW_MARGIN ring 1px alpha menurun, offset
+// 3px ke bawah (blur semu). Digambar SEBELUM konten+titlebar window itu, jadi
+// ring yang jatuh di dalam frame ditimpa lagi.
+// ponytail: ring 1px, bukan gaussian; dirty-rect frame sudah diperlebar
+// KWM_SHADOW_MARGIN di kwm.c — naikkan keduanya bersama bila shadow diperbesar.
+static void frame_shadow(uint32_t* fb, int pitch4, Rect frame, Rect clip) {
+    static const uint32_t alpha[KWM_SHADOW_MARGIN] = { 58, 46, 34, 24, 15, 8 };
+    for (int k = 1; k <= KWM_SHADOW_MARGIN; k++) {
+        Rect s = { frame.x - k, frame.y - k + 3,
+                   frame.width + 2 * (uint32_t)k, frame.height + 2 * (uint32_t)k };
+        uint32_t a = alpha[k - 1];
+        Rect t = { s.x, s.y, s.width, 1 };
+        Rect b = { s.x, s.y + (int)s.height - 1, s.width, 1 };
+        Rect l = { s.x, s.y + 1, 1, s.height - 2 };
+        Rect rr = { s.x + (int)s.width - 1, s.y + 1, 1, s.height - 2 };
+        blend_rect_clip(fb, pitch4, t, 0x000000, a, clip);
+        blend_rect_clip(fb, pitch4, b, 0x000000, a, clip);
+        blend_rect_clip(fb, pitch4, l, 0x000000, a, clip);
+        blend_rect_clip(fb, pitch4, rr, 0x000000, a, clip);
+    }
+}
+
 // Segmen garis (DDA) dipotong ke `clip` — untuk glyph "X" tombol close.
 static void titlebar_line(uint32_t* fb, int pitch4,
                           int x0, int y0, int x1, int y1,
@@ -149,6 +226,12 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
             const uint32_t ch    = kwm_windows[w].height;
             const DisplayBuffer* canvas = kwm_windows[w].canvas;
 
+            // --- Drop shadow frame (kecuali desktop) ---
+            if (!(wflags & KWM_WIN_DESKTOP)) {
+                Rect frame = { win_x, win_y, cw, ch + tb_h };
+                frame_shadow(backbuffer, pitch4, frame, r);
+            }
+
             // --- Konten (canvas = konten murni) ---
             Rect crect = { win_x, cty, cw, ch };
             Rect clip;
@@ -171,25 +254,28 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
             if (!(wflags & KWM_WIN_DESKTOP)) {
                 Rect tb = { win_x, win_y, cw, KWM_TITLEBAR_H };
                 if (rect_intersect(tb, r, &clip)) {
-                    fill_rect_clip(backbuffer, pitch4, tb,
-                                   (w == focused_win_id) ? KWM_TITLEBAR_COLOR
-                                                         : KWM_TITLEBAR_INACT,
-                                   r);
-                    Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W, win_y,
-                                KWM_CLOSE_BTN_W, KWM_TITLEBAR_H };
-                    fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_COLOR, r);
+                    // Gradient vertikal ~±12% + sudut atas membulat (AA).
+                    uint32_t base = (w == focused_win_id) ? KWM_TITLEBAR_COLOR
+                                                          : KWM_TITLEBAR_INACT;
+                    round_grad_fill(backbuffer, pitch4, tb,
+                                    aa_shade(base, 14), aa_shade(base, -12),
+                                    KWM_CORNER_R, 0, r);
+                    // Tombol close: rounded square di dalam area klik 40px.
+                    Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W / 2 - 11,
+                                win_y + 3, 22, 18 };
+                    round_grad_fill(backbuffer, pitch4, cb,
+                                    aa_shade(KWM_CLOSE_COLOR, 12),
+                                    aa_shade(KWM_CLOSE_COLOR, -10), 4, 4, r);
                     // Glyph "X" di dalam tombol close.
                     titlebar_line(backbuffer, pitch4,
-                                  cb.x + 6, cb.y + 4,
-                                  cb.x + KWM_CLOSE_BTN_W - 7, cb.y + KWM_TITLEBAR_H - 5,
-                                  0xFFFFFF, r);
+                                  cb.x + 7, cb.y + 5,
+                                  cb.x + 14, cb.y + 12, 0xFFFFFF, r);
                     titlebar_line(backbuffer, pitch4,
-                                  cb.x + KWM_CLOSE_BTN_W - 7, cb.y + 4,
-                                  cb.x + 6, cb.y + KWM_TITLEBAR_H - 5,
-                                  0xFFFFFF, r);
+                                  cb.x + 14, cb.y + 5,
+                                  cb.x + 7, cb.y + 12, 0xFFFFFF, r);
                     // Phase 10: teks judul, clamp ke area sebelum tombol close.
                     if (kwm_windows[w].title[0])
-                        titlebar_text(backbuffer, pitch4, win_x + 4, win_y + 4,
+                        titlebar_text(backbuffer, pitch4, win_x + 12, win_y + 4,
                                       kwm_windows[w].title,
                                       win_x + (int32_t)cw - KWM_CLOSE_BTN_W - 8,
                                       0xFFFFFF, r);
