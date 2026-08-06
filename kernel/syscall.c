@@ -588,16 +588,6 @@ void syscall_handler(registers_t *r) {
         extern void system_reboot(void);
         system_reboot();
     }
-    else if (syscall_num == 40) { // sys_get_window_pos
-        // rbx = win_id, rcx = int32_t* out_x, rdx = int32_t* out_y
-        // Tahap 2: tulis ke lokal kernel, copy-out di luar kwm_lock.
-        // Tiap pointer divalidasi sendiri-sendiri (NULL di-skip, spt dulu).
-        extern void kwm_get_window_pos(int, int32_t*, int32_t*);
-        int32_t kx = 0, ky = 0;
-        kwm_get_window_pos((int)r->rbx, &kx, &ky);
-        copy_to_user(&uc, r->rcx, &kx, sizeof(kx));
-        copy_to_user(&uc, r->rdx, &ky, sizeof(ky));
-    }
     else if (syscall_num == 41) { // sys_ping
         // RBX = const char* host (user-space pointer ke string hostname/IP)
         // Return: RTT dalam ms (>=0) jika berhasil, -1 jika timeout/error

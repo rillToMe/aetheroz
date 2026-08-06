@@ -43,8 +43,6 @@ void main(void) {
     check("get_event(NULL) == 0",       sys_get_event(NULL) == 0);
     check("get_event(unmapped) == 0",
           sys_get_event((kyuzen_event_t*)UNMAPPED_LOW) == 0);
-    sys_get_window_pos(0, NULL, NULL);
-    check("get_window_pos(NULL) tidak crash", 1);
 
     // --- Grup 3: buffer variabel ---
     check("read_keyboard(NULL) == 0 (tidak block)", read_keyboard(NULL, 16) == 0);

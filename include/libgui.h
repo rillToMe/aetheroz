@@ -8,23 +8,17 @@
 // Kyuzen GUI Framework (libgui)
 //
 // Cara pakai:
-//   gui_window_t* win = gui_create_window("Judul", 400, 300);
+//   gui_window_t* win = gui_create_window(400, 300);
 //   gui_set_render(win, my_render_fn);
 //   gui_mainloop(win);   ← blocks sampai window ditutup
 //   gui_destroy(win);
 //   sys_exit();
 //
-// Render callback dipanggil tiap frame oleh gui_mainloop.
-// Gunakan gui_draw_rect / gui_draw_text untuk menggambar.
-// Koordinat SELALU relatif terhadap isi window (bukan title bar).
+// Phase 5C: canvas = KONTEN MURNI. Titlebar + tombol close digambar WM
+// (compositor), bukan oleh app. Koordinat mouse/klik yang diterima app
+// sudah WINDOW-LOCAL terhadap konten (y=0 = baris isi pertama) — tidak
+// perlu konversi layar. Tutup window via EVENT_WIN_CLOSE (WM) atau ESC.
 // ============================================================
-
-// --- Layout Konstan ---
-#define GUI_TITLEBAR_H     30    // Tinggi title bar (px)
-#define GUI_CLOSE_BTN_W    40    // Lebar tombol Close dari kanan (px)
-#define GUI_TITLEBAR_COLOR 0x111111
-#define GUI_CLOSE_COLOR    0xE53935
-#define GUI_CLOSE_HOVER    0xFF1744
 
 // --- Objek Window Utama ---
 typedef struct gui_window_t gui_window_t;
@@ -33,18 +27,17 @@ typedef void (*gui_render_fn)(gui_window_t* win);
 
 struct gui_window_t {
     int         win_id;
-    uint32_t    width;      // Lebar total canvas (termasuk title bar)
-    uint32_t    height;     // Tinggi total canvas (termasuk title bar)
+    uint32_t    width;      // Lebar canvas == lebar KONTEN
+    uint32_t    height;     // Tinggi canvas == tinggi KONTEN
     uint32_t    inner_w;    // Lebar area isi (= width)
-    uint32_t    inner_h;    // Tinggi area isi (= height - GUI_TITLEBAR_H)
+    uint32_t    inner_h;    // Tinggi area isi (= height)
     uint32_t*   canvas;     // Pointer ke pixel buffer
-    char        title[64];
     int         is_running;
 
-    // State mouse (di-update oleh gui_mainloop setiap frame)
-    int         mouse_x;   // Posisi absolut layar
+    // State mouse — koordinat window-local konten, di-update gui_mainloop
+    int         mouse_x;
     int         mouse_y;
-    int         rel_x;     // Posisi relatif terhadap window origin (bukan title bar)
+    int         rel_x;
     int         rel_y;
 
     // User render callback — dipanggil setiap ada update
@@ -55,23 +48,23 @@ struct gui_window_t {
 // API PUBLIC
 // ============================================================
 
-// Buat window baru. Alokasi canvas + gambar title bar otomatis.
-// width / height = dimensi TOTAL (termasuk title bar).
-gui_window_t* gui_create_window(const char* title, uint32_t width, uint32_t height);
+// Buat window baru. width / height = ukuran KONTEN; frame (titlebar milik
+// WM) dihitung kernel. Dekorasi digambar compositor, bukan di canvas app.
+gui_window_t* gui_create_window(uint32_t width, uint32_t height);
 
 // Set fungsi render — dipanggil tiap frame.
 void gui_set_render(gui_window_t* win, gui_render_fn fn);
 
-// Jalankan event loop. Blocks sampai user klik X atau tekan ESC.
-// Memanggil on_render setiap kali ada event / timer.
+// Jalankan event loop. Blocks sampai user klik X (EVENT_WIN_CLOSE), klik X
+// titlebar WM, atau tekan ESC. Memanggil on_render setiap kali ada event.
 void gui_mainloop(gui_window_t* win);
 
 // Hancurkan window dan bebaskan canvas.
 void gui_destroy(gui_window_t* win);
 
 // --- Drawing API ---
-// Semua koordinat RELATIF terhadap area ISI (di bawah title bar).
-// y=0 = baris pertama area isi, bukan title bar.
+// Semua koordinat RELATIF terhadap KONTEN window. y=0 = baris isi pertama
+// (di bawah titlebar milik WM).
 
 // Isi persegi panjang dengan warna solid.
 void gui_draw_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color);

@@ -35,33 +35,86 @@ static void blit_rect_db(DisplayBuffer* dst, DisplayBuffer* src, Rect r) {
     viewport_render(&vp, dst);
 }
 
+// Isi area solid, dipotong ke `clip` (bounds check per baris sekali).
+static void fill_rect_clip(uint32_t* fb, int pitch4, Rect area, uint32_t color,
+                           Rect clip) {
+    Rect c;
+    if (!rect_intersect(area, clip, &c)) return;
+    for (uint32_t yy = 0; yy < c.height; yy++) {
+        uint32_t* dst = fb + ((uint32_t)c.y + yy) * (uint32_t)pitch4 + (uint32_t)c.x;
+        for (uint32_t xx = 0; xx < c.width; xx++) dst[xx] = color;
+    }
+}
+
+// Segmen garis (DDA) dipotong ke `clip` — untuk glyph "X" tombol close.
+static void titlebar_line(uint32_t* fb, int pitch4,
+                          int x0, int y0, int x1, int y1,
+                          uint32_t color, Rect clip) {
+    int dx = x1 - x0, dy = y1 - y0;
+    int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy) ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
+    if (steps < 1) steps = 1;
+    for (int i = 0; i <= steps; i++) {
+        int x = x0 + (dx * i) / steps;
+        int y = y0 + (dy * i) / steps;
+        if (x >= clip.x && x < clip.x + (int)clip.width &&
+            y >= clip.y && y < clip.y + (int)clip.height)
+            fb[y * pitch4 + x] = color;
+    }
+}
+
 // Composite every window overlapping `r` (z-order low→high) onto the backbuffer.
-// Caller must hold kwm_lock. Surface window = DisplayBuffer (Phase 3A/5);
-// tetap loop custom (bukan viewport_render) karena butuh alpha-mask per pixel.
+// Caller must hold kwm_lock. Phase 5C: frame window = konten + titlebar milik
+// WM; titlebar digambar di sini (tint beda untuk window fokus + tombol close).
 static void composite_windows_in_rect(Rect r, int pitch4) {
     for (uint32_t z = 1; z <= next_z_index; z++) {
         for (int w = 0; w < MAX_WINDOWS; w++) {
             if (!(kwm_windows[w].active && kwm_windows[w].z_index == z && kwm_windows[w].canvas))
                 continue;
 
-            Rect wrect = { kwm_windows[w].x, kwm_windows[w].y,
-                           kwm_windows[w].width, kwm_windows[w].height };
-            Rect clip;
-            if (!rect_intersect(wrect, r, &clip)) continue;
-
             const int32_t win_x = kwm_windows[w].x;
-            const int32_t win_y = kwm_windows[w].y;
+            const int32_t win_y = kwm_windows[w].y;              // frame atas
+            const int32_t cty    = win_y + KWM_TITLEBAR_H;       // konten mulai
+            const uint32_t cw    = kwm_windows[w].width;
+            const uint32_t ch    = kwm_windows[w].height;
             const DisplayBuffer* canvas = kwm_windows[w].canvas;
 
-            for (uint32_t yy = 0; yy < clip.height; yy++) {
-                int32_t sy = clip.y + (int32_t)yy - win_y;
-                const uint32_t* src = canvas->pixels + (uint32_t)sy * canvas->stride + (uint32_t)(clip.x - win_x);
-                uint32_t* dst = backbuffer + ((uint32_t)clip.y + yy) * (uint32_t)pitch4 + (uint32_t)clip.x;
-                for (uint32_t xx = 0; xx < clip.width; xx++) {
-                    uint32_t pixel = src[xx];
-                    // Alpha byte acts as a per-pixel mask: 0 = transparent.
-                    if (pixel >> 24) dst[xx] = pixel & 0xFFFFFF;
+            // --- Konten (canvas = konten murni) ---
+            Rect crect = { win_x, cty, cw, ch };
+            Rect clip;
+            if (rect_intersect(crect, r, &clip)) {
+                for (uint32_t yy = 0; yy < clip.height; yy++) {
+                    int32_t sy = clip.y + (int32_t)yy - cty;
+                    const uint32_t* src = canvas->pixels +
+                        (uint32_t)sy * canvas->stride + (uint32_t)(clip.x - win_x);
+                    uint32_t* dst = backbuffer +
+                        ((uint32_t)clip.y + yy) * (uint32_t)pitch4 + (uint32_t)clip.x;
+                    for (uint32_t xx = 0; xx < clip.width; xx++) {
+                        uint32_t pixel = src[xx];
+                        // Alpha byte acts as a per-pixel mask: 0 = transparent.
+                        if (pixel >> 24) dst[xx] = pixel & 0xFFFFFF;
+                    }
                 }
+            }
+
+            // --- Titlebar milik WM ---
+            Rect tb = { win_x, win_y, cw, KWM_TITLEBAR_H };
+            if (rect_intersect(tb, r, &clip)) {
+                fill_rect_clip(backbuffer, pitch4, tb,
+                               (w == focused_win_id) ? KWM_TITLEBAR_COLOR
+                                                     : KWM_TITLEBAR_INACT,
+                               r);
+                Rect cb = { win_x + (int32_t)cw - KWM_CLOSE_BTN_W, win_y,
+                            KWM_CLOSE_BTN_W, KWM_TITLEBAR_H };
+                fill_rect_clip(backbuffer, pitch4, cb, KWM_CLOSE_COLOR, r);
+                // Glyph "X" di dalam tombol close.
+                titlebar_line(backbuffer, pitch4,
+                              cb.x + 6, cb.y + 4,
+                              cb.x + KWM_CLOSE_BTN_W - 7, cb.y + KWM_TITLEBAR_H - 5,
+                              0xFFFFFF, r);
+                titlebar_line(backbuffer, pitch4,
+                              cb.x + KWM_CLOSE_BTN_W - 7, cb.y + 4,
+                              cb.x + 6, cb.y + KWM_TITLEBAR_H - 5,
+                              0xFFFFFF, r);
             }
         }
     }

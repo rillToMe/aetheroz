@@ -26,6 +26,7 @@
 
 # --- Toolchain ---
 CC    = clang
+CXX   = clang++
 LD    = ld.lld
 
 # --- Direktori (relatif dari user_apps/) ---
@@ -41,6 +42,17 @@ CFLAGS_COMMON = --target=x86_64-pc-none-elf -ffreestanding -nostdlib -mno-red-zo
 CFLAGS_APP    = $(CFLAGS_COMMON) -O0
 CFLAGS_LIB    = $(CFLAGS_COMMON) -O2
 
+# --- Flags Compiler C++ (libui toolkit, Phase 6) ---
+# Mewarisi CFLAGS_COMMON (freestanding, -mno-*) + mematikan fitur C++ yang
+# butuh runtime yang tidak ada di bare-metal:
+#   -fno-exceptions         (tidak ada unwinding)
+#   -fno-rtti               (tidak ada typeid/typeinfo)
+#   -fno-use-cxa-atexit     (tidak ada __cxa_atexit — global dtors)
+#   -fno-threadsafe-statics (tidak ada __cxa_guard_* — static locals)
+# operator new/delete + __cxa_pure_virtual di-stub di apps/libui.cpp.
+CXXFLAGS_LIB  = $(CFLAGS_COMMON) -O2 -fno-exceptions -fno-rtti \
+                -fno-use-cxa-atexit -fno-threadsafe-statics -std=c++17
+
 # --- Flags Linker 64-bit ---
 LDFLAGS = -m elf_x86_64 -nostdlib -T app.ld
 
@@ -50,6 +62,7 @@ APP_BASE = 0x4000000
 # --- File Objek Bersama ---
 USERLIB_OBJ = userlib.o
 LIBGUI_OBJ  = libgui.o
+LIBUI_OBJ   = libui.o   # Widget Toolkit Modern C++ (apps/libui.cpp)
 
 # --- Target ELF Akhir ---
 FILEMAN_ELF = $(OUT_DIR)/fileman.elf
@@ -59,13 +72,14 @@ CALC_ELF    = $(OUT_DIR)/calc.elf
 TASKMGR_ELF = $(OUT_DIR)/taskmgr.elf
 NOTEPAD_ELF = $(OUT_DIR)/notepad.elf
 BADPTR_ELF  = $(OUT_DIR)/badptr.elf
+WIDGET_ELF  = $(OUT_DIR)/widget_demo.elf
 
 # ==========================================================
 # TARGET UTAMA
 # ==========================================================
-.PHONY: all fileman viewer clock calc taskmgr notepad badptr clean
+.PHONY: all fileman viewer clock calc taskmgr notepad badptr widget_demo clean
 
-all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF)
+all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTEPAD_ELF) $(BADPTR_ELF) $(WIDGET_ELF)
 	@echo ""
 	@echo "[USER APPS] Build selesai! Semua app di virtual 0x4000000"
 	@echo "  fileman.elf → $(FILEMAN_ELF)"
@@ -74,6 +88,7 @@ all: $(FILEMAN_ELF) $(VIEWER_ELF) $(CLOCK_ELF) $(CALC_ELF) $(TASKMGR_ELF) $(NOTE
 	@echo "  calc.elf    → $(CALC_ELF)"
 	@echo "  taskmgr.elf → $(TASKMGR_ELF)"
 	@echo "  notepad.elf → $(NOTEPAD_ELF)"
+	@echo "  widget_demo.elf → $(WIDGET_ELF)"
 	@echo "  OS akan otomatis alokasi physical RAM saat dijalankan."
 
 # COMPILE SHARED USERLIB
@@ -87,6 +102,13 @@ $(USERLIB_OBJ): $(APPS_DIR)/userlib.c
 $(LIBGUI_OBJ): $(APPS_DIR)/libgui.c
 	@echo "[CC] Mengompilasi libgui (GUI Framework)..."
 	$(CC) $(CFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
+
+# ==========================================================
+# COMPILE LIBUI — Widget Toolkit (Modern C++, apps/libui.cpp)
+# ==========================================================
+$(LIBUI_OBJ): $(APPS_DIR)/libui.cpp
+	@echo "[CXX] Mengompilasi libui (Widget Toolkit, C++ freestanding)..."
+	$(CXX) $(CXXFLAGS_LIB) -I$(INC_DIR) -c $< -o $@
 
 # ==========================================================
 # FILEMAN — File Manager (virtual 0x4000000, phys by OS)
@@ -187,6 +209,21 @@ $(BADPTR_ELF): badptr.o $(USERLIB_OBJ)
 badptr: $(BADPTR_ELF)
 
 # ==========================================================
+# WIDGET_DEMO — demo Toolkit C ABI (Phase 6)
+# App C murni; toolkit (libui.o) adalah C++ modern di balik C ABI.
+# ==========================================================
+widget_demo.o: widget_demo.c
+	@echo "[CC] Mengompilasi widget_demo.c..."
+	$(CC) $(CFLAGS_APP) -c $< -o $@
+
+$(WIDGET_ELF): widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ)
+	@echo "[LD] Linking widget_demo.elf (app C + libui C++ toolkit)..."
+	$(LD) $(LDFLAGS) widget_demo.o $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) -o $@
+	@echo "[OK] widget_demo.elf siap!"
+
+widget_demo: $(WIDGET_ELF)
+
+# ==========================================================
 # CLEAN
 # ==========================================================
 clean:
@@ -195,5 +232,5 @@ clean:
 	@echo "[CLEAN] Selesai."
 
 # --- Semua objek + header deps (harus sebelum -include) ---
-APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o
+APP_OBJS = $(USERLIB_OBJ) $(LIBGUI_OBJ) $(LIBUI_OBJ) fileman.o viewer.o clock.o calc.o taskmgr.o notepad.o badptr.o widget_demo.o
 -include $(APP_OBJS:.o=.d)

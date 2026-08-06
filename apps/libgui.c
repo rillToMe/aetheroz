@@ -1,10 +1,8 @@
-// ============================================================
 // apps/libgui.c — Kyuzen GUI Framework Implementation
 //
 // PENTING: FONT8x16_IMPLEMENTATION hanya boleh di-define SATU kali.
 // Karena libgui.c mengimplementasikannya, app yang link libgui.o
 // TIDAK BOLEH mendefinisikan FONT8x16_IMPLEMENTATION sendiri.
-// ============================================================
 
 #define FONT8x16_IMPLEMENTATION
 #include "font8x16.h"
@@ -12,9 +10,7 @@
 #include "userlib.h"
 #include <stdint.h>
 
-// ============================================================
 // INTERNAL HELPERS
-// ============================================================
 
 static void _lgui_strncpy(char* dst, const char* src, int n) {
     int i = 0;
@@ -42,10 +38,8 @@ static int _lgui_strlen(const char* s) {
     int n = 0; while (s[n]) n++; return n;
 }
 
-// ============================================================
-// CANVAS DRAWING — koordinat dalam canvas TOTAL
-// (caller harus tambah GUI_TITLEBAR_H ke y untuk area isi)
-// ============================================================
+// CANVAS DRAWING — koordinat dalam canvas KONTEN (y=0 = baris isi
+// pertama; titlebar milik WM tidak pernah digambar app).
 
 static void _lgui_fill_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color) {
     uint32_t solid = color | 0xFF000000;
@@ -84,29 +78,9 @@ static void _lgui_draw_string_abs(gui_window_t* win, const char* str, int x, int
     }
 }
 
-// ============================================================
-// RENDER TITLE BAR (dipanggil otomatis di setiap flush)
-// ============================================================
-
-static void _lgui_draw_titlebar(gui_window_t* win) {
-    int W = (int)win->width;
-
-    // Background title bar
-    _lgui_fill_rect(win, 0, 0, W, GUI_TITLEBAR_H, GUI_TITLEBAR_COLOR);
-
-    // Close button merah di kanan
-    _lgui_fill_rect(win, W - GUI_CLOSE_BTN_W, 0, GUI_CLOSE_BTN_W, GUI_TITLEBAR_H, GUI_CLOSE_COLOR);
-    _lgui_draw_string_abs(win, "X", W - GUI_CLOSE_BTN_W + 14, 7, 0xFFFFFF);
-
-    // Judul window di kiri
-    _lgui_draw_string_abs(win, win->title, 10, 7, 0xFFFFFF);
-}
-
-// ============================================================
 // PUBLIC API
-// ============================================================
 
-gui_window_t* gui_create_window(const char* title, uint32_t width, uint32_t height) {
+gui_window_t* gui_create_window(uint32_t width, uint32_t height) {
     gui_window_t* win = (gui_window_t*)sys_alloc(sizeof(gui_window_t));
     if (!win) return 0;
 
@@ -116,16 +90,15 @@ gui_window_t* gui_create_window(const char* title, uint32_t width, uint32_t heig
     win->width    = width;
     win->height   = height;
     win->inner_w  = width;
-    win->inner_h  = height - GUI_TITLEBAR_H;
+    win->inner_h  = height;
     win->is_running = 1;
     win->mouse_x  = 0;
     win->mouse_y  = 0;
     win->rel_x    = 0;
     win->rel_y    = 0;
     win->on_render = 0;
-    _lgui_strncpy(win->title, title, 64);
 
-    // Buat window via KWM (posisi default: 100, 80)
+    // Phase 5C: canvas = konten murni; width/height = ukuran konten.
     win->win_id = sys_kwm_create_window(100, 80, width, height);
     if (win->win_id < 0) {
         sys_free(win->canvas);
@@ -133,9 +106,8 @@ gui_window_t* gui_create_window(const char* title, uint32_t width, uint32_t heig
         return 0;
     }
 
-    // Gambar frame awal
-    _lgui_fill_rect(win, 0, GUI_TITLEBAR_H, (int)width, (int)height - GUI_TITLEBAR_H, 0xF5F5F5);
-    _lgui_draw_titlebar(win);
+    // Gambar latar awal (konten penuh).
+    _lgui_fill_rect(win, 0, 0, (int)width, (int)height, 0xF5F5F5);
     sys_kwm_update_window(win->win_id, win->canvas);
 
     return win;
@@ -147,7 +119,6 @@ void gui_set_render(gui_window_t* win, gui_render_fn fn) {
 
 void gui_flush(gui_window_t* win) {
     if (!win) return;
-    _lgui_draw_titlebar(win); // Title bar selalu fresh di atas rendering app
     sys_kwm_update_window(win->win_id, win->canvas);
 }
 
@@ -158,9 +129,7 @@ void gui_destroy(gui_window_t* win) {
     sys_free(win);
 }
 
-// ============================================================
 // EVENT LOOP UTAMA
-// ============================================================
 
 void gui_mainloop(gui_window_t* win) {
     if (!win) return;
@@ -169,41 +138,26 @@ void gui_mainloop(gui_window_t* win) {
     while (win->is_running) {
         if (sys_get_event(&ev)) {
 
-            // --- Pergerakan Mouse ---
+            // --- Pergerakan Mouse (koordinat window-local konten) ---
             if (ev.type == EVENT_MOUSE_MOVE) {
                 win->mouse_x = ev.param1;
                 win->mouse_y = ev.param2;
-
-                // Hitung koordinat relatif terhadap window origin
-                int wx = 0, wy = 0;
-                sys_get_window_pos(win->win_id, &wx, &wy);
-                win->rel_x = win->mouse_x - wx;
-                win->rel_y = win->mouse_y - wy - GUI_TITLEBAR_H;
+                win->rel_x = ev.param1;
+                win->rel_y = ev.param2;
             }
 
             // --- Klik Kiri Ditekan ---
             if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
-                // Sinkronkan posisi
                 if (ev.param3 != 0) win->mouse_x = ev.param3;
+                win->rel_x = win->mouse_x;
+                win->rel_y = win->mouse_y;
+            }
 
-                int wx = 0, wy = 0;
-                sys_get_window_pos(win->win_id, &wx, &wy);
-                win->rel_x = win->mouse_x - wx;
-                win->rel_y = win->mouse_y - wy - GUI_TITLEBAR_H;
-
-                // Cek: apakah klik mengenai tombol Close (X)?
-                // Close button = [width-GUI_CLOSE_BTN_W .. width] × [0 .. GUI_TITLEBAR_H]
-                // Koordinat relatif terhadap window (termasuk title bar):
-                int rel_full_x = win->mouse_x - wx;  // relatif dari kiri window
-                int rel_full_y = win->mouse_y - wy;  // relatif dari atas window (termasuk titlebar)
-
-                if (rel_full_x >= (int)win->width - GUI_CLOSE_BTN_W &&
-                    rel_full_x <  (int)win->width &&
-                    rel_full_y >= 0 &&
-                    rel_full_y <  GUI_TITLEBAR_H) {
-                    win->is_running = 0; // Tutup window
-                    break;
-                }
+            // --- Phase 5C: WM minta app menutup (tombol close titlebar).
+            // Bukan destroy paksa — app cleanup lalu sys_exit.
+            if (ev.type == EVENT_WIN_CLOSE) {
+                win->is_running = 0;
+                break;
             }
 
             // --- Keyboard ESC ---
@@ -215,7 +169,6 @@ void gui_mainloop(gui_window_t* win) {
 
         // Panggil render callback app (jika ada)
         if (win->on_render) {
-            // Bersihkan area isi dulu (app bisa override dengan warna mereka sendiri)
             win->on_render(win);
             gui_flush(win);
         }
@@ -224,24 +177,21 @@ void gui_mainloop(gui_window_t* win) {
     }
 }
 
-// ============================================================
-// DRAWING API — koordinat RELATIF ke area isi (di bawah titlebar)
-// ============================================================
+// DRAWING API — koordinat RELATIF ke KONTEN window
 
 void gui_draw_rect(gui_window_t* win, int x, int y, int w, int h, uint32_t color) {
     if (!win) return;
-    // Geser y ke bawah title bar
-    _lgui_fill_rect(win, x, y + GUI_TITLEBAR_H, w, h, color);
+    _lgui_fill_rect(win, x, y, w, h, color);
 }
 
 void gui_draw_char(gui_window_t* win, char c, int x, int y, uint32_t color) {
     if (!win) return;
-    _lgui_draw_char_abs(win, c, x, y + GUI_TITLEBAR_H, color);
+    _lgui_draw_char_abs(win, c, x, y, color);
 }
 
 void gui_draw_text(gui_window_t* win, const char* text, int x, int y, uint32_t color) {
     if (!win) return;
-    _lgui_draw_string_abs(win, text, x, y + GUI_TITLEBAR_H, color);
+    _lgui_draw_string_abs(win, text, x, y, color);
 }
 
 void gui_draw_label_num(gui_window_t* win, const char* label, uint32_t num,

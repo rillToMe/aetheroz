@@ -90,7 +90,7 @@ void main(void) {
         text_buffer[0] = '\0';
     }
 
-    gui_window_t* app = gui_create_window("Kyuzen Notepad", WIN_W, WIN_H);
+    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
     if (!app) { sys_exit(); return; }
 
     kyuzen_event_t ev;
@@ -114,37 +114,33 @@ void main(void) {
             // --- MOUSE CLICK ---
             if (ev.type == EVENT_MOUSE_CLICK && ev.param2 == 1) {
                 if (ev.param3 != 0) app->mouse_x = ev.param3;
-                int wx = 0, wy = 0;
-                sys_get_window_pos(app->win_id, &wx, &wy);
-
-                int rfx = app->mouse_x - wx;
-                int rfy = app->mouse_y - wy;
-                int rel_x = rfx;
-                int rel_y = rfy - GUI_TITLEBAR_H;
-
-                // Cek Close
-                if (rfx >= (int)app->width - GUI_CLOSE_BTN_W && rfy < GUI_TITLEBAR_H) {
-                    app->is_running = 0; break;
-                }
+                // Phase 5C: koordinat sudah window-local konten (dari KWM).
+                int rel_x = app->mouse_x;
+                int rel_y = app->mouse_y;
 
                 // Cek Klik Area Toolbar (Filename Edit Mode)
                 if (rel_y >= 0 && rel_y <= 30 && rel_x < (int)app->inner_w - 80) {
                     editing_filename = 1;
-                } 
+                }
                 // Cek Klik Area Teks (Keluar dari Edit Mode)
                 else if (rel_y > 30) {
                     editing_filename = 0;
                 }
-                
+
                 // Cek Klik SAVE
                 if (rel_x >= (int)app->inner_w - 70 && rel_x <= (int)app->inner_w - 10 && rel_y >= 4 && rel_y <= 26) {
                     if (sys_file_exists(current_file)) fs_delete(current_file);
                     sys_create_file(current_file, text_buffer, text_len);
                     editing_filename = 0; // Selesai edit nama saat di save
                 }
-                
+
                 render_notepad(app);
                 gui_flush(app);
+            }
+
+            // --- Phase 5C: WM minta tutup (tombol close titlebar) ---
+            if (ev.type == EVENT_WIN_CLOSE) {
+                app->is_running = 0; break;
             }
 
             // --- KEYBOARD ---

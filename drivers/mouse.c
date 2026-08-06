@@ -83,9 +83,10 @@ void init_mouse() {
 uint8_t mouse_cycle = 0;
 int8_t mouse_byte[4];
 
-// Phase 5B: event dikirim per-task — KWM me-route ke window di bawah kursor.
+// Phase 5B/5C: event dikirim per-task — KWM me-route ke window di bawah
+// kursor dan menerjemahkan koordinat ke window-local konten (out_lx/out_ly).
 extern void push_event_to(int task_id, uint32_t type, int32_t p1, int32_t p2, int32_t p3, int32_t win_id);
-extern int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id);
+extern int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id, int32_t* out_lx, int32_t* out_ly);
 // KWM V2: intercept mouse events untuk drag & z-index sebelum dikirim ke app
 extern int kwm_process_mouse(int32_t mx, int32_t my, uint8_t left_down, uint8_t left_up);
 
@@ -136,18 +137,18 @@ void mouse_handler() {
                 // Klik kiri — kirim ke app jika KWM tidak mengonsumsinya
                 if (left_click != last_left_click) {
                     // EVENT_MOUSE_CLICK (3) → P1: 0 (kiri), P2: 1=ditekan / 0=dilepas
-                    int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                    int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win, 0, 0);
                     if (target >= 0) push_event_to(target, 3, 0, left_click, 0, win);
                 }
             } else if (left_up) {
                 // Selalu kirim mouse-up ke app agar state tombol tidak terjebak "pressed"
-                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win, 0, 0);
                 if (target >= 0) push_event_to(target, 3, 0, 0, 0, win);
             }
 
             // Klik kanan — selalu teruskan ke app (KWM tidak menggunakannya)
             if (right_click != last_right_click) {
-                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win, 0, 0);
                 if (target >= 0) push_event_to(target, 3, 1, right_click, 0, win);
                 last_right_click = right_click;
             }
@@ -155,9 +156,12 @@ void mouse_handler() {
             last_left_click = left_click;
 
             // Pergerakan mouse dikirim ke window di bawah kursor (hover)
+            // Phase 5C: koordinat window-local (lx, ly) — app tak perlu lagi
+            // konversi layar→lokal.
             {
-                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
-                if (target >= 0) push_event_to(target, 2, mouse_x, mouse_y, 0, win); // EVENT_MOUSE_MOVE (2)
+                int win = 0, lx = 0, ly = 0;
+                int target = kwm_route_mouse(mouse_x, mouse_y, &win, &lx, &ly);
+                if (target >= 0) push_event_to(target, 2, lx, ly, 0, win); // EVENT_MOUSE_MOVE (2)
             }
 
             spinlock_unlock(&mouse_state_lock);
@@ -168,10 +172,12 @@ void mouse_handler() {
             // Phase 5B: wheel → window DI BAWAH KURSOR; area kosong → scrollback terminal.
             if (wheel_z != 0) {
                 extern void tty_scroll_view(int32_t delta_lines);
-                int win = 0, target = kwm_route_mouse(mouse_x, mouse_y, &win);
+                // Phase 5C: P2/P3 = koordinat window-local.
+                int win = 0, lx = 0, ly = 0;
+                int target = kwm_route_mouse(mouse_x, mouse_y, &win, &lx, &ly);
                 if (target >= 0) {
                     // EVENT_SCROLL (4) → P1: delta (+1 bawah / -1 atas), P2/P3: posisi
-                    push_event_to(target, 4, (int32_t)wheel_z, mouse_x, mouse_y, win);
+                    push_event_to(target, 4, (int32_t)wheel_z, lx, ly, win);
                 } else {
                     // Terminal: wheel atas (Z<0) = masuk riwayat (offset naik)
                     tty_scroll_view((int32_t)(-wheel_z) * 3);

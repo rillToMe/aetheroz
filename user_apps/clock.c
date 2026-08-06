@@ -86,7 +86,6 @@ static void fmt_4d(int n, char* buf) {
 
 void clock_render(gui_window_t* win) {
     int W = (int)win->width;
-    int TH = GUI_TITLEBAR_H;
 
     // Background isi
     gui_draw_rect(win, 0, 0, W, (int)win->inner_h, BG_BODY);
@@ -104,7 +103,7 @@ void clock_render(gui_window_t* win) {
     timebuf[6] = '0' + (dtk/10); timebuf[7] = '0' + (dtk%10);
     timebuf[8] = '\0';
 
-    int ox = 18, oy = TH + 18;
+    int ox = 18, oy = 18;
     for (int ci = 0; timebuf[ci]; ci++) {
         uint32_t col = (timebuf[ci] == ':') ? COL_SEP : COL_CYAN;
         draw_scaled_char(win, timebuf[ci], ox + ci*20, oy, col, 2);
@@ -116,11 +115,11 @@ void clock_render(gui_window_t* win) {
     fmt_2d(waktu[2], buf2d);
     fmt_4d(waktu[0], buf4d);
 
-    put_str_abs(win, HARI[dow], 16, TH + 88, COL_GRAY);
-    put_str_abs(win, ",", 40, TH + 88, COL_GRAY);
-    put_str_abs(win, buf2d, 56, TH + 88, COL_WHITE);
-    put_str_abs(win, BULAN[waktu[1]], 80, TH + 88, COL_CYAN);
-    put_str_abs(win, buf4d, 112, TH + 88, COL_WHITE);
+    put_str_abs(win, HARI[dow], 16, 88, COL_GRAY);
+    put_str_abs(win, ",", 40, 88, COL_GRAY);
+    put_str_abs(win, buf2d, 56, 88, COL_WHITE);
+    put_str_abs(win, BULAN[waktu[1]], 80, 88, COL_CYAN);
+    put_str_abs(win, buf4d, 112, 88, COL_WHITE);
 
     // Garis bawah
     gui_draw_rect(win, 10, (int)win->inner_h - 8, W - 20, 2, 0x1A237E);
@@ -135,7 +134,7 @@ void main(void) {
     print("\n");
     // === END TEST ===
 
-    gui_window_t* app = gui_create_window("Clock", 300, 160);
+    gui_window_t* app = gui_create_window(300, 160);
     if (!app) { sys_exit(); return; }
 
     gui_set_render(app, clock_render);
@@ -155,17 +154,9 @@ void main(void) {
                 app->mouse_x = ev.param1;
                 app->mouse_y = ev.param2;
             }
-            if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
-                if (ev.param3 != 0) app->mouse_x = ev.param3;
-                int wx = 0, wy = 0;
-                sys_get_window_pos(app->win_id, &wx, &wy);
-                int rfx = app->mouse_x - wx;
-                int rfy = app->mouse_y - wy;
-                if (rfx >= (int)app->width - GUI_CLOSE_BTN_W &&
-                    rfx <  (int)app->width &&
-                    rfy >= 0 && rfy < GUI_TITLEBAR_H) {
-                    app->is_running = 0;
-                }
+            // Phase 5C: WM minta tutup (tombol close titlebar)
+            if (ev.type == EVENT_WIN_CLOSE) {
+                app->is_running = 0;
             }
             if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27)
                 app->is_running = 0;

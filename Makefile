@@ -103,6 +103,12 @@ C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c,$(C_SOURCES_RAW))
 # Kernel + arch + drivers object files
 OBJS = $(C_SOURCES:.c=.o) $(ASM_SOURCES:.asm=.o)
 
+# Default goal dipatok DULU. Tanpa ini, -include file .d di bawah membuat
+# target pertama file .d (arch/x86/gdt.o) menjadi default goal → `make`
+# hanya membangun gdt.o. (.DEFAULT_GOAL yang dieksplisit menang atas target
+# pertama yang dilihat make.)
+.DEFAULT_GOAL := all
+
 # Sertakan dependensi header hasil -MMD (diabaikan saat belum ada / setelah clean)
 -include $(OBJS:.o=.d) $(LWIP_OBJS:.o=.d)
 
@@ -194,6 +200,9 @@ notepad.elf:
 badptr.elf:
 	$(MAKE) -C user_apps badptr
 
+widget_demo.elf:
+	$(MAKE) -C user_apps widget_demo
+
 # Bersihkan hanya file objek user_apps (bukan ELF output)
 clean-apps:
 	$(MAKE) -C user_apps clean
@@ -208,7 +217,7 @@ boot_image.iso: $(TARGET) apps limine.conf kyuzen.png logo.png
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	
 	# Salin semua kebutuhan (termasuk limine-uefi-cd.bin)
-	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
+	cp $(TARGET) limine.conf kyuzen.png logo.png fileman.elf viewer.elf clock.elf calc.elf taskmgr.elf notepad.elf badptr.elf widget_demo.elf limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/
 	
 	# Xorriso sakti: Menggabungkan BIOS dan UEFI ke dalam 1 file ISO!
 	xorriso -as mkisofs -b limine-bios-cd.bin -no-emul-boot -boot-load-size 4 -boot-info-table \

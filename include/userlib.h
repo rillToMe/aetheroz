@@ -104,9 +104,6 @@ int sys_get_event(kyuzen_event_t* event_out);
 int sys_create_window(int x, int y, uint32_t width, uint32_t height);
 void sys_update_window(int win_id, uint32_t* buffer);
 void sys_destroy_window(int win_id);
-// Query posisi window terkini dari kernel (setelah drag, posisi berubah)
-// Selalu panggil ini sebelum hit-test tombol, JANGAN hardcode koordinat!
-void sys_get_window_pos(int win_id, int* out_x, int* out_y);
 
 void* memcpy(void* dest, const void* src, size_t count);
 void* memset(void* dest, int val, size_t count);

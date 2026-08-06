@@ -14,6 +14,12 @@
 #define KWM_MAX_DIMENSION    4096U
 #define KWM_MAX_CANVAS_BYTES (16U * 1024U * 1024U)
 
+// Phase 5C: tombol close titlebar → EVENT_WIN_CLOSE (6) ke owner task; app
+// yang cleanup lalu sys_exit. Nilai harus cocok dengan event.c + userlib.h.
+#define EVENT_WIN_CLOSE 6
+extern void push_event_to(int task_id, uint32_t type, int32_t p1, int32_t p2,
+                          int32_t p3, int32_t win_id);
+
 kwm_window_t kwm_windows[MAX_WINDOWS];
 uint32_t next_z_index = 1;
 spinlock_t kwm_lock = SPINLOCK_INIT;
@@ -23,10 +29,21 @@ static int     dragged_win_id = -1;  // -1 = tidak ada drag
 static int32_t drag_offset_x  = 0;   // Offset klik dalam window (mencegah window "loncat")
 static int32_t drag_offset_y  = 0;
 
-// Phase 5B: window pemegang fokus keyboard (-1 = tidak ada → keyboard ke TTY).
-// Di-set saat create window & click-to-focus di kwm_process_mouse; tint
-// visual titlebar fokus = Phase 5C.
-static int focused_win_id = -1;
+// Phase 5B/5C: window pemegang fokus keyboard (-1 = tidak ada → keyboard ke
+// TTY). Di-set saat create window & click-to-focus di kwm_process_mouse;
+// dibaca compositor.c untuk tint titlebar (fokus vs tidak).
+int focused_win_id = -1;
+
+// Caller MUST TIDAK memegang kwm_lock. Menandai area layar yang ditempati
+// frame window (konten + titlebar) sebagai dirty. Dipanggil setiap kali
+// penampilan window berubah di layar (create/move/destroy/fokus).
+static void kwm_frame_dirty(int i) {
+    if (i < 0 || i >= MAX_WINDOWS) return;
+    if (!kwm_windows[i].active) return;
+    screen_mark_dirty(kwm_windows[i].x, kwm_windows[i].y,
+                      kwm_windows[i].width,
+                      kwm_windows[i].height + KWM_TITLEBAR_H);
+}
 
 // Caller MUST hold kwm_lock. Window aktif teratas (z tertinggi) di titik
 // (px, py), atau -1 jika tidak ada.
@@ -38,7 +55,8 @@ static int kwm_hit_test_locked(int32_t px, int32_t py) {
         int32_t wx = kwm_windows[i].x;
         int32_t wy = kwm_windows[i].y;
         int32_t ww = (int32_t)kwm_windows[i].width;
-        int32_t wh = (int32_t)kwm_windows[i].height;
+        // Phase 5C: frame = konten + titlebar di atasnya.
+        int32_t wh = (int32_t)kwm_windows[i].height + KWM_TITLEBAR_H;
         if (px >= wx && px < wx + ww && py >= wy && py < wy + wh) {
             if ((int)kwm_windows[i].z_index > highest_z) {
                 highest_z = (int)kwm_windows[i].z_index;
@@ -106,10 +124,13 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].owner_task = owner;
             kwm_windows[i].z_index = next_z_index++;
             kwm_windows[i].active = 1;
-            // Phase 5B: window baru langsung memegang fokus keyboard.
+            // Phase 5B/5C: window baru memegang fokus — yang lama kehilangan
+            // tint titlebar-nya.
+            int prev_focus = focused_win_id;
             focused_win_id = i;
             spinlock_unlock_irqrestore(&kwm_lock, flags);
-            screen_mark_dirty(x, y, width, height);
+            kwm_frame_dirty(i);
+            if (prev_focus >= 0 && prev_focus != i) kwm_frame_dirty(prev_focus);
             return i;
         }
     }
@@ -159,7 +180,10 @@ void kwm_update_window(int win_id, uint32_t* app_buffer) {
     user_access_begin();
     __asm__ volatile ("rep movsl" : "+D" (dest), "+S" (app_buffer), "+c" (size) : : "memory");
     user_access_end();
-    int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
+    // Phase 5C: konten murni di bawah titlebar — hanya rect konten yang
+    // berubah (titlebar digambar compositor, tidak ikut update).
+    int32_t mx = kwm_windows[win_id].x;
+    int32_t my = kwm_windows[win_id].y + KWM_TITLEBAR_H;
     uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     screen_mark_dirty(mx, my, mw, mh);
@@ -175,10 +199,16 @@ void kwm_destroy_window(int win_id) {
     int32_t mx = kwm_windows[win_id].x, my = kwm_windows[win_id].y;
     uint32_t mw = kwm_windows[win_id].width, mh = kwm_windows[win_id].height;
     int was_focused = (focused_win_id == win_id);
+    int new_focus = focused_win_id;
     kwm_free_slot(win_id);
-    if (was_focused) kwm_refocus_locked();
+    if (was_focused) {
+        kwm_refocus_locked();
+        new_focus = focused_win_id;   // Phase 5C: refokus → tint titlebar baru
+    }
     spinlock_unlock_irqrestore(&kwm_lock, flags);
-    screen_mark_dirty(mx, my, mw, mh);
+    // Frame penuh (konten + titlebar) harus direpaint — window hilang.
+    screen_mark_dirty(mx, my, mw, mh + KWM_TITLEBAR_H);
+    if (was_focused && new_focus >= 0) kwm_frame_dirty(new_focus);
 }
 
 // FIX_004: destroy HANYA window milik task_id — dipanggil saat app exit/exec
@@ -214,21 +244,6 @@ void kwm_destroy_all_windows(void) {
     screen_mark_dirty(0, 0, fb_width, fb_height);
 }
 
-// Kembalikan posisi window terkini (setelah drag, dsb) ke app via pointer.
-// App harus panggil ini setiap kali ingin konversi koordinat layar → koordinat lokal window.
-void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y) {
-    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
-    if (win_id < 0 || win_id >= MAX_WINDOWS || !kwm_windows[win_id].active) {
-        if (out_x) *out_x = 0;
-        if (out_y) *out_y = 0;
-        spinlock_unlock_irqrestore(&kwm_lock, flags);
-        return;
-    }
-    if (out_x) *out_x = kwm_windows[win_id].x;
-    if (out_y) *out_y = kwm_windows[win_id].y;
-    spinlock_unlock_irqrestore(&kwm_lock, flags);
-}
-
 // ============================================================
 // KWM V2 — Drag & Drop + Z-Index Dinamis
 // ============================================================
@@ -254,10 +269,9 @@ static void kwm_bring_to_front(int win_id) {
 int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
                       uint8_t left_down, uint8_t left_up) {
 
-    spinlock_lock(&kwm_lock);
-
     // 1. Mouse Up — akhiri drag session
     if (left_up) {
+        spinlock_lock(&kwm_lock);
         dragged_win_id = -1;
         spinlock_unlock(&kwm_lock);
         return 0; // Kirim event "release" ke app juga
@@ -265,63 +279,81 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
 
     // 2. Sedang dalam Drag — update posisi window mengikuti kursor
     if (dragged_win_id != -1) {
+        spinlock_lock(&kwm_lock);
         int32_t new_x = mouse_px - drag_offset_x;
         int32_t new_y = mouse_py - drag_offset_y;
 
-        // Clamp: pastikan window tidak keluar layar
+        // Phase 5C: clamp terhadap FRAME (konten + titlebar).
+        uint32_t fw = kwm_windows[dragged_win_id].width;
+        uint32_t fh = kwm_windows[dragged_win_id].height + KWM_TITLEBAR_H;
+
         if (new_x < 0) new_x = 0;
         if (new_y < 0) new_y = 0;
-        if (new_x + (int32_t)kwm_windows[dragged_win_id].width  > (int32_t)fb_width)
-            new_x = (int32_t)fb_width  - (int32_t)kwm_windows[dragged_win_id].width;
-        if (new_y + (int32_t)kwm_windows[dragged_win_id].height > (int32_t)fb_height)
-            new_y = (int32_t)fb_height - (int32_t)kwm_windows[dragged_win_id].height;
+        if (new_x + (int32_t)fw > (int32_t)fb_width)
+            new_x = (int32_t)fb_width  - (int32_t)fw;
+        if (new_y + (int32_t)fh > (int32_t)fb_height)
+            new_y = (int32_t)fb_height - (int32_t)fh;
 
         int32_t old_x = kwm_windows[dragged_win_id].x;
         int32_t old_y = kwm_windows[dragged_win_id].y;
-        uint32_t dw = kwm_windows[dragged_win_id].width;
-        uint32_t dh = kwm_windows[dragged_win_id].height;
         kwm_windows[dragged_win_id].x = new_x;
         kwm_windows[dragged_win_id].y = new_y;
         spinlock_unlock(&kwm_lock);
-        screen_mark_dirty(old_x, old_y, dw, dh);
-        screen_mark_dirty(new_x, new_y, dw, dh);
+        screen_mark_dirty(old_x, old_y, fw, fh);
+        screen_mark_dirty(new_x, new_y, fw, fh);
         return 1; // Konsumsi event — jangan sampai app salah deteksi klik
     }
 
-    // 3. Mouse Down — hit-test, Z-bring-to-front, cek title bar drag
+    // 3. Mouse Down — hit-test, click-to-focus, Z-bring-to-front, dekorasi WM
     if (left_down) {
-        int target_win = kwm_hit_test_locked(mouse_px, mouse_py);
+        int old_focus, target_win, close_owner = -1, start_drag = 0;
+        {
+            spinlock_lock(&kwm_lock);
+            target_win  = kwm_hit_test_locked(mouse_px, mouse_py);
+            old_focus   = focused_win_id;
+            // Phase 5B: click-to-focus. Klik area kosong = fokus -1 → keyboard
+            // kembali ke TTY (shell).
+            focused_win_id = target_win;
 
-        // Phase 5B: click-to-focus. Klik area kosong = fokus -1 → keyboard
-        // kembali ke TTY (shell). Tint visual titlebar fokus = Phase 5C.
-        focused_win_id = target_win;
+            if (target_win != -1) {
+                kwm_bring_to_front(target_win);
 
-        if (target_win != -1) {
-            kwm_bring_to_front(target_win);
+                int32_t fx = kwm_windows[target_win].x;
+                int32_t fy = kwm_windows[target_win].y;
+                int32_t fw = (int32_t)kwm_windows[target_win].width;
 
-            int32_t tx = kwm_windows[target_win].x, ty = kwm_windows[target_win].y;
-            uint32_t tw = kwm_windows[target_win].width, th = kwm_windows[target_win].height;
-
-            int32_t close_btn_x = kwm_windows[target_win].x
-                                  + (int32_t)kwm_windows[target_win].width - 40;
-
-            if (mouse_py >= kwm_windows[target_win].y &&
-                mouse_py <  kwm_windows[target_win].y + 24 &&
-                mouse_px <  close_btn_x) {
-                dragged_win_id = target_win;
-                drag_offset_x  = mouse_px - kwm_windows[target_win].x;
-                drag_offset_y  = mouse_py - kwm_windows[target_win].y;
-                spinlock_unlock(&kwm_lock);
-                screen_mark_dirty(tx, ty, tw, th);
-                return 1;
+                // Phase 5C: klik di titlebar.
+                if (mouse_py >= fy && mouse_py < fy + KWM_TITLEBAR_H) {
+                    if (mouse_px >= fx + fw - KWM_CLOSE_BTN_W) {
+                        // Tombol close → minta app menutup (EVENT_WIN_CLOSE),
+                        // BUKAN destroy paksa. App yang memutuskan.
+                        close_owner = kwm_windows[target_win].owner_task;
+                    } else {
+                        // Drag dimulai dari titlebar (selain tombol close).
+                        dragged_win_id = target_win;
+                        drag_offset_x  = mouse_px - fx;
+                        drag_offset_y  = mouse_py - fy;
+                        start_drag = 1;
+                    }
+                }
             }
             spinlock_unlock(&kwm_lock);
-            screen_mark_dirty(tx, ty, tw, th);
-            return 0;
         }
+
+        if (close_owner >= 0) {
+            push_event_to(close_owner, EVENT_WIN_CLOSE, 0, 0, 0, target_win + 1);
+            return 1;
+        }
+
+        // Repaint: z-order target berubah (bring-to-front); fokus lama
+        // kehilangan tint titlebar jika bergeser. Di luar kwm_lock.
+        if (target_win >= 0) kwm_frame_dirty(target_win);
+        if (old_focus != target_win && old_focus >= 0) kwm_frame_dirty(old_focus);
+
+        if (start_drag) return 1;   // Klik titlebar — konsumsi, jangan ke app
+        return 0;                   // Klik konten / area kosong — teruskan
     }
 
-    spinlock_unlock(&kwm_lock);
     return 0; // Klik di area kosong — teruskan
 }
 
@@ -349,16 +381,103 @@ int kwm_route_keyboard(int* out_win_id) {
 
 // Mouse move/click/wheel → owner task dari window di bawah kursor.
 // -1 = kursor di area kosong (event tidak diteruskan ke siapa pun).
-int kwm_route_mouse(int32_t x, int32_t y, int* out_win_id) {
+// Phase 5C: out_lx/out_ly = koordinat WINDOW-LOCAL konten (y=0 = baris isi
+// pertama, di bawah titlebar) — diterjemahkan di sini, app tidak perlu lagi
+// konversi layar→lokal (sys_get_window_pos dihapus).
+int kwm_route_mouse(int32_t sx, int32_t sy, int* out_win_id,
+                    int32_t* out_lx, int32_t* out_ly) {
     spinlock_lock(&kwm_lock);
-    int w     = kwm_hit_test_locked(x, y);
+    int w     = kwm_hit_test_locked(sx, sy);
     int owner = -1;
     int enc   = 0;
     if (w >= 0) {
         owner = kwm_windows[w].owner_task;
         enc   = w + 1;
+        if (out_lx) *out_lx = sx - kwm_windows[w].x;
+        if (out_ly) *out_ly = sy - (kwm_windows[w].y + KWM_TITLEBAR_H);
     }
     spinlock_unlock(&kwm_lock);
     if (out_win_id) *out_win_id = enc;
     return owner;
+}
+
+// ============================================================
+// Phase 5D — Shortcut WM: Alt-Tab (siklus fokus + bring-to-front)
+// ============================================================
+
+// bitmask modifier (cocok userlib.h) — lokal, kwm.c tidak include userlib.h
+#define KEY_MOD_ALT 0x04
+// scancode set-1 Tab = 0x0F (tidak extended; key_id tanpa bit 0x100)
+#define KBD_SCAN_TAB 0x0F
+
+// 1 = sesi Alt-Tab aktif (Alt ditahan setelah Alt+Tab). Sampai Alt dilepas,
+// semua Tab press/release ditelan WM — tidak bocor sebagai Tab ke app/shell.
+static int alt_tab_active = 0;
+
+// Caller MUST hold kwm_lock. Pindahkan fokus ke window aktif berikutnya
+// (z-order naik; wrap ke paling bawah) dan bawa ke depan. Tanpa fokus → ambil
+// window teratas (z tertinggi).
+static void kwm_cycle_focus_locked(void) {
+    int cur   = focused_win_id;
+    int cur_z = -1;
+    if (cur >= 0 && cur < MAX_WINDOWS && kwm_windows[cur].active)
+        cur_z = (int)kwm_windows[cur].z_index;
+
+    int target = -1;
+    int next_z = (int)next_z_index;   // > semua z window aktif
+    int lowest_z = (int)next_z_index;
+    int lowest_win = -1;
+
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!kwm_windows[i].active) continue;
+        int z = (int)kwm_windows[i].z_index;
+        if (z < lowest_z) { lowest_z = z; lowest_win = i; }
+        if (cur_z >= 0 && z > cur_z && z < next_z) { next_z = z; target = i; }
+    }
+
+    if (cur_z < 0) {
+        // Tidak ada fokus → window teratas.
+        int hi = -1;
+        for (int i = 0; i < MAX_WINDOWS; i++)
+            if (kwm_windows[i].active && (int)kwm_windows[i].z_index > hi)
+                { hi = (int)kwm_windows[i].z_index; target = i; }
+    } else if (target < 0) {
+        target = lowest_win;   // wrap: fokus kembali ke paling bawah
+    }
+
+    if (target >= 0) {
+        kwm_windows[target].z_index = next_z_index++;   // bring-to-front
+        focused_win_id = target;
+    } else {
+        focused_win_id = -1;
+    }
+}
+
+// Intercept shortcut WM dari IRQ keyboard, SEBELUM routing normal.
+// Return 1 = event dikonsumsi KWM (jangan di-route/di-TTY), 0 = lanjut normal.
+// Identitas tombol via key_id (scancode), bukan ascii — Tab bisa terbaca sama
+// dengan kombinasi lain di table shift.
+int kwm_handle_shortcut(uint8_t mods, uint8_t released, uint16_t key_id) {
+    // Alt dilepas → akhiri sesi Alt-Tab, telan event modifier.
+    if (alt_tab_active && !(mods & KEY_MOD_ALT)) {
+        alt_tab_active = 0;
+        return 1;
+    }
+    // Alt+Tab: siklus fokus pada press; press & release ditelan.
+    if ((mods & KEY_MOD_ALT) && key_id == KBD_SCAN_TAB) {
+        if (!released) {
+            int old_focus, new_focus;
+            spinlock_lock(&kwm_lock);
+            old_focus = focused_win_id;
+            kwm_cycle_focus_locked();
+            new_focus = focused_win_id;
+            spinlock_unlock(&kwm_lock);
+            // Repaint: window target naik z-order; fokus lama kehilangan tint.
+            if (new_focus >= 0) kwm_frame_dirty(new_focus);
+            if (old_focus >= 0 && old_focus != new_focus) kwm_frame_dirty(old_focus);
+            alt_tab_active = 1;
+        }
+        return 1;
+    }
+    return 0;
 }

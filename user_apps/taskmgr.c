@@ -58,7 +58,7 @@ void render(gui_window_t* win) {
 }
 
 void main(void) {
-    gui_window_t* app = gui_create_window("Task Manager", WIN_W, WIN_H);
+    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
     if (!app) { sys_exit(); return; }
 
     gui_set_render(app, render);

@@ -140,31 +140,38 @@ void keyboard_handler() {
         // tombol — stabil terhadap urutan pelepasan modifier. Pairing
         // press↔release yang pasti memakai P3 (key_id), bukan P1.
 
-        // 3. Routing Phase 5B (keputusan #6): ada window fokus → keystroke
+        // 3. Phase 5D: shortcut WM (Alt-Tab) di-intercept sebelum routing.
+        extern int kwm_handle_shortcut(uint8_t mods, uint8_t released,
+                                       uint16_t key_id);
+        int shortcut = kwm_handle_shortcut(kbd_mods, released, key_id);
+
+        // 4. Routing Phase 5B (keputusan #6): ada window fokus → keystroke
         //    HANYA menjadi event ke queue task pemilik fokus; tidak ada
         //    window fokus → HANYA masuk TTY buffer (shell). Klik area kosong
         //    mengosongkan fokus = jalan kembali ke shell.
-        int kbd_win = 0;
-        int kbd_target = kwm_route_keyboard(&kbd_win);
+        if (!shortcut) {
+            int kbd_win = 0;
+            int kbd_target = kwm_route_keyboard(&kbd_win);
 
-        if (kbd_target >= 0) {
-            // Push event untuk SEMUA tombol (printable maupun tidak).
-            //    Sengaja di luar kbd_lock dan TIDAK tergantung sisa ruang TTY
-            //    buffer — dulu event ikut mati setelah 256 keystroke saat app
-            //    GUI berjalan (buffer TTY penuh tak terbaca).
-            push_event_to(kbd_target,
-                          released ? EVENT_KEY_RELEASE : EVENT_KEY_PRESS,
-                          ascii, kbd_mods, key_id, kbd_win);
-        } else if (!released && ascii != 0 && !(kbd_mods & (KEY_MOD_CTRL | KEY_MOD_ALT))) {
-            // 4. TTY buffer: hanya teks murni. Kombinasi Ctrl/Alt dianggap
-            //    shortcut, bukan ketikan.
-            spinlock_lock(&kbd_lock);
-            uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
-            if (next_head != kbd_tail) {
-                kbd_buffer[kbd_head] = ascii;
-                kbd_head = next_head;
+            if (kbd_target >= 0) {
+                // Push event untuk SEMUA tombol (printable maupun tidak).
+                //    Sengaja di luar kbd_lock dan TIDAK tergantung sisa ruang
+                //    TTY buffer — dulu event ikut mati setelah 256 keystroke
+                //    saat app GUI berjalan (buffer TTY penuh tak terbaca).
+                push_event_to(kbd_target,
+                              released ? EVENT_KEY_RELEASE : EVENT_KEY_PRESS,
+                              ascii, kbd_mods, key_id, kbd_win);
+            } else if (!released && ascii != 0 && !(kbd_mods & (KEY_MOD_CTRL | KEY_MOD_ALT))) {
+                // 5. TTY buffer: hanya teks murni. Kombinasi Ctrl/Alt dianggap
+                //    shortcut, bukan ketikan.
+                spinlock_lock(&kbd_lock);
+                uint32_t next_head = (kbd_head + 1) % KBD_BUFFER_SIZE;
+                if (next_head != kbd_tail) {
+                    kbd_buffer[kbd_head] = ascii;
+                    kbd_head = next_head;
+                }
+                spinlock_unlock(&kbd_lock);
             }
-            spinlock_unlock(&kbd_lock);
         }
     }
     outb(0x20, 0x20); // End of Interrupt

@@ -157,8 +157,8 @@ static void render_image(gui_window_t* win, const char* filename) {
         return;
     }
 
-    // Area gambar dalam koordinat canvas absolut: di bawah titlebar + toolbar.
-    int area_y = GUI_TITLEBAR_H + TOOLBAR_H;
+    // Area gambar dalam koordinat konten (di bawah toolbar).
+    int area_y = TOOLBAR_H;
     blit_fit(win, pixels, iw, ih, 0, area_y, W, H - TOOLBAR_H);
     sys_free(pixels);
 }
@@ -197,7 +197,7 @@ static int open_from_fileman(gui_window_t* win) {
 }
 
 void main(void) {
-    gui_window_t* app = gui_create_window("Image Viewer", WIN_W, WIN_H);
+    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
     if (!app) { sys_exit(); return; }
 
     scan_images();
@@ -220,21 +220,9 @@ void main(void) {
             if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
                 if (ev.param3 != 0) app->mouse_x = ev.param3;
 
-                int wx = 0, wy = 0;
-                sys_get_window_pos(app->win_id, &wx, &wy);
-                int rfx = app->mouse_x - wx;
-                int rfy = app->mouse_y - wy;
-
-                // Close button (title bar zona kanan)
-                if (rfx >= (int)app->width - GUI_CLOSE_BTN_W &&
-                    rfx <  (int)app->width &&
-                    rfy >= 0 && rfy < GUI_TITLEBAR_H) {
-                    app->is_running = 0; break;
-                }
-
-                // Koordinat relatif ke area isi
-                int rel_x = rfx;
-                int rel_y = rfy - GUI_TITLEBAR_H;
+                // Phase 5C: koordinat sudah window-local konten.
+                int rel_x = app->mouse_x;
+                int rel_y = app->mouse_y;
 
                 if (mode == MODE_LIST) {
                     int y0 = LIST_START_Y;
@@ -253,6 +241,11 @@ void main(void) {
                         show_list(app);
                     }
                 }
+            }
+
+            // Phase 5C: WM minta tutup (tombol close titlebar)
+            if (ev.type == EVENT_WIN_CLOSE) {
+                app->is_running = 0; break;
             }
 
             if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27) {

@@ -103,27 +103,6 @@ static void draw_r(gui_window_t* win, const char* s, int rx, int y, uint32_t col
     }
 }
 
-// Gambar teks tengah dalam kotak [x, x+w]
-static void draw_c(gui_window_t* win, const char* s, int x, int y, int w, uint32_t col) {
-    int len = _str_len(s);
-    int sx = x + (w - len*8)/2;
-    gui_draw_text(win, s, sx - x + x, y + (GUI_TITLEBAR_H > 0 ? -GUI_TITLEBAR_H : 0), col);
-    // Pakai absolute coords
-    extern const unsigned char font8x16[256][16];
-    int W = (int)win->width, H = (int)win->height;
-    uint32_t solid = col | 0xFF000000;
-    for (int ci=0; ci<len; ci++) {
-        char ch = s[ci]; if (ch<0||ch>127) continue;
-        const unsigned char* bm = font8x16[(int)(unsigned char)ch];
-        for (int row=0;row<16;row++)
-            for (int bit=0;bit<8;bit++)
-                if (bm[row]&(0x80>>bit)) {
-                    int px=sx+ci*8+bit, py=y+row;
-                    if (px>=0&&px<W&&py>=0&&py<H) win->canvas[py*W+px]=solid;
-                }
-    }
-}
-
 // --- Hit test ---
 static int hit_col(int rx) {
     for (int c=0;c<BTN_COLS;c++) {
@@ -184,7 +163,6 @@ static int hover_col = -1, hover_row = -1;
 
 void calc_render(gui_window_t* win) {
     int W = (int)win->width;
-    int TH = GUI_TITLEBAR_H;
 
     // Background
     gui_draw_rect(win, 0, 0, W, (int)win->inner_h, COL_BG);
@@ -199,14 +177,14 @@ void calc_render(gui_window_t* win) {
     else if(op==3) op_str="[*]"; else if(op==4) op_str="[/]";
     if (op!=0&&!just_result) {
         char acc_s[24]; double_to_str(accumulator, acc_s, 24);
-        draw_r(win, acc_s, W-12, TH+20, 0x6688AA);
+        draw_r(win, acc_s, W-12, 20, 0x6688AA);
         gui_draw_text(win, op_str, 12, 20, 0xE94560);
     }
 
     // Angka utama (2x scale, kanan-rata)
     char disp[24]; double_to_str(input_val, disp, 24);
     int len=_str_len(disp), scale=(len>8)?1:2;
-    int total_w=len*8*scale, sx=W-12-total_w, sy=TH+60;
+    int total_w=len*8*scale, sx=W-12-total_w, sy=60;
     extern const unsigned char font8x16[256][16];
     int H = (int)win->height;
     for (int ci=0;ci<len;ci++) {
@@ -245,7 +223,7 @@ void calc_render(gui_window_t* win) {
 }
 
 void main(void) {
-    gui_window_t* app = gui_create_window("Kalkulator", WIN_W, WIN_H);
+    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
     if (!app) { sys_exit(); return; }
 
     gui_set_render(app, calc_render);
@@ -256,11 +234,9 @@ void main(void) {
             if (ev.type == EVENT_MOUSE_MOVE) {
                 app->mouse_x = ev.param1;
                 app->mouse_y = ev.param2;
-                // Hitung rel koordinat ke area isi
-                int wx=0, wy=0;
-                sys_get_window_pos(app->win_id, &wx, &wy);
-                int rel_x = app->mouse_x - wx;
-                int rel_y = app->mouse_y - wy - GUI_TITLEBAR_H;
+                // Phase 5C: koordinat window-local konten (dari KWM)
+                int rel_x = app->mouse_x;
+                int rel_y = app->mouse_y;
                 int nc = hit_col(rel_x), nr = hit_row(rel_y);
                 if (nc!=hover_col||nr!=hover_row) {
                     hover_col=nc; hover_row=nr;
@@ -270,22 +246,14 @@ void main(void) {
 
             if (ev.type == EVENT_MOUSE_CLICK && ev.param1==0 && ev.param2==1) {
                 if (ev.param3!=0) app->mouse_x=ev.param3;
-                int wx=0,wy=0;
-                sys_get_window_pos(app->win_id,&wx,&wy);
-                int rfx = app->mouse_x - wx;
-                int rfy = app->mouse_y - wy;
-                // Close button
-                if (rfx>=(int)app->width-GUI_CLOSE_BTN_W && rfx<(int)app->width
-                    && rfy>=0 && rfy<GUI_TITLEBAR_H) {
-                    app->is_running = 0; break;
-                }
-                // Klik tombol kalkulator
-                int rel_x = rfx;
-                int rel_y = rfy - GUI_TITLEBAR_H;
+                // Koordinat window-local konten
+                int rel_x = app->mouse_x;
+                int rel_y = app->mouse_y;
                 int cc=hit_col(rel_x), cr=hit_row(rel_y);
                 if (cc>=0&&cr>=0) { press(cc,cr); calc_render(app); gui_flush(app); }
             }
 
+            if (ev.type==EVENT_WIN_CLOSE) { app->is_running=0; break; }
             if (ev.type==EVENT_KEY_PRESS&&ev.param1==27) { app->is_running=0; break; }
         }
         sys_yield();

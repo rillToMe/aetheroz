@@ -64,7 +64,7 @@ void fileman_render(gui_window_t* win) {
 }
 
 void main(void) {
-    gui_window_t* app = gui_create_window("File Manager", WIN_W, WIN_H);
+    gui_window_t* app = gui_create_window(WIN_W, WIN_H);
     if (!app) { sys_exit(); return; }
 
     total_files = sys_get_file_list(files, 16);
@@ -82,21 +82,9 @@ void main(void) {
             if (ev.type == EVENT_MOUSE_CLICK && ev.param1 == 0 && ev.param2 == 1) {
                 if (ev.param3 != 0) app->mouse_x = ev.param3;
 
-                int wx = 0, wy = 0;
-                sys_get_window_pos(app->win_id, &wx, &wy);
-                int rfx = app->mouse_x - wx;
-                int rfy = app->mouse_y - wy;
-
-                // Close button (title bar zona kanan)
-                if (rfx >= (int)app->width - GUI_CLOSE_BTN_W &&
-                    rfx <  (int)app->width &&
-                    rfy >= 0 && rfy < GUI_TITLEBAR_H) {
-                    app->is_running = 0; break;
-                }
-
-                // Koordinat relatif ke area isi
-                int rel_x = rfx;
-                int rel_y = rfy - GUI_TITLEBAR_H;
+                // Phase 5C: koordinat sudah window-local konten.
+                int rel_x = app->mouse_x;
+                int rel_y = app->mouse_y;
 
                 // Klik daftar file
                 int list_x0 = 10, list_x1 = (int)app->inner_w - 10;
@@ -152,6 +140,11 @@ void main(void) {
                         }
                     }
                 }
+            }
+
+            // Phase 5C: WM minta tutup (tombol close titlebar)
+            if (ev.type == EVENT_WIN_CLOSE) {
+                app->is_running = 0; break;
             }
 
             if (ev.type == EVENT_KEY_PRESS && ev.param1 == 27) {

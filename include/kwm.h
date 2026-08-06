@@ -21,9 +21,6 @@ void kwm_destroy_windows_of(int task_id);
 // Destroy ALL KWM windows — hanya untuk path kernel/test, BUKAN syscall.
 void kwm_destroy_all_windows(void);
 
-// Posisi window terkini (setelah drag, dsb) via pointer.
-void kwm_get_window_pos(int win_id, int32_t* out_x, int32_t* out_y);
-
 // Intercept mouse event sebelum dikirim ke user-space.
 // Return: 1 = event dimakan KWM, 0 = teruskan ke app.
 int  kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
@@ -33,6 +30,13 @@ int  kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
 // out_win_id menerima nilai untuk field win_id event (slot KWM + 1;
 // 0 = tidak relevan). Return: owner task id, atau -1 jika tidak ada target.
 int  kwm_route_keyboard(int* out_win_id);                 // owner window fokus
-int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id); // owner window di bawah kursor
+// Phase 5C: out_lx/out_ly = koordinat window-local konten (jika NULL, tidak
+// ditulis). Hit-test & translasi dilakukan di sini.
+int  kwm_route_mouse(int32_t x, int32_t y, int* out_win_id,
+                     int32_t* out_lx, int32_t* out_ly);   // owner window di bawah kursor
+
+// Phase 5D: shortcut WM (Alt-Tab) di-intercept dari IRQ keyboard SEBELUM
+// routing. Return 1 = dikonsumsi KWM (jangan di-route/ke TTY), 0 = lanjut.
+int  kwm_handle_shortcut(uint8_t mods, uint8_t released, uint16_t key_id);
 
 #endif
