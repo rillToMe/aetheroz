@@ -11,6 +11,49 @@ extern const uint8_t cursor_bitmap[16][12];
 #define CURSOR_WIDTH  12
 #define CURSOR_HEIGHT 16
 
+// Phase 9 — bentuk kursor tambahan (0 = tembus, 1 = putih, 2 = hitam).
+// Ukuran 12x16 sama dengan panah → logika dirty-rect & clamp mouse_x/y
+// (fb-12/fb-16) tidak berubah. Hot point tetap (0,0) untuk semua bentuk.
+static const uint8_t g_ibeam_bitmap[16][12] = {
+    {0,1,1,1,1,1,1,1,1,1,1,0},
+    {1,2,2,2,2,2,2,2,2,2,2,1},
+    {0,1,1,1,1,1,1,1,1,1,1,0},
+    {0,0,0,0,1,1,1,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,1,1,1,0,0,0,0},
+    {0,1,1,1,1,1,1,1,1,1,1,0},
+    {1,2,2,2,2,2,2,2,2,2,2,1},
+};
+
+static const uint8_t g_hand_bitmap[16][12] = {
+    {0,0,0,0,0,0,0,1,1,0,0,0},
+    {0,0,0,0,0,1,1,2,1,0,0,0},
+    {0,0,0,0,1,1,2,2,1,0,0,0},
+    {0,0,0,1,1,2,2,2,1,0,0,0},
+    {0,0,0,1,2,2,2,2,1,0,0,0},
+    {0,0,0,1,2,2,2,2,2,1,0,0},
+    {0,0,1,1,2,2,2,2,2,1,0,0},
+    {0,1,1,2,2,2,2,2,2,1,0,0},
+    {0,1,2,2,2,2,2,2,2,1,0,0},
+    {1,1,2,2,2,2,2,2,2,2,1,0},
+    {1,2,2,2,2,2,2,2,2,2,1,0},
+    {1,2,2,2,2,2,2,2,2,2,1,0},
+    {1,2,2,2,2,2,2,2,2,2,1,0},
+    {0,1,2,2,2,2,2,2,2,1,0,0},
+    {0,1,1,2,2,2,2,2,1,1,0,0},
+    {0,0,1,1,1,1,1,1,1,0,0,0},
+};
+
+static int g_cursor_kind = 0;
+
 // Dirty-region state (Phase 3B). Every draw into base_canvas and every window
 // move marks the touched rect here; compositor_flush recomposites and presents
 // only these rects instead of the whole screen. Idle frames are near no-ops.
@@ -120,6 +163,15 @@ static void composite_windows_in_rect(Rect r, int pitch4) {
     }
 }
 
+// Phase 9 — ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
+// Dipanggil dari syscall 58 (sys_kwm_set_cursor). Menandai rect kursor
+// saat ini dirty agar komposit berikutnya memakai bentuk baru.
+void kwm_set_cursor(int kind) {
+    if (kind < 0 || kind >= 3) return;
+    g_cursor_kind = kind;
+    screen_mark_dirty(mouse_x, mouse_y, CURSOR_WIDTH, CURSOR_HEIGHT);
+}
+
 void compositor_flush() {
     if (fb_width == 0) return;
     DisplayBuffer* screen_db = gfx_screen_buffer();  // base_canvas
@@ -155,12 +207,15 @@ void compositor_flush() {
     }
     spinlock_unlock_irqrestore(&kwm_lock, kwm_flags);
 
+    const uint8_t (*cbm)[12] = g_cursor_kind == 0 ? cursor_bitmap
+                             : g_cursor_kind == 1 ? g_ibeam_bitmap
+                             : g_hand_bitmap;
     for (int y = 0; y < CURSOR_HEIGHT; y++) {
         for (int x = 0; x < CURSOR_WIDTH; x++) {
             if (cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
             uint32_t offset = ((cy + y) * pitch4) + (cx + x);
-            if (cursor_bitmap[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
-            else if (cursor_bitmap[y][x] == 2) backbuffer[offset] = 0x000000;
+            if (cbm[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
+            else if (cbm[y][x] == 2) backbuffer[offset] = 0x000000;
         }
     }
     g_last_cursor_x = cx;

@@ -113,6 +113,13 @@ int sys_spawn(char* filename) {
     return ret;
 }
 
+// sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
+int sys_kwm_set_cursor(int kind) {
+    int ret;
+    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(58), "b"((uint64_t)kind));
+    return ret;
+}
+
 // sys_exit: App selesai, kembali ke shell.
 // Kernel membebaskan RAM app dan jump langsung ke shell command loop.
 __attribute__((noreturn))

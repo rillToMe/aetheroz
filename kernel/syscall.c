@@ -49,6 +49,7 @@ extern void draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 extern void screen_mark_dirty(int32_t x, int32_t y, uint32_t width, uint32_t height);
 extern void draw_image(int start_x, int start_y, int width, int height, uint32_t* buffer);
 extern void draw_string(const char* str, uint32_t x, uint32_t y, uint32_t color);
+extern void kwm_set_cursor(int kind);  // Phase 9: bentuk kursor global
 
 #include "timer.h"  // timer_get_ticks(), timer_get_cpu_usage()
 
@@ -768,6 +769,15 @@ void syscall_handler(registers_t *r) {
             if (child_pml4 != PHYS_NULL) {
                 vmm_destroy_task_as(child_pml4);
             }
+        }
+    }
+    else if (syscall_num == 58) { // sys_kwm_set_cursor — Phase 9: bentuk kursor
+        int kind = (int)r->rbx;
+        if (kind < 0 || kind > 2) {
+            ret_val = (uint64_t)-1;
+        } else {
+            kwm_set_cursor(kind);
+            ret_val = 0;
         }
     }
 

@@ -112,6 +112,9 @@ int sys_kwm_create_window(int x, int y, uint32_t width, uint32_t height);
 void sys_kwm_update_window(int win_id, uint32_t* buffer);
 void sys_kwm_destroy_window(int win_id);
 
+// sys_kwm_set_cursor (Phase 9): ganti bentuk kursor global (0 panah / 1 I-beam / 2 tangan).
+int sys_kwm_set_cursor(int kind);
+
 void sys_shutdown(void);
 void sys_reboot(void);
 

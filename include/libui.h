@@ -107,6 +107,106 @@ ui_widget_t* ui_image_create(ui_window_t* win, const char* filename, int w, int 
 ui_widget_t* ui_vbox_create(ui_window_t* win, int spacing);
 void ui_layout_add(ui_widget_t* layout, ui_widget_t* child);
 
+// --- Phase 8: Advanced Widgets ---
+// Bar full-width di puncak window (MenuBar/Toolbar), di atas layout root.
+void ui_window_add_bar(ui_window_t* win, ui_widget_t* bar);
+
+// --- ScrollView ---
+// Wadah scrollable generik: satu widget anak, scroll roda + scrollbar.
+ui_widget_t* ui_scrollview_create(ui_window_t* win, int w, int h);
+void ui_scrollview_set_child(ui_widget_t* widget, ui_widget_t* child);
+
+// --- ListView ---
+// Daftar item vertikal (row 20px); klik memilih & memanggil change_cb.
+ui_widget_t* ui_listview_create(ui_window_t* win, int w, int h);
+void ui_listview_add_item(ui_widget_t* widget, const char* label);
+int ui_listview_selected(ui_widget_t* widget);   // index item terpilih, -1 = tak ada
+void ui_listview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- Table ---
+// Header tetap 24px + baris 20px scrollable; klik memilih & change_cb.
+ui_widget_t* ui_table_create(ui_window_t* win, int w, int h);
+void ui_table_add_column(ui_widget_t* widget, const char* title, int width);
+void ui_table_add_row(ui_widget_t* widget, const char* const* cells, int n);
+int ui_table_selected(ui_widget_t* widget);
+void ui_table_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- TreeView ---
+// Node ber-indent; marker '+'/'-' toggle expand/collapse; klik pilih node.
+ui_widget_t* ui_treeview_create(ui_window_t* win, int w, int h);
+void ui_treeview_add_node(ui_widget_t* widget, const char* label, int depth, int expanded);
+int ui_treeview_selected(ui_widget_t* widget);
+void ui_treeview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata);
+
+// --- Tab ---
+// Strip tab + panel aktif. Panel dimiliki oleh Tab (didelete saat destroy).
+ui_widget_t* ui_tab_create(ui_window_t* win, int w, int h);
+void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel);
+
+// --- MenuBar + Menu ---
+// MenuBar = bar full-width; ui_menubar_add_menu membuka dropdown (Menu).
+ui_widget_t* ui_menubar_create(ui_window_t* win);
+ui_widget_t* ui_menubar_add_menu(ui_widget_t* bar, const char* title);  // return Menu
+void ui_menu_add_item(ui_widget_t* menu, const char* label, ui_click_cb cb, void* userdata);
+
+// --- Toolbar ---
+// Bar tombol full-width di bawah MenuBar.
+ui_widget_t* ui_toolbar_create(ui_window_t* win);
+void ui_toolbar_add_button(ui_widget_t* bar, const char* label, ui_click_cb cb, void* userdata);
+
+// ============================================================
+// Phase 9 — Desktop Services (Clipboard, Dialog, Notification,
+// Drag & Drop, Cursor, Shortcut, Settings)
+// ============================================================
+
+// --- Clipboard ---
+// Buffer teks global toolkit (satu app; cross-app butuh IPC kernel —
+// sengaja di luar scope phase ini).
+void ui_clipboard_set_text(const char* text);
+const char* ui_clipboard_get_text(void);
+void ui_clipboard_clear(void);
+
+// --- Shortcut (accelerator per window) ---
+// Cek di EVENT_KEY_PRESS sebelum dispatch ke widget fokus. mods = bitmask
+// KEY_MOD_* (0 = tanpa modifier). Pencocokan: (mods event & 0x07) ==
+// (mods & 0x07) && P1 == key. CapsLock diabaikan.
+void ui_window_add_shortcut(ui_window_t* win, uint32_t mods, uint8_t key,
+                            ui_click_cb cb, void* userdata);
+
+// --- Dialog (async modal) ---
+// Overlay modal di tengah window; blok input latar. cb(index) dipanggil saat
+// tombol ditekan; index = -1 bila ditutup via ESC (batal). Non-blocking —
+// cb async, konsisten dgn gaya callback toolkit (click_cb, change_cb, menu).
+typedef void (*ui_dialog_cb)(void* userdata, int index);
+void ui_dialog_show(ui_window_t* win, const char* title, const char* text,
+                    const char* const* buttons, int n_buttons,
+                    ui_dialog_cb cb, void* userdata);
+
+// --- Notification (toast) ---
+// Kotak kecil di pojok kanan-atas window; auto-expire setelah `ms` ms
+// (sys_uptime). Klik pada toast menutupnya segera.
+void ui_window_notify(ui_window_t* win, const char* text, uint32_t ms);
+
+// --- Drag & Drop (intra-window) ---
+// Widget yang di-set draggable memulai drag saat klik-tahan (bukan klik —
+// click_cb-nya tidak dipanggil). Saat lepas di atas widget drop-target,
+// drop_cb(payload, x, y) dipanggil; lepas di tempat lain = batal.
+typedef void (*ui_drop_cb)(void* userdata, const char* payload, int x, int y);
+void ui_widget_set_draggable(ui_widget_t* widget, const char* payload);
+void ui_widget_set_drop_target(ui_widget_t* widget, ui_drop_cb cb, void* userdata);
+
+// --- Cursor ---
+// Bentuk kursor per-widget; Window mengganti kursor global kernel (syscall 58)
+// saat widget di-hover berubah. TextBox = IBEAM, Button = HAND (bawaan).
+enum { UI_CURSOR_ARROW = 0, UI_CURSOR_IBEAM = 1, UI_CURSOR_HAND = 2 };
+void ui_widget_set_cursor(ui_widget_t* widget, int kind);
+
+// --- Settings (persist theme ke KyuzenFS "settings.ui") ---
+// Simpan/muat tema window sebagai blob 6×uint32. Load menolak file yang
+// bukan theme valid (semua nol). Return 1 sukses, 0 gagal/tak ada file.
+int ui_settings_save(ui_window_t* win);
+int ui_settings_load(ui_window_t* win);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

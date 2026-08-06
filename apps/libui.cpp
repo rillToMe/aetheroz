@@ -53,6 +53,20 @@ char* _ui_strdup(const char* s) {
     return d;
 }
 
+// Clipboard — buffer teks global toolkit (Phase 9). Cross-app butuh IPC
+// kernel (shared memory) — sengaja di luar scope phase ini.
+// ponytail: satu buffer global, bukan per-app/per-window; upgrade bila
+// multi-app clipboard dibutuhkan (phase kernel + protokol).
+static char* g_clipboard = 0;
+void clipboard_set(const char* s) {
+    char* n = _ui_strdup(s ? s : "");
+    if (!n) return;
+    _ui_free(g_clipboard);
+    g_clipboard = n;
+}
+const char* clipboard_get() { return g_clipboard ? g_clipboard : ""; }
+void clipboard_clear() { _ui_free(g_clipboard); g_clipboard = 0; }
+
 } // namespace
 
 // C++ operator new/delete (global scope, bukan namespace) -> sys_alloc/sys_free.
@@ -84,22 +98,60 @@ class Painter {
 public:
     gui_window_t* win;
     const Theme& theme;
-    Painter(gui_window_t* w, const Theme& t) : win(w), theme(t) {}
+    // Scissor rect (Phase 8). Aktif bila clip_on; semua primitif dipotong.
+    bool clip_on;
+    int clip_x, clip_y, clip_w, clip_h;
+    Painter(gui_window_t* w, const Theme& t)
+        : win(w), theme(t), clip_on(false), clip_x(0), clip_y(0),
+          clip_w(0), clip_h(0) {}
+    void set_clip(int x, int y, int w, int h) {
+        clip_on = true; clip_x = x; clip_y = y; clip_w = w; clip_h = h;
+    }
+    void clear_clip() { clip_on = false; }
     void rect(int x, int y, int w, int h, uint32_t c) {
+        if (clip_on) {
+            int x2 = x + w, y2 = y + h;
+            int cx2 = clip_x + clip_w, cy2 = clip_y + clip_h;
+            if (x < clip_x) x = clip_x;
+            if (y < clip_y) y = clip_y;
+            if (x2 > cx2) x2 = cx2;
+            if (y2 > cy2) y2 = cy2;
+            w = x2 - x; h = y2 - y;
+            if (w <= 0 || h <= 0) return;
+        }
         gui_draw_rect(win, x, y, w, h, c | 0xFF000000);
     }
     void text(const char* s, int x, int y, uint32_t c) {
-        gui_draw_text(win, s, x, y, c | 0xFF000000);
+        if (!clip_on) { gui_draw_text(win, s, x, y, c | 0xFF000000); return; }
+        // Jalur ter-clip: gambar per-sel 8x16, lewati sel di luar scissor.
+        int cx2 = clip_x + clip_w, cy2 = clip_y + clip_h;
+        int cy = y;
+        for (int i = 0; s[i] && i < 512; i++) {
+            if (s[i] == '\n') { cy += 16; continue; }
+            int cx = x + i * 8;
+            if (cx + 8 > clip_x && cx < cx2 && cy + 16 > clip_y && cy < cy2)
+                gui_draw_char(win, s[i], cx, cy, c | 0xFF000000);
+        }
     }
     // Blit PNG XRGB8888 (px = iw×ih) diskalakan nearest-neighbor ke rect
     // (x,y,w,h). Menulis win->canvas langsung (libgui tak punya draw-image) —
-    // pola yang sama dengan blit_fit viewer.c. ponytail: tanpa clip, rect
-    // widget selalu di dalam window (layout root bermargin 8px).
+    // pola yang sama dengan blit_fit viewer.c. Loop dijepit ke scissor (bila
+    // aktif) agar isi yang digeser scroll tidak bocor keluar viewport.
     void image(int x, int y, int w, int h, const uint32_t* px, int iw, int ih) {
         int cw = (int)win->width;
-        for (int py = 0; py < h; py++) {
+        int py0 = 0, py1 = h, q0 = 0, q1 = w;
+        if (clip_on) {
+            if (y < clip_y) py0 = clip_y - y;
+            if (x < clip_x) q0 = clip_x - x;
+            int t;
+            t = (y + h) - (clip_y + clip_h); if (t > 0) py1 -= t;
+            t = (x + w) - (clip_x + clip_w); if (t > 0) q1 -= t;
+            if (py0 < 0) py0 = 0; if (q0 < 0) q0 = 0;
+            if (py1 > h) py1 = h; if (q1 > w) q1 = w;
+        }
+        for (int py = py0; py < py1; py++) {
             int sy = py * ih / h;
-            for (int q = 0; q < w; q++) {
+            for (int q = q0; q < q1; q++) {
                 int sx = q * iw / w;
                 win->canvas[(y + py) * cw + x + q] = px[sy * iw + sx];
             }
@@ -117,10 +169,19 @@ public:
     bool has_focus;          // diset Window saat fokus keyboard intra-window
     ui_click_cb click_cb;
     void* userdata;
+    // Phase 9: Drag & Drop + bentuk kursor per-widget.
+    bool draggable;
+    char* dnd_payload;
+    bool drop_target;
+    ui_drop_cb drop_cb;
+    void* drop_data;
+    int cursor_kind;
 
     Widget() : x(0), y(0), w(0), h(0), visible(true), has_focus(false),
-              click_cb(0), userdata(0) {}
-    virtual ~Widget() {}
+              click_cb(0), userdata(0), draggable(false), dnd_payload(0),
+              drop_target(false), drop_cb(0), drop_data(0),
+              cursor_kind(UI_CURSOR_ARROW) {}
+    virtual ~Widget() { _ui_free(dnd_payload); }
     virtual void draw(Painter& p) = 0;
     virtual void set_hover(bool on) { (void)on; }
     virtual void set_focus(bool on) { has_focus = on; }
@@ -143,7 +204,30 @@ public:
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) {
         (void)ascii; (void)scancode; (void)mods;
     }
+    // Scroll roda (Phase 8): dipanggil saat EVENT_SCROLL lewat widget yang
+    // sedang di-hover. delta = ±1 notch (+1 = roda ke bawah). Return true = redraw.
+    virtual bool on_scroll(int delta) { (void)delta; return false; }
+    // Hover sub-elemen (Phase 8): set_hover(bool) tidak membawa koordinat,
+    // jadi widget ber-isi (Menu, MenuBar, Toolbar, ListView, Table, TreeView)
+    // menimpa ini untuk melacak elemen mana yang di-hover. Return true = redraw.
+    virtual bool track_hover(int mx, int my) { (void)mx; (void)my; return false; }
+    // Bar menu (MenuBar) butuh perlakuan khusus di Window::run saat popup
+    // terbuka (switch/close), beda dari bar lain (Toolbar) yang cukup close.
+    virtual bool is_menu_bar() { return false; }
     void set_click(ui_click_cb cb, void* u) { click_cb = cb; userdata = u; }
+    // Phase 9: DnD. Widget draggable memulai drag saat klik-tahan; click_cb
+    // tidak dipanggil (threshold-drag untuk seret-langsung adalah masa depan).
+    void set_draggable(const char* payload) {
+        char* n = _ui_strdup(payload ? payload : "");
+        if (!n) return;
+        _ui_free(dnd_payload);
+        dnd_payload = n;
+        draggable = true;
+    }
+    void set_drop_target(ui_drop_cb cb, void* u) {
+        drop_target = true; drop_cb = cb; drop_data = u;
+    }
+    void set_cursor(int kind) { cursor_kind = kind; }
 };
 
 // ------------------------------------------------------------
@@ -171,7 +255,10 @@ class Button : public Widget {
 public:
     char* text;
     bool hover;
-    Button(const char* t) : text(_ui_strdup(t)), hover(false) { w = _ui_strlen(text) * 8 + 16; h = 24; }
+    Button(const char* t) : text(_ui_strdup(t)), hover(false) {
+        w = _ui_strlen(text) * 8 + 16; h = 24;
+        cursor_kind = UI_CURSOR_HAND;
+    }
     virtual ~Button() { _ui_free(text); }
     virtual void draw(Painter& p) override {
         p.rect(x, y, w, h, hover ? p.theme.button_hover : p.theme.button_bg);
@@ -194,6 +281,7 @@ public:
     TextBox(int width) : cur(0), enter_cb(0), enter_data(0) {
         w = width; h = 24;
         text[0] = '\0';
+        cursor_kind = UI_CURSOR_IBEAM;
     }
     void set_text(const char* t) {
         int n = 0; while (t[n] && n < MAX_TEXT - 1) n++;
@@ -213,7 +301,23 @@ public:
         if (has_focus) p.rect(x + 4 + cur * 8, y + 4, 1, 16, p.theme.accent);
     }
     virtual void on_key(uint8_t ascii, uint32_t scancode, uint32_t mods) override {
-        (void)mods;
+        // Phase 9: Ctrl+C/X/V = clipboard (salurkan via P1 dasar 'c'/'x'/'v',
+        // plus control-code variant 0x03/0x18/0x16 bila driver memetakannya).
+        if (mods & KEY_MOD_CTRL) {
+            switch (ascii) {
+            case 'c': case 'C': case 0x03: clipboard_set(text); break;
+            case 'x': case 'X': case 0x18:
+                clipboard_set(text); text[0] = '\0'; cur = 0; break;
+            case 'v': case 'V': case 0x16: {
+                const char* p = clipboard_get();
+                for (int i = 0; p[i] && cur < MAX_TEXT - 1; i++)
+                    text[cur++] = p[i];
+                text[cur] = '\0';
+            } break;
+            default: break;    // Ctrl+lain = shortcut app, bukan teks
+            }
+            return;
+        }
         if (ascii >= 32) {                       // printable → sisipkan
             if (cur < MAX_TEXT - 1) { text[cur++] = (char)ascii; text[cur] = '\0'; }
         } else if (scancode == 0x0E) {           // Backspace
@@ -388,7 +492,684 @@ public:
             children[i]->y = cy;
             cy += children[i]->h + spacing;
         }
+        h = cy - y;   // ukuran diri = isi; dipakai ScrollView untuk hitung scroll
     }
+};
+
+// ------------------------------------------------------------
+// Scrollable — basis widget yang bisa di-scroll roda + scrollbar.
+// ScrollView/ListView/Table/TreeView menimpa on_content_click dan
+// memotong draw()-nya ke area konten. Ponytail: scrollbar thumb
+// proporsional sederhana (bukan hitung drag-ratio penuh).
+// ------------------------------------------------------------
+class Window;   // fwd: Menu/MenuBar pegang Window* untuk popup
+
+class Scrollable : public Widget {
+public:
+    enum { BAR_W = 6, ROW_H = 20 };
+    int scroll, scroll_max;
+    bool bar_drag;
+    int bar_grab_y, bar_grab_scroll;
+
+    Scrollable() : scroll(0), scroll_max(0), bar_drag(false),
+                   bar_grab_y(0), bar_grab_scroll(0) {}
+
+    void set_scroll_view(int content_h, int view_h) {
+        scroll_max = content_h - view_h;
+        if (scroll_max < 0) scroll_max = 0;
+        if (scroll > scroll_max) scroll = scroll_max;
+    }
+    void set_scroll_max(int content_h) { set_scroll_view(content_h, h - BAR_W); }
+    bool bar_hit(int mx) const { return mx >= x + w - BAR_W && mx < x + w; }
+    // Lebar konten = tanpa scrollbar bila bar tampil, penuh bila tidak.
+    int content_w() const { return scroll_max > 0 ? w - BAR_W : w; }
+
+    virtual bool on_scroll(int delta) override {
+        int old = scroll;
+        scroll += delta * ROW_H;
+        if (scroll < 0) scroll = 0;
+        if (scroll > scroll_max) scroll = scroll_max;
+        return scroll != old;
+    }
+    virtual void on_click(int mx, int my) override {
+        if (bar_hit(mx)) {
+            bar_drag = true;
+            bar_grab_y = my;
+            bar_grab_scroll = scroll;
+            int th = bar_thumb_h();
+            int range = h - th;
+            if (range > 0) scroll = (my - y - th / 2) * scroll_max / range;
+            if (scroll < 0) scroll = 0;
+            if (scroll > scroll_max) scroll = scroll_max;
+        } else {
+            on_content_click(mx, my);
+        }
+    }
+    virtual bool on_drag(int mx, int my) override {
+        (void)mx;
+        if (!bar_drag) return false;
+        int th = bar_thumb_h();
+        int range = h - th;
+        if (range <= 0) return true;
+        scroll = bar_grab_scroll + (my - bar_grab_y) * scroll_max / range;
+        if (scroll < 0) scroll = 0;
+        if (scroll > scroll_max) scroll = scroll_max;
+        return true;
+    }
+    virtual void on_release() override { bar_drag = false; }
+    // Hook klik area konten (subclass). Default fire click_cb.
+    virtual void on_content_click(int mx, int my) {
+        (void)mx; (void)my;
+        if (click_cb) click_cb(userdata);
+    }
+    int bar_thumb_h() const {
+        int content_h = scroll_max + (h - BAR_W);
+        if (content_h <= 0) return h;
+        int th = (h - BAR_W) * (h - BAR_W) / content_h;
+        if (th < 8) th = 8;
+        return th;
+    }
+    void draw_bar(Painter& p) {
+        if (scroll_max <= 0) return;
+        int bx = x + w - BAR_W;
+        p.rect(bx, y, BAR_W, h, p.theme.button_bg);
+        int th = bar_thumb_h();
+        int range = h - th;
+        int ty = range > 0 ? y + scroll * range / scroll_max : y;
+        p.rect(bx, ty, BAR_W, th, p.theme.accent);
+    }
+};
+
+// ------------------------------------------------------------
+// ScrollView — wadah scrollable generik; konten = satu widget anak.
+// ------------------------------------------------------------
+class ScrollView : public Scrollable {
+public:
+    Widget* child;
+    ScrollView(int width, int height) : child(0) {
+        w = width; h = height;
+        set_scroll_max(0);
+    }
+    virtual ~ScrollView() { if (child) delete child; }
+    void set_child(Widget* c) {
+        child = c;
+        set_scroll_max(c ? c->h : 0);
+    }
+    virtual void on_content_click(int mx, int my) override {
+        if (!child) { if (click_cb) click_cb(userdata); return; }
+        child->x = x; child->y = y - scroll;
+        Widget* c = child->pick(mx, my);
+        if (c) c->on_click(mx, my);
+    }
+    virtual void draw(Painter& p) override {
+        if (!child) { p.rect(x, y, w, h, p.theme.button_bg); draw_bar(p); return; }
+        child->x = x; child->y = y - scroll;
+        // draw pertama hanya untuk arrange (VBox menghitung h-nya di sini);
+        // keduanya ter-clip viewport agar isi yang lebih panjang dari view
+        // tidak bocor keluar. Lalu hitung ulang scroll_max (bar mungkin
+        // muncul → konten menyempit) dan gambar ulang dengan lebar benar.
+        p.set_clip(x, y, w, h);
+        child->draw(p);
+        set_scroll_max(child->h);
+        p.set_clip(x, y, content_w(), h);
+        child->draw(p);
+        p.clear_clip();
+        draw_bar(p);
+    }
+};
+
+// ------------------------------------------------------------
+// ListView — daftar item vertikal, row 20px, pilih + scroll.
+// ------------------------------------------------------------
+class ListView : public Scrollable {
+public:
+    enum { MAX_ITEMS = 32 };
+    char* items[MAX_ITEMS];
+    int n;
+    int selected, hover_row;
+    ui_click_cb change_cb;
+    void* change_data;
+
+    ListView(int width, int height) : n(0), selected(-1), hover_row(-1),
+                                      change_cb(0), change_data(0) {
+        w = width; h = height;
+        for (int i = 0; i < MAX_ITEMS; i++) items[i] = 0;
+        set_scroll_max(0);
+    }
+    virtual ~ListView() { for (int i = 0; i < n; i++) _ui_free(items[i]); }
+    void add_item(const char* label) {
+        if (n >= MAX_ITEMS) return;
+        items[n++] = _ui_strdup(label);
+        set_scroll_max(n * ROW_H);
+    }
+    void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
+    virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
+    virtual bool track_hover(int mx, int my) override {
+        (void)mx;
+        int r = -1;
+        if (my >= y && my < y + h) {
+            r = (scroll + my - y) / ROW_H;
+            if (r < 0 || r >= n) r = -1;
+        }
+        if (r == hover_row) return false;
+        hover_row = r;
+        return true;
+    }
+    virtual void on_content_click(int mx, int my) override {
+        (void)mx;
+        int r = (scroll + my - y) / ROW_H;
+        if (r >= 0 && r < n) {
+            selected = r;
+            if (change_cb) change_cb(change_data);
+        }
+    }
+    virtual void draw(Painter& p) override {
+        int cw = content_w();
+        p.set_clip(x, y, cw, h);
+        for (int i = 0; i < n; i++) {
+            int ry = y + i * ROW_H - scroll;
+            if (ry + ROW_H <= y || ry >= y + h) continue;
+            if (i == selected) p.rect(x, ry, cw, ROW_H, p.theme.button_bg);
+            else if (i == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.button_hover);
+            p.text(items[i], x + 4, ry + 2, p.theme.fg);
+        }
+        p.clear_clip();
+        draw_bar(p);
+    }
+};
+
+// ------------------------------------------------------------
+// Table — header tetap 24px + baris 20px yang bisa di-scroll.
+// Setiap sel teks dipotong ke kolomnya (per-sel clip).
+// ------------------------------------------------------------
+class Table : public Scrollable {
+public:
+    enum { HEADER_H = 24, MAX_COLS = 8, MAX_ROWS = 64 };
+    char* col[MAX_COLS];
+    int col_w[MAX_COLS];
+    int ncols;
+    char* cells[MAX_ROWS][MAX_COLS];
+    int nrows;
+    int selected, hover_row;
+    ui_click_cb change_cb;
+    void* change_data;
+
+    Table(int width, int height) : ncols(0), nrows(0), selected(-1),
+                                   hover_row(-1), change_cb(0), change_data(0) {
+        w = width; h = height;
+        for (int c = 0; c < MAX_COLS; c++) col[c] = 0;
+        for (int r = 0; r < MAX_ROWS; r++)
+            for (int c = 0; c < MAX_COLS; c++) cells[r][c] = 0;
+        set_scroll_view(0, h - HEADER_H - BAR_W);
+    }
+    virtual ~Table() {
+        for (int c = 0; c < ncols; c++) _ui_free(col[c]);
+        for (int r = 0; r < nrows; r++)
+            for (int c = 0; c < ncols; c++) _ui_free(cells[r][c]);
+    }
+    void add_column(const char* title, int width) {
+        if (ncols >= MAX_COLS) return;
+        col[ncols] = _ui_strdup(title);
+        col_w[ncols] = width;
+        ncols++;
+    }
+    void add_row(const char* const* vals, int n) {
+        if (nrows >= MAX_ROWS || n > MAX_COLS) return;
+        for (int c = 0; c < n; c++) cells[nrows][c] = _ui_strdup(vals[c]);
+        for (int c = n; c < ncols; c++) cells[nrows][c] = 0;
+        nrows++;
+        set_scroll_view(nrows * ROW_H, h - HEADER_H - BAR_W);
+    }
+    void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
+    virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
+    virtual bool track_hover(int mx, int my) override {
+        (void)mx;
+        int r = -1;
+        if (my >= y + HEADER_H && my < y + h) {
+            r = (scroll + my - (y + HEADER_H)) / ROW_H;
+            if (r < 0 || r >= nrows) r = -1;
+        }
+        if (r == hover_row) return false;
+        hover_row = r;
+        return true;
+    }
+    virtual void on_content_click(int mx, int my) override {
+        (void)mx;
+        int r = (scroll + my - (y + HEADER_H)) / ROW_H;
+        if (r >= 0 && r < nrows) {
+            selected = r;
+            if (change_cb) change_cb(change_data);
+        }
+    }
+    virtual void draw(Painter& p) override {
+        int cw = content_w();
+        // header tetap
+        p.rect(x, y, cw, HEADER_H, p.theme.button_bg);
+        int cx = x + 2;
+        for (int c = 0; c < ncols; c++) {
+            p.text(col[c], cx, y + 4, p.theme.button_fg);
+            cx += col_w[c];
+        }
+        p.rect(x, y + HEADER_H - 1, cw, 1, p.theme.fg);
+        // baris (scroll), setiap sel dipotong ke kolomnya
+        p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
+        for (int r = 0; r < nrows; r++) {
+            int ry = y + HEADER_H + r * ROW_H - scroll;
+            if (ry + ROW_H <= y + HEADER_H || ry >= y + h) continue;
+            if (r == selected) p.rect(x, ry, cw, ROW_H, p.theme.button_bg);
+            else if (r == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.button_hover);
+            int cxx = x + 2;
+            for (int c = 0; c < ncols; c++) {
+                p.set_clip(cxx, y + HEADER_H, col_w[c] - 2, h - HEADER_H);
+                if (cells[r][c]) p.text(cells[r][c], cxx, ry + 2, p.theme.fg);
+                p.set_clip(x, y + HEADER_H, cw, h - HEADER_H);
+                cxx += col_w[c];
+            }
+        }
+        p.clear_clip();
+        draw_bar(p);
+    }
+};
+
+// ------------------------------------------------------------
+// TreeView — node ber-indent depth*12, marker '+'/'-' untuk
+// expand/collapse (font 8x16 tanpa segitiga), pilih node.
+// ------------------------------------------------------------
+class TreeView : public Scrollable {
+public:
+    struct Node { char* label; int depth; bool expanded; };
+    enum { MAX_NODES = 32 };
+    Node nodes[MAX_NODES];
+    int n;
+    int selected, hover_row;
+    ui_click_cb change_cb;
+    void* change_data;
+
+    TreeView(int width, int height) : n(0), selected(-1), hover_row(-1),
+                                      change_cb(0), change_data(0) {
+        w = width; h = height;
+        set_scroll_max(0);
+    }
+    virtual ~TreeView() { for (int i = 0; i < n; i++) _ui_free(nodes[i].label); }
+    void add_node(const char* label, int depth, int expanded) {
+        if (n >= MAX_NODES) return;
+        nodes[n].label = _ui_strdup(label);
+        nodes[n].depth = depth;
+        nodes[n].expanded = expanded;
+        n++;
+        recompute_scroll();
+    }
+    void set_change(ui_click_cb cb, void* u) { change_cb = cb; change_data = u; }
+    virtual void set_hover(bool on) override { if (!on) hover_row = -1; }
+
+    // Node i terlihat bila ancestor terdekatnya (node j<i depth lebih kecil)
+    // sedang expanded. Flat pre-order.
+    bool visible_node(int i) const {
+        for (int j = i - 1; j >= 0; j--)
+            if (nodes[j].depth < nodes[i].depth) return nodes[j].expanded;
+        return true;
+    }
+    bool has_children(int i) const {
+        for (int j = i + 1; j < n; j++) {
+            if (nodes[j].depth <= nodes[i].depth) return false;
+            if (nodes[j].depth == nodes[i].depth + 1) return true;
+        }
+        return false;
+    }
+    void recompute_scroll() {
+        int vis = 0;
+        for (int i = 0; i < n; i++) if (visible_node(i)) vis++;
+        set_scroll_max(vis * ROW_H);
+    }
+    // Map vis_row (baris tampil ke-N) -> index node, atau -1.
+    int node_at_vis(int vis_row) const {
+        int v = 0;
+        for (int i = 0; i < n; i++) {
+            if (!visible_node(i)) continue;
+            if (v == vis_row) return i;
+            v++;
+        }
+        return -1;
+    }
+    virtual bool track_hover(int mx, int my) override {
+        (void)mx;
+        int r = -1;
+        if (my >= y && my < y + h)
+            r = node_at_vis((scroll + my - y) / ROW_H);
+        if (r == hover_row) return false;
+        hover_row = r;
+        return true;
+    }
+    virtual void on_content_click(int mx, int my) override {
+        int idx = node_at_vis((scroll + my - y) / ROW_H);
+        if (idx < 0) return;
+        int ind = x + nodes[idx].depth * 12;
+        if (mx >= ind && mx < ind + 12) {
+            nodes[idx].expanded = !nodes[idx].expanded;
+            recompute_scroll();
+        } else if (mx >= ind + 12) {
+            selected = idx;
+            if (change_cb) change_cb(change_data);
+        }
+    }
+    virtual void draw(Painter& p) override {
+        int cw = content_w();
+        p.set_clip(x, y, cw, h);
+        int vis = 0;
+        for (int i = 0; i < n; i++) {
+            if (!visible_node(i)) continue;
+            int ry = y + vis * ROW_H - scroll;
+            vis++;
+            if (ry + ROW_H <= y || ry >= y + h) continue;
+            if (i == selected) p.rect(x, ry, cw, ROW_H, p.theme.button_bg);
+            else if (i == hover_row) p.rect(x, ry, cw, ROW_H, p.theme.button_hover);
+            int ind = x + nodes[i].depth * 12;
+            if (has_children(i))
+                p.text(nodes[i].expanded ? "-" : "+", ind, ry + 2, p.theme.accent);
+            p.text(nodes[i].label, ind + 12, ry + 2, p.theme.fg);
+        }
+        p.clear_clip();
+        draw_bar(p);
+    }
+};
+
+// ------------------------------------------------------------
+// Tab — strip tab 26px + panel aktif. Panel dimiliki (didelete)
+// oleh Tab. Area panel = (y+26, w × h-26), di-clip.
+// ------------------------------------------------------------
+class Tab : public Widget {
+public:
+    enum { MAX_TABS = 8, STRIP_H = 26 };
+    char* titles[MAX_TABS];
+    Widget* panels[MAX_TABS];
+    int n, active;
+
+    Tab(int width, int height) : n(0), active(0) {
+        w = width; h = height;
+        for (int i = 0; i < MAX_TABS; i++) { titles[i] = 0; panels[i] = 0; }
+    }
+    virtual ~Tab() {
+        for (int i = 0; i < n; i++) { _ui_free(titles[i]); delete panels[i]; }
+    }
+    void add(const char* title, Widget* panel) {
+        if (n >= MAX_TABS) return;
+        titles[n] = _ui_strdup(title);
+        panels[n] = panel;
+        n++;
+    }
+    int title_at(int mx) const {
+        if (n == 0 || mx < x || mx >= x + w) return -1;
+        int tw = w / n;
+        int i = (mx - x) / tw;
+        return (i >= 0 && i < n) ? i : -1;
+    }
+    virtual Widget* pick(int mx, int my) override {
+        if (!visible) return 0;
+        if (my >= y && my < y + STRIP_H)
+            return (mx >= x && mx < x + w) ? this : 0;
+        if (active < n && panels[active])
+            return panels[active]->pick(mx, my);
+        return 0;
+    }
+    virtual void on_click(int mx, int my) override {
+        if (my >= y && my < y + STRIP_H) {
+            int i = title_at(mx);
+            if (i >= 0) active = i;
+            return;
+        }
+        if (active < n && panels[active]) {
+            Widget* c = panels[active]->pick(mx, my);
+            if (c) c->on_click(mx, my);
+        }
+    }
+    virtual void draw(Painter& p) override {
+        int tw = n ? w / n : w;
+        for (int i = 0; i < n; i++) {
+            int tx = x + i * tw;
+            bool act = (i == active);
+            p.rect(tx, y, tw, STRIP_H, act ? p.theme.button_bg : p.theme.bg);
+            if (act) p.rect(tx, y + STRIP_H - 2, tw, 2, p.theme.accent);
+            int tl = _ui_strlen(titles[i]) * 8;
+            p.text(titles[i], tx + (tw - tl) / 2, y + (STRIP_H - 16) / 2, p.theme.fg);
+        }
+        if (active < n && panels[active]) {
+            Widget* pl = panels[active];
+            pl->x = x; pl->y = y + STRIP_H; pl->w = w; pl->h = h - STRIP_H;
+            p.set_clip(x, y + STRIP_H, w, h - STRIP_H);
+            pl->draw(p);
+            p.clear_clip();
+        }
+    }
+};
+
+// ------------------------------------------------------------
+// Toolbar — bar tombol full-width (ditaruh via Window::add_bar).
+// ------------------------------------------------------------
+class Toolbar : public Widget {
+public:
+    struct Btn { char* label; ui_click_cb cb; void* data; };
+    enum { MAX_BTNS = 16 };
+    Btn btns[MAX_BTNS];
+    int n, hover_idx;
+
+    Toolbar(int width) : n(0), hover_idx(-1) {
+        w = width; h = 28;
+    }
+    virtual ~Toolbar() { for (int i = 0; i < n; i++) _ui_free(btns[i].label); }
+    void add_button(const char* label, ui_click_cb cb, void* u) {
+        if (n >= MAX_BTNS) return;
+        btns[n].label = _ui_strdup(label);
+        btns[n].cb = cb; btns[n].data = u;
+        n++;
+    }
+    virtual void set_hover(bool on) override { if (!on) hover_idx = -1; }
+    virtual bool track_hover(int mx, int my) override {
+        int i = -1;
+        if (my >= y && my < y + h && n) {
+            i = (mx - x) / (w / n);
+            if (i < 0 || i >= n) i = -1;
+        }
+        if (i == hover_idx) return false;
+        hover_idx = i;
+        return true;
+    }
+    virtual void on_click(int mx, int my) override {
+        if (!n || my < y || my >= y + h) return;
+        int i = (mx - x) / (w / n);
+        if (i >= 0 && i < n && btns[i].cb) btns[i].cb(btns[i].data);
+    }
+    virtual void draw(Painter& p) override {
+        int bw = n ? w / n : w;
+        p.rect(x, y, w, h, p.theme.bg);
+        for (int i = 0; i < n; i++) {
+            int bx = x + i * bw;
+            if (i == hover_idx) p.rect(bx + 2, y + 3, bw - 4, h - 6, p.theme.button_hover);
+            int bl = _ui_strlen(btns[i].label) * 8;
+            p.text(btns[i].label, bx + (bw - bl) / 2, y + (h - 16) / 2, p.theme.fg);
+        }
+    }
+};
+
+// ------------------------------------------------------------
+// Menu (popup) + MenuBar (bar title full-width).
+// Menu::on_click & MenuBar::on_click/draw butuh Window lengkap
+// (popup handling) → didefinisikan setelah class Window.
+// ------------------------------------------------------------
+// ------------------------------------------------------------
+// Dialog — overlay modal tengah-window (Phase 9). Non-blocking: cb(index)
+// dipanggil saat tombol ditekan, index = -1 bila dibatalkan (ESC).
+// Klik di luar dialog diabaikan (modal memblok input latar).
+// ------------------------------------------------------------
+class Dialog : public Widget {
+public:
+    enum { MAX_BTNS = 4 };
+    char* title;
+    char* text;
+    char* btns[MAX_BTNS];
+    int n_btns;
+    int hover_btn;
+    ui_dialog_cb cb;
+    void* data;
+    Window* win;
+
+    Dialog(Window* w, const char* t, const char* tx,
+           const char* const* b, int n, ui_dialog_cb c, void* d)
+        : title(_ui_strdup(t ? t : "")), text(_ui_strdup(tx ? tx : "")),
+          n_btns(n < MAX_BTNS ? n : MAX_BTNS), hover_btn(-1),
+          cb(c), data(d), win(w) {
+        for (int i = 0; i < MAX_BTNS; i++) btns[i] = 0;
+        for (int i = 0; i < n_btns; i++) btns[i] = _ui_strdup(b[i] ? b[i] : "");
+        // Ukuran dari isi: elemen terpanjang, min 220px.
+        int nlines = 1;
+        for (int i = 0; text[i]; i++) if (text[i] == '\n') nlines++;
+        int wid = 220;
+        int cand = _ui_strlen(title) * 8 + 24;
+        if (cand > wid) wid = cand;
+        int start = 0, i = 0;
+        for (;;) {
+            if (text[i] == '\n' || text[i] == '\0') {
+                int len = (i - start) * 8 + 24;
+                if (len > wid) wid = len;
+                if (text[i] == '\0') break;
+                start = i + 1;
+            }
+            i++;
+        }
+        int bw = 0;
+        for (int i = 0; i < n_btns; i++) bw += btn_w(i) + 6;
+        if (bw - 6 + 24 > wid) wid = bw - 6 + 24;
+        this->w = wid;
+        this->h = 12 + 16 + 4 + nlines * 16 + 12 + 28 + 12;
+    }
+    virtual ~Dialog() {
+        _ui_free(title); _ui_free(text);
+        for (int i = 0; i < MAX_BTNS; i++) _ui_free(btns[i]);
+    }
+    int btn_row_y() const { return y + h - 40; }
+    int btn_total() const {
+        int t = 0;
+        for (int i = 0; i < n_btns; i++) t += btn_w(i) + 6;
+        return t - 6;
+    }
+    int btn_x(int i) const {
+        int bx = x + (w - btn_total()) / 2;
+        for (int j = 0; j < i; j++) bx += btn_w(j) + 6;
+        return bx;
+    }
+    int btn_w(int i) const { return _ui_strlen(btns[i]) * 8 + 20; }
+    int hit_button(int mx, int my) const {
+        if (my < btn_row_y() || my >= btn_row_y() + 28) return -1;
+        for (int i = 0; i < n_btns; i++)
+            if (mx >= btn_x(i) && mx < btn_x(i) + btn_w(i)) return i;
+        return -1;
+    }
+    virtual void draw(Painter& p) override {
+        p.rect(x, y, w, h, p.theme.button_bg);
+        p.rect(x, y, w, 1, p.theme.fg);
+        p.rect(x, y + h - 1, w, 1, p.theme.fg);
+        p.rect(x, y, 1, h, p.theme.fg);
+        p.rect(x + w - 1, y, 1, h, p.theme.fg);
+        p.text(title, x + 12, y + 12, p.theme.button_fg);
+        p.text(text, x + 12, y + 32, p.theme.fg);
+        int by = btn_row_y();
+        for (int i = 0; i < n_btns; i++) {
+            int bx = btn_x(i);
+            p.rect(bx, by, btn_w(i), 28,
+                   i == hover_btn ? p.theme.button_hover : p.theme.bg);
+            p.text(btns[i], bx + 10, by + 6, p.theme.fg);
+        }
+    }
+    virtual bool track_hover(int mx, int my) override {
+        int i = hit_button(mx, my);
+        if (i == hover_btn) return false;
+        hover_btn = i;
+        return true;
+    }
+    // out-of-class: butuh Window lengkap (close_dialog)
+    virtual void on_click(int mx, int my) override;
+};
+
+class Menu : public Widget {
+public:
+    struct Item { char* label; ui_click_cb cb; void* data; };
+    enum { MAX_ITEMS = 16 };
+    Item items[MAX_ITEMS];
+    int n, hover_idx;
+    Window* win;
+
+    Menu(Window* w) : n(0), hover_idx(-1), win(w) {
+        this->w = 140; h = 4;
+    }
+    virtual ~Menu() { for (int i = 0; i < n; i++) _ui_free(items[i].label); }
+    void add_item(const char* label, ui_click_cb cb, void* u) {
+        if (n >= MAX_ITEMS) return;
+        items[n].label = _ui_strdup(label);
+        items[n].cb = cb; items[n].data = u;
+        n++;
+        h = n * 20 + 4;
+    }
+    virtual void set_hover(bool on) override { if (!on) hover_idx = -1; }
+    virtual bool track_hover(int mx, int my) override {
+        int i = (my - y - 2) / 20;
+        if (i < 0 || i >= n || mx < x || mx >= x + w) i = -1;
+        if (i == hover_idx) return false;
+        hover_idx = i;
+        return true;
+    }
+    virtual void draw(Painter& p) override {
+        p.rect(x, y, w, h, p.theme.button_bg);
+        p.rect(x, y, w, 1, p.theme.fg);
+        p.rect(x, y + h - 1, w, 1, p.theme.fg);
+        p.rect(x, y, 1, h, p.theme.fg);
+        p.rect(x + w - 1, y, 1, h, p.theme.fg);
+        for (int i = 0; i < n; i++) {
+            if (i == hover_idx) p.rect(x + 1, y + 2 + i * 20, w - 2, 20, p.theme.button_hover);
+            p.text(items[i].label, x + 6, y + 3 + i * 20, p.theme.fg);
+        }
+    }
+    // out-of-class: butuh Window lengkap (close_popup)
+    virtual void on_click(int mx, int my) override;
+};
+
+class MenuBar : public Widget {
+public:
+    struct Title { char* label; Menu* menu; };
+    enum { MAX_TITLES = 8 };
+    Title titles[MAX_TITLES];
+    int n, hover_idx;
+    Window* win;
+
+    MenuBar(Window* w, int width) : n(0), hover_idx(-1), win(w) {
+        this->w = width; h = 24;
+    }
+    virtual ~MenuBar() {
+        for (int i = 0; i < n; i++) { _ui_free(titles[i].label); delete titles[i].menu; }
+    }
+    Menu* add_menu(const char* title) {
+        if (n >= MAX_TITLES) return 0;
+        titles[n].label = _ui_strdup(title);
+        titles[n].menu = new Menu(win);
+        n++;
+        return titles[n - 1].menu;
+    }
+    virtual bool is_menu_bar() override { return true; }
+    virtual void set_hover(bool on) override { if (!on) hover_idx = -1; }
+    int title_at(int mx) const {
+        if (n == 0 || mx < x || mx >= x + w) return -1;
+        int tw = w / n;
+        int i = (mx - x) / tw;
+        return (i >= 0 && i < n) ? i : -1;
+    }
+    virtual bool track_hover(int mx, int my) override {
+        int i = -1;
+        if (my >= y && my < y + h) i = title_at(mx);
+        if (i == hover_idx) return false;
+        hover_idx = i;
+        return true;
+    }
+    // out-of-class: butuh Window lengkap (popup switch/open/close)
+    virtual void on_click(int mx, int my) override;
+    virtual void draw(Painter& p) override;
 };
 
 // ------------------------------------------------------------
@@ -404,13 +1185,37 @@ public:
     Widget* hovered;
     Widget* focused;   // fokus keyboard intra-window (TextBox)
     Widget* grabbed;   // widget yang memegang drag (left-down sampai release)
+    Widget* popup;     // overlay (menu dropdown) digambar paling atas (Phase 8)
+    Widget* top_bars[4];   // bar full-width (MenuBar/Toolbar), di atas root
+    int n_bars;
+    int bar_h;         // tinggi kumulatif bar → offset root
+    // Phase 9 — Desktop Services
+    Dialog* dialog;        // modal aktif (0 = none); dimiliki window
+    char* notify_text;     // toast (0 = none); dimiliki window
+    uint64_t notify_until; // sys_uptime() deadline auto-expire
+    Widget* drag_src;      // widget draggable yang sedang diseret (0 = none)
+    const char* drag_payload;
+    int drag_x, drag_y;
+    int cur_cursor;        // bentuk kursor yang sudah di-set ke kernel
+    struct Shortcut { uint8_t mods, key; ui_click_cb cb; void* data; };
+    Shortcut shortcuts[16];
+    int n_shortcuts;
 
     Window(uint32_t width, uint32_t height)
         : gw(gui_create_window(width, height)), root(0),
           running(gw != 0), mouse_x(0), mouse_y(0), hovered(0),
-          focused(0), grabbed(0) {}
+          focused(0), grabbed(0), popup(0), n_bars(0), bar_h(0),
+          dialog(0), notify_text(0), notify_until(0),
+          drag_src(0), drag_payload(0), drag_x(0), drag_y(0),
+          cur_cursor(UI_CURSOR_ARROW), n_shortcuts(0) {
+        for (int i = 0; i < 4; i++) top_bars[i] = 0;
+        for (int i = 0; i < 16; i++) { shortcuts[i].cb = 0; shortcuts[i].data = 0; }
+    }
 
     ~Window() {
+        sys_kwm_set_cursor(UI_CURSOR_ARROW);   // jangan tinggalkan I-beam/tangan
+        if (dialog) delete dialog;
+        if (notify_text) _ui_free(notify_text);
         if (root) delete root;
         if (gw) gui_destroy(gw);
     }
@@ -422,20 +1227,70 @@ public:
         theme.button_hover = t->button_hover;
     }
 
+    // Bar full-width (MenuBar/Toolbar) di puncak window, di atas root.
+    void add_bar(Widget* b) {
+        if (n_bars >= 4) return;
+        b->x = 0; b->y = bar_h;
+        bar_h += b->h;
+        top_bars[n_bars++] = b;
+        if (root) root->y = 8 + bar_h;
+    }
+
     // Root selalu VBox bermargin 8px — widget pertama sekalipun layout.
     void add(Widget* w) {
-        if (!root) { root = new VBox(8); root->x = 8; root->y = 8; }
+        if (!root) { root = new VBox(8); root->x = 8; root->y = 8 + bar_h; }
         root->add(w);
     }
 
-    // Kembalikan true bila hovered berubah (memicu redraw).
+    Widget* pick_bar(int mx, int my) {
+        for (int i = n_bars - 1; i >= 0; i--)
+            if (top_bars[i]->pick(mx, my)) return top_bars[i];
+        return 0;
+    }
+
+    void open_popup(Widget* m, int ox, int oy) {
+        if (popup && popup != m) popup->set_hover(false);
+        popup = m;
+        m->x = ox; m->y = oy;
+        render();
+    }
+    void close_popup() {
+        if (popup) {
+            if (hovered == popup) hovered = 0;
+            popup->set_hover(false);
+        }
+        popup = 0;
+    }
+
+    // Kembalikan true bila hovered berubah (memicu redraw). Saat popup
+    // terbuka, root TIDAK di-hover — hanya popup & bar (untuk switch menu).
     bool track_hover() {
-        Widget* n = root ? root->pick(mouse_x, mouse_y) : 0;
-        if (n == hovered) return false;
-        if (hovered) hovered->set_hover(false);
-        hovered = n;
-        if (hovered) hovered->set_hover(true);
-        return true;
+        Widget* n = 0;
+        if (dialog) {
+            if (dialog->pick(mouse_x, mouse_y)) n = dialog;   // modal: hanya dialog
+        } else if (popup) {
+            if (popup->pick(mouse_x, mouse_y)) n = popup;
+            else n = pick_bar(mouse_x, mouse_y);
+        } else {
+            n = pick_bar(mouse_x, mouse_y);
+            if (!n && root) n = root->pick(mouse_x, mouse_y);
+        }
+        bool changed = false;
+        if (n != hovered) {
+            if (hovered) hovered->set_hover(false);
+            hovered = n;
+            if (hovered) hovered->set_hover(true);
+            changed = true;
+        }
+        if (popup) { if (popup->track_hover(mouse_x, mouse_y)) changed = true; }
+        if (hovered) { if (hovered->track_hover(mouse_x, mouse_y)) changed = true; }
+        // Phase 9: sinkronkan bentuk kursor kernel dgn widget yang di-hover.
+        int want = hovered ? hovered->cursor_kind : UI_CURSOR_ARROW;
+        if (want != cur_cursor) {
+            cur_cursor = want;
+            sys_kwm_set_cursor(want);
+        }
+        return changed;
     }
 
     void set_focus(Widget* n) {
@@ -445,10 +1300,103 @@ public:
         if (focused) focused->set_focus(true);
     }
 
+    // --- Shortcut (Phase 9): registry per-window, cek di KEY_PRESS. ---
+    void add_shortcut(uint32_t mods, uint8_t key, ui_click_cb cb, void* u) {
+        if (n_shortcuts >= 16) return;
+        shortcuts[n_shortcuts].mods = (uint8_t)(mods & 0x07);
+        shortcuts[n_shortcuts].key = key;
+        shortcuts[n_shortcuts].cb = cb;
+        shortcuts[n_shortcuts].data = u;
+        n_shortcuts++;
+    }
+
+    // --- Notification toast (Phase 9) ---
+    void notify(const char* text, uint32_t ms) {
+        char* n = _ui_strdup(text ? text : "");
+        if (!n) return;
+        _ui_free(notify_text);
+        notify_text = n;
+        notify_until = sys_uptime() + ms;
+        render();
+    }
+    bool notify_hit(int mx, int my) const {
+        if (!notify_text) return false;
+        return mx >= (int)gw->width - 218 && mx < (int)gw->width - 8 &&
+               my >= 8 && my < 36;
+    }
+    void notify_dismiss() {
+        _ui_free(notify_text);
+        notify_text = 0;
+        render();
+    }
+
+    // --- Dialog modal (Phase 9) ---
+    void open_dialog(Dialog* d) {
+        if (dialog && dialog != d) delete dialog;
+        dialog = d;
+        d->x = ((int)gw->width - d->w) / 2;
+        d->y = ((int)gw->height - d->h) / 2 - 20;   // sedikit di atas tengah
+        if (d->x < 0) d->x = 0;
+        if (d->y < 0) d->y = 0;
+        render();
+    }
+    void close_dialog() {
+        if (hovered == dialog) hovered = 0;
+        delete dialog;
+        dialog = 0;
+        render();
+    }
+
+    // --- Settings (Phase 9): persist theme ke KyuzenFS "settings.ui" ---
+    int settings_save() {
+        int fd = sys_open("settings.ui", O_WRONLY | O_CREAT | O_TRUNC);
+        if (fd < 0) return 0;
+        sys_write_fd(fd, &theme, sizeof(ui_theme_t));
+        sys_close(fd);
+        return 1;
+    }
+    int settings_load() {
+        int fd = sys_open("settings.ui", O_RDONLY);
+        if (fd < 0) return 0;
+        ui_theme_t t;
+        int n = sys_read_fd(fd, &t, sizeof(ui_theme_t));
+        sys_close(fd);
+        if (n != (int)sizeof(ui_theme_t)) return 0;      // file bukan theme valid
+        if (!t.bg && !t.fg && !t.accent && !t.button_bg &&
+            !t.button_fg && !t.button_hover) return 0;    // blob kosong
+        set_theme(&t);
+        return 1;
+    }
+
+    void draw_notify(Painter& p) {
+        int nx = (int)gw->width - 218, ny = 8;
+        p.rect(nx, ny, 210, 28, p.theme.button_bg);
+        p.rect(nx, ny, 210, 1, p.theme.fg);
+        p.rect(nx, ny + 27, 210, 1, p.theme.fg);
+        p.rect(nx, ny, 1, 28, p.theme.fg);
+        p.rect(nx + 209, ny, 1, 28, p.theme.fg);
+        p.text(notify_text, nx + 8, ny + 6, p.theme.fg);
+    }
+    void draw_drag_ghost(Painter& p) {
+        int tw = drag_payload ? _ui_strlen(drag_payload) * 8 + 12 : 24;
+        int gx = drag_x + 4, gy = drag_y + 4;
+        p.rect(gx, gy, tw, 18, p.theme.button_hover);
+        p.rect(gx, gy, tw, 1, p.theme.accent);
+        p.rect(gx, gy + 17, tw, 1, p.theme.accent);
+        p.rect(gx, gy, 1, 18, p.theme.accent);
+        p.rect(gx + tw - 1, gy, 1, 18, p.theme.accent);
+        if (drag_payload) p.text(drag_payload, gx + 6, gy + 2, p.theme.fg);
+    }
+
     void render() {
         Painter p(gw, theme);
         p.rect(0, 0, (int)gw->width, (int)gw->height, theme.bg);
+        for (int i = 0; i < n_bars; i++) top_bars[i]->draw(p);
         if (root) root->draw(p);
+        if (popup) popup->draw(p);
+        if (dialog) dialog->draw(p);      // modal di atas popup
+        if (notify_text) draw_notify(p);  // toast paling atas
+        if (drag_src) draw_drag_ghost(p); // ghost drag
         gui_flush(gw);
     }
 
@@ -457,32 +1405,105 @@ public:
         kyuzen_event_t ev;
         render();
         while (running) {
+            // Phase 9: auto-expire notifikasi. Loop bangun ~60/s via
+            // sys_yield + timer IRQ → cukup cek tiap iterasi, tanpa timer infra.
+            if (notify_text && sys_uptime() >= notify_until) notify_dismiss();
             if (sys_get_event(&ev)) {
                 switch (ev.type) {
                 case EVENT_MOUSE_MOVE:
                     mouse_x = ev.param1; mouse_y = ev.param2;
-                    if (grabbed && grabbed->on_drag(mouse_x, mouse_y)) render();
-                    if (track_hover()) render();
+                    if (drag_src) {
+                        drag_x = mouse_x; drag_y = mouse_y;
+                        render();
+                    } else {
+                        if (grabbed && grabbed->on_drag(mouse_x, mouse_y)) render();
+                        if (track_hover()) render();
+                    }
                     break;
                 case EVENT_MOUSE_CLICK:
                     if (ev.param1 == 0 && ev.param2 == 1) {   // left down
-                        grabbed = root ? root->pick(mouse_x, mouse_y) : 0;
-                        set_focus(grabbed && grabbed->focusable() ? grabbed : 0);
-                        if (grabbed) grabbed->on_click(mouse_x, mouse_y);
-                        render();
+                        if (notify_text && notify_hit(mouse_x, mouse_y)) {
+                            notify_dismiss();   // klik toast → tutup segera
+                        } else if (dialog) {
+                            // Modal: klik di luar dialog diabaikan (blok latar).
+                            if (dialog->pick(mouse_x, mouse_y))
+                                dialog->on_click(mouse_x, mouse_y);
+                            render();
+                        } else if (popup) {
+                            if (popup->pick(mouse_x, mouse_y)) {
+                                popup->on_click(mouse_x, mouse_y);   // item menu
+                            } else {
+                                Widget* bar = pick_bar(mouse_x, mouse_y);
+                                if (bar) {
+                                    if (bar->is_menu_bar())
+                                        bar->on_click(mouse_x, mouse_y);   // switch/close
+                                    else { close_popup(); bar->on_click(mouse_x, mouse_y); }
+                                } else {
+                                    close_popup();   // klik di luar → dismiss
+                                }
+                            }
+                            render();
+                        } else {
+                            Widget* picked = pick_bar(mouse_x, mouse_y);
+                            if (!picked && root) picked = root->pick(mouse_x, mouse_y);
+                            if (picked && picked->draggable) {
+                                // DnD: klik-tahan pada widget draggable mulai
+                                // drag; click_cb-nya tidak dipanggil.
+                                drag_src = picked;
+                                drag_payload = picked->dnd_payload;
+                                drag_x = mouse_x; drag_y = mouse_y;
+                            } else {
+                                grabbed = picked;
+                                set_focus(grabbed && grabbed->focusable() ? grabbed : 0);
+                                if (grabbed) grabbed->on_click(mouse_x, mouse_y);
+                            }
+                            render();
+                        }
                     } else if (ev.param1 == 0 && ev.param2 == 0) {   // left up
-                        if (grabbed) { grabbed->on_release(); grabbed = 0; }
+                        if (drag_src) {
+                            Widget* t = pick_bar(mouse_x, mouse_y);
+                            if (!t && root) t = root->pick(mouse_x, mouse_y);
+                            if (t && t->drop_target && t->drop_cb)
+                                t->drop_cb(t->drop_data, drag_payload, mouse_x, mouse_y);
+                            drag_src = 0; drag_payload = 0;
+                        } else if (grabbed) {
+                            grabbed->on_release(); grabbed = 0;
+                        }
                         render();
                     }
                     break;
                 case EVENT_KEY_PRESS:
-                    if (ev.param1 == 27) running = false;   // ESC tutup
-                    else if (focused) {
-                        focused->on_key((uint8_t)ev.param1,
-                                        (uint32_t)ev.param3,
-                                        (uint32_t)ev.param2);
+                    if (ev.param1 == 27) {
+                        if (popup) close_popup();   // ESC tutup menu dulu
+                        else if (dialog) {
+                            ui_dialog_cb c = dialog->cb; void* d = dialog->data;
+                            close_dialog();
+                            if (c) c(d, -1);        // -1 = batal
+                        } else running = false;
+                        render();
+                    } else if (dialog) {
+                        render();   // modal menelan ketikan selain ESC
+                    } else {
+                        // Shortcut registry dulu, baru dispatch ke widget fokus.
+                        bool handled = false;
+                        uint32_t mods = (uint32_t)ev.param2;
+                        for (int i = 0; i < n_shortcuts; i++) {
+                            if ((mods & 0x07) == (shortcuts[i].mods & 0x07) &&
+                                (uint8_t)ev.param1 == shortcuts[i].key) {
+                                if (shortcuts[i].cb) shortcuts[i].cb(shortcuts[i].data);
+                                handled = true;
+                                break;
+                            }
+                        }
+                        if (!handled && focused)
+                            focused->on_key((uint8_t)ev.param1,
+                                            (uint32_t)ev.param3,
+                                            (uint32_t)ev.param2);
                         render();
                     }
+                    break;
+                case EVENT_SCROLL:
+                    if (hovered && hovered->on_scroll(ev.param1)) render();
                     break;
                 case EVENT_WIN_CLOSE:
                     running = false;
@@ -495,6 +1516,40 @@ public:
         }
     }
 };
+
+// Out-of-class: butuh Window lengkap (popup handling).
+void Dialog::on_click(int mx, int my) {
+    int i = hit_button(mx, my);
+    if (i < 0) return;              // klik body dialog → tetap modal, abaikan
+    ui_dialog_cb c = cb;
+    void* d = data;
+    if (win) win->close_dialog();   // hapus dialog dulu (delete this)
+    if (c) c(d, i);                 // lalu fire cb — jangan sentuh member lagi
+}
+void Menu::on_click(int mx, int my) {
+    int idx = (my - y - 2) / 20;
+    if (idx >= 0 && idx < n) {
+        ui_click_cb cb = items[idx].cb;
+        void* d = items[idx].data;
+        if (win) win->close_popup();
+        if (cb) cb(d);
+    }
+}
+void MenuBar::on_click(int mx, int my) {
+    int i = title_at(mx);
+    if (i < 0) { if (win) win->close_popup(); return; }
+    if (win && win->popup == titles[i].menu) { win->close_popup(); return; }
+    if (win) win->open_popup(titles[i].menu, x + i * (n ? w / n : w), y + h);
+}
+void MenuBar::draw(Painter& p) {
+    int tw = n ? w / n : w;
+    for (int i = 0; i < n; i++) {
+        int tx = x + i * tw;
+        bool open = win && win->popup == titles[i].menu;
+        p.rect(tx, y, tw, h, (open || i == hover_idx) ? p.theme.button_hover : p.theme.button_bg);
+        p.text(titles[i].label, tx + 8, y + 4, p.theme.button_fg);
+    }
+}
 
 } // namespace ui
 
@@ -617,6 +1672,171 @@ ui_widget_t* ui_vbox_create(ui_window_t* win, int spacing) {
 
 void ui_layout_add(ui_widget_t* layout, ui_widget_t* child) {
     reinterpret_cast<ui::Layout*>(layout)->add(reinterpret_cast<ui::Widget*>(child));
+}
+
+// --- Phase 8: bar full-width (MenuBar/Toolbar) ---
+void ui_window_add_bar(ui_window_t* win, ui_widget_t* bar) {
+    reinterpret_cast<ui::Window*>(win)->add_bar(reinterpret_cast<ui::Widget*>(bar));
+}
+
+// --- ScrollView ---
+ui_widget_t* ui_scrollview_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::ScrollView(w, h));
+}
+
+void ui_scrollview_set_child(ui_widget_t* widget, ui_widget_t* child) {
+    reinterpret_cast<ui::ScrollView*>(widget)->set_child(reinterpret_cast<ui::Widget*>(child));
+}
+
+// --- ListView ---
+ui_widget_t* ui_listview_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::ListView(w, h));
+}
+
+void ui_listview_add_item(ui_widget_t* widget, const char* label) {
+    reinterpret_cast<ui::ListView*>(widget)->add_item(label);
+}
+
+int ui_listview_selected(ui_widget_t* widget) {
+    return reinterpret_cast<ui::ListView*>(widget)->selected;
+}
+
+void ui_listview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::ListView*>(widget)->set_change(cb, userdata);
+}
+
+// --- Table ---
+ui_widget_t* ui_table_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::Table(w, h));
+}
+
+void ui_table_add_column(ui_widget_t* widget, const char* title, int width) {
+    reinterpret_cast<ui::Table*>(widget)->add_column(title, width);
+}
+
+void ui_table_add_row(ui_widget_t* widget, const char* const* cells, int n) {
+    reinterpret_cast<ui::Table*>(widget)->add_row(cells, n);
+}
+
+int ui_table_selected(ui_widget_t* widget) {
+    return reinterpret_cast<ui::Table*>(widget)->selected;
+}
+
+void ui_table_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::Table*>(widget)->set_change(cb, userdata);
+}
+
+// --- TreeView ---
+ui_widget_t* ui_treeview_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::TreeView(w, h));
+}
+
+void ui_treeview_add_node(ui_widget_t* widget, const char* label, int depth, int expanded) {
+    reinterpret_cast<ui::TreeView*>(widget)->add_node(label, depth, expanded != 0);
+}
+
+int ui_treeview_selected(ui_widget_t* widget) {
+    return reinterpret_cast<ui::TreeView*>(widget)->selected;
+}
+
+void ui_treeview_set_change(ui_widget_t* widget, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::TreeView*>(widget)->set_change(cb, userdata);
+}
+
+// --- Tab ---
+ui_widget_t* ui_tab_create(ui_window_t* win, int w, int h) {
+    (void)win;
+    return reinterpret_cast<ui_widget_t*>(new ui::Tab(w, h));
+}
+
+void ui_tab_add(ui_widget_t* widget, const char* title, ui_widget_t* panel) {
+    reinterpret_cast<ui::Tab*>(widget)->add(title, reinterpret_cast<ui::Widget*>(panel));
+}
+
+// --- MenuBar + Menu ---
+ui_widget_t* ui_menubar_create(ui_window_t* win) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    return reinterpret_cast<ui_widget_t*>(new ui::MenuBar(w, (int)w->gw->width));
+}
+
+ui_widget_t* ui_menubar_add_menu(ui_widget_t* bar, const char* title) {
+    return reinterpret_cast<ui_widget_t*>(
+        reinterpret_cast<ui::MenuBar*>(bar)->add_menu(title));
+}
+
+void ui_menu_add_item(ui_widget_t* menu, const char* label, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::Menu*>(menu)->add_item(label, cb, userdata);
+}
+
+// --- Toolbar ---
+ui_widget_t* ui_toolbar_create(ui_window_t* win) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    return reinterpret_cast<ui_widget_t*>(new ui::Toolbar((int)w->gw->width));
+}
+
+void ui_toolbar_add_button(ui_widget_t* bar, const char* label, ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::Toolbar*>(bar)->add_button(label, cb, userdata);
+}
+
+// ============================================================
+// Phase 9 — Desktop Services (Clipboard, Shortcut, Dialog,
+// Notification, Drag & Drop, Cursor, Settings)
+// ============================================================
+
+// --- Clipboard ---
+void ui_clipboard_set_text(const char* text) {
+    clipboard_set(text);
+}
+const char* ui_clipboard_get_text(void) {
+    return clipboard_get();
+}
+void ui_clipboard_clear(void) {
+    clipboard_clear();
+}
+
+// --- Shortcut ---
+void ui_window_add_shortcut(ui_window_t* win, uint32_t mods, uint8_t key,
+                            ui_click_cb cb, void* userdata) {
+    reinterpret_cast<ui::Window*>(win)->add_shortcut(mods, key, cb, userdata);
+}
+
+// --- Dialog ---
+void ui_dialog_show(ui_window_t* win, const char* title, const char* text,
+                    const char* const* buttons, int n_buttons,
+                    ui_dialog_cb cb, void* userdata) {
+    ui::Window* w = reinterpret_cast<ui::Window*>(win);
+    ui::Dialog* d = new ui::Dialog(w, title, text, buttons, n_buttons, cb, userdata);
+    w->open_dialog(d);
+}
+
+// --- Notification ---
+void ui_window_notify(ui_window_t* win, const char* text, uint32_t ms) {
+    reinterpret_cast<ui::Window*>(win)->notify(text, ms);
+}
+
+// --- Drag & Drop ---
+void ui_widget_set_draggable(ui_widget_t* widget, const char* payload) {
+    reinterpret_cast<ui::Widget*>(widget)->set_draggable(payload);
+}
+void ui_widget_set_drop_target(ui_widget_t* widget, ui_drop_cb cb, void* userdata) {
+    reinterpret_cast<ui::Widget*>(widget)->set_drop_target(cb, userdata);
+}
+
+// --- Cursor ---
+void ui_widget_set_cursor(ui_widget_t* widget, int kind) {
+    reinterpret_cast<ui::Widget*>(widget)->set_cursor(kind);
+}
+
+// --- Settings ---
+int ui_settings_save(ui_window_t* win) {
+    return reinterpret_cast<ui::Window*>(win)->settings_save();
+}
+int ui_settings_load(ui_window_t* win) {
+    return reinterpret_cast<ui::Window*>(win)->settings_load();
 }
 
 } // extern "C"
