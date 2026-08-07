@@ -28,6 +28,7 @@ struct ghal_surface {
     uint32_t    num_pages;
     uint32_t*   backing_virt;  // = pages[0].virt (linear)
     uint64_t    backing_phys;  // = pages[0].phys (untuk attach)
+    uint8_t     scanout_set;   // 1 = sudah SET_SCANOUT
 };
 
 static int g_virtio_active = 0;
@@ -55,26 +56,16 @@ static int virtio_init(void) {
     g_vgpu.scanout_width  = resp.pmodes[0].rect.width;
     g_vgpu.scanout_height = resp.pmodes[0].rect.height;
 
-    {
-        extern void serial_print(const char* s);
-        serial_print("[vgpu] scanout ");
-        // width
-        char tmp[8];
-        uint32_t v = g_vgpu.scanout_width; int idx=0;
-        if (v==0) tmp[idx++]='0'; else { char r[8]; int n=0; while(v){r[n++]=(char)('0'+v%10);v/=10;} while(n) tmp[idx++]=r[--n]; }
-        tmp[idx]='\0'; serial_print(tmp);
-        serial_print("x");
-        v = g_vgpu.scanout_height; idx=0;
-        if (v==0) tmp[idx++]='0'; else { char r[8]; int n=0; while(v){r[n++]=(char)('0'+v%10);v/=10;} while(n) tmp[idx++]=r[--n]; }
-        tmp[idx]='\0'; serial_print(tmp);
-        serial_print("\n");
-    }
-
     g_virtio_active = 1;
     return 0;
 }
 
 static void virtio_shutdown(void) { g_virtio_active = 0; }
+
+void virtio_backend_get_size(uint32_t* w, uint32_t* h) {
+    if (w) *w = g_vgpu.scanout_width;
+    if (h) *h = g_vgpu.scanout_height;
+}
 
 // --- surface_create: buat resource + attach backing ---
 static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt) {
@@ -96,10 +87,17 @@ static ghal_surface_t* virtio_surface_create(uint32_t w, uint32_t h, ghal_format
     s->pages = pages; s->num_pages = num_pages;
     s->backing_virt = pages[0].virt;
     s->backing_phys = pages[0].phys;
+    s->scanout_set = 0;
 
     // RESOURCE_CREATE_2D
+    // Format: XRGB8888 kita = 0x00RRGGBB, little-endian memory byte order
+    // B,G,R,X → VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM (nama virtio = urutan BYTE).
+    // Memakai X8R8G8B8 (urutan X,R,G,B) membuat device membaca byte0 sebagai X
+    // dan byte3 sebagai B → channel biru hilang (terbukti: gray 30,30,30
+    // tampil 30,30,0).
     virtio_gpu_resource_create_2d_t c;
-    virtio_gpu_cmd_resource_create_2d(&c, s->resource_id, VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM, w, h);
+    virtio_gpu_cmd_resource_create_2d(&c, s->resource_id,
+                                      VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, w, h);
     if (vgpu_send_ok(&c, sizeof(c)) != 0) {
         gpu_free_pages(pages, num_pages); kfree(pages); kfree(s);
         return NULL;
@@ -205,6 +203,15 @@ static void virtio_present(ghal_surface_t* s, const ghal_rect_t* rect) {
     ghal_rect_t r;
     if (rect) r = *rect;
     else { r.x = 0; r.y = 0; r.w = s->width; r.h = s->height; }
+
+    // SET_SCANOUT sekali per resource (idempotent di device, tapi kita
+    // lakukan sekali saja): pastikan resource ini yang jadi output aktif.
+    if (!s->scanout_set && s->width == g_vgpu.scanout_width &&
+        s->height == g_vgpu.scanout_height) {
+        virtio_gpu_set_scanout_t so;
+        virtio_gpu_cmd_set_scanout(&so, 0, s->resource_id, 0, 0, s->width, s->height);
+        if (vgpu_send_ok(&so, sizeof(so)) == 0) s->scanout_set = 1;
+    }
 
     // TRANSFER_TO_HOST_2D
     virtio_gpu_transfer_to_host_2d_t t;

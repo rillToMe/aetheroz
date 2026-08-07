@@ -4,6 +4,7 @@
 #include "display.h"
 #include "spinlock.h"
 #include "aa_math.h"
+#include "ghal.h"     // Phase 2B: present lewat Graphics HAL
 
 extern int32_t mouse_x;
 extern int32_t mouse_y;
@@ -294,12 +295,37 @@ void kwm_set_cursor(int kind) {
     screen_mark_dirty(mouse_x, mouse_y, CURSOR_WIDTH, CURSOR_HEIGHT);
 }
 
+// ============================================================
+// Phase 2B — present lewat Graphics HAL
+//
+// Compositor tetap menyusun frame di `backbuffer` (system memory) seperti
+// sebelumnya — output visual identik. Yang berubah: langkah TERAKHIR
+// (backbuffer → layar) tidak lagi menulis `fb_ptr` langsung, melainkan
+// upload region damage ke main surface HAL lalu `ghal_present`.
+//
+// Batching (roadmap §8.9): seluruh dirty-rect frame di-upload, lalu SATU
+// present dengan bounding rect gabungan — bukan satu present per rect.
+//
+// PENTING: compositor_flush berjalan di TIMER IRQ. Karena itu main surface
+// dibuat SEKALI di compositor_ghal_init() (dipanggil kernel_main, konteks
+// task), BUKAN lazy di dalam IRQ — surface_create memanggil kmalloc dan
+// (pada backend virtio) mengirim command + busy-poll virtqueue, dua hal yang
+// tidak boleh terjadi di IRQ handler.
+// ============================================================
+static ghal_surface_t* g_main_surface;
+
+// Dipanggil dari kernel_main SETELAH ghal_init(), sebelum timer_callbacks_init.
+void compositor_ghal_init(void) {
+    if (g_main_surface != NULL) return;
+    if (fb_width == 0) return;
+    g_main_surface = ghal_surface_create(fb_width, fb_height, GHAL_FMT_XRGB8888);
+}
+
 void compositor_flush() {
     if (fb_width == 0) return;
     DisplayBuffer* screen_db = gfx_screen_buffer();  // base_canvas
     DisplayBuffer* back_db   = gfx_back_buffer();
-    DisplayBuffer* fb_db     = gfx_fb_buffer();
-    if (!screen_db || !back_db || !fb_db) return;
+    if (!screen_db || !back_db) return;
     const int pitch4 = (int)(fb_pitch / 4);
     Rect screen = { 0, 0, fb_width, fb_height };
 
@@ -346,9 +372,39 @@ void compositor_flush() {
     g_last_cursor_x = cx;
     g_last_cursor_y = cy;
 
-    for (uint32_t i = 0; i < dirty.count; i++) {
-        Rect r;
-        if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
-        blit_rect_db(fb_db, back_db, r);
+    // --- Present lewat HAL (Phase 2B) ---
+    // Upload setiap region damage ke main surface, lalu SATU present dengan
+    // bounding rect gabungan (batching §8.9). Fallback ke jalur langsung
+    // (blit ke fb_db) bila main surface belum siap.
+    if (g_main_surface != NULL) {
+        int have_union = 0;
+        ghal_rect_t u = { 0, 0, 0, 0 };
+        for (uint32_t i = 0; i < dirty.count; i++) {
+            Rect r;
+            if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
+            ghal_rect_t gr = { (uint32_t)r.x, (uint32_t)r.y, r.width, r.height };
+            ghal_surface_upload(g_main_surface, backbuffer, (uint32_t)pitch4, gr);
+            if (!have_union) { u = gr; have_union = 1; }
+            else {
+                uint32_t x1 = u.x + u.w, y1 = u.y + u.h;
+                uint32_t rx1 = gr.x + gr.w, ry1 = gr.y + gr.h;
+                if (gr.x < u.x) u.x = gr.x;
+                if (gr.y < u.y) u.y = gr.y;
+                if (rx1 > x1) x1 = rx1;
+                if (ry1 > y1) y1 = ry1;
+                u.w = x1 - u.x;
+                u.h = y1 - u.y;
+            }
+        }
+        if (have_union) ghal_present(g_main_surface, &u);
+    } else {
+        DisplayBuffer* fb_db = gfx_fb_buffer();
+        if (fb_db) {
+            for (uint32_t i = 0; i < dirty.count; i++) {
+                Rect r;
+                if (!rect_intersect(dirty.regions[i], screen, &r)) continue;
+                blit_rect_db(fb_db, back_db, r);
+            }
+        }
     }
 }

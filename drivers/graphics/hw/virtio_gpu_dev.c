@@ -10,6 +10,7 @@
 #include "pci.h"          // pci_read_word
 #include "io.h"
 #include "gpu_alloc.h"
+#include "spinlock.h"
 #include <string.h>
 
 extern uint64_t hhdm_offset;
@@ -238,6 +239,19 @@ int virtio_gpu_dev_probe(void) {
         return -1;
     }
 
+    // Pre-alokasi buffer command/response — dipakai ulang tiap command supaya
+    // virtio_gpu_dev_command aman dipanggil dari IRQ (tanpa pmm_alloc_page).
+    g_vgpu.cmd_lock.locked = 0;
+    g_vgpu.cmd_pages_n = 0;
+    for (uint32_t i = 0; i < VGPU_CMD_MAX_PAGES; i++) {
+        if (gpu_alloc_page(&g_vgpu.cmd_pages[i]) != 0) break;
+        g_vgpu.cmd_pages_n++;
+    }
+    if (g_vgpu.cmd_pages_n == 0 || gpu_alloc_page(&g_vgpu.resp_page) != 0) {
+        serial_log("[vgpu] command buffer alloc failed\n");
+        return -1;
+    }
+
     g_vgpu.num_scanouts = g_vgpu.device_cfg ? g_vgpu.device_cfg->num_scanouts : 1;
     g_vgpu.initialized = 1;
     g_vgpu.negotiation_done = 1;
@@ -259,62 +273,62 @@ int virtio_gpu_dev_command(const void* cmd, uint32_t cmd_len,
     if (!g_vgpu.initialized) return -1;
     if (cmd_len == 0) return -1;
 
-    // Command buffer mungkin lebih besar dari satu halaman (mis. ATTACH_BACKING
-    // dengan banyak entries). Alokasikan cukup halaman & kirim sebagai chain.
     uint32_t cmd_pages = (cmd_len + 4095) / 4096;
-    gpu_page_t cmd_pg[16];
-    if (cmd_pages > 16) return -1;   // batas aman: 16 halaman command
-    for (uint32_t i = 0; i < cmd_pages; i++) {
-        if (gpu_alloc_page(&cmd_pg[i]) != 0) {
-            gpu_free_pages(cmd_pg, i);
-            return -1;
+    if (cmd_pages > g_vgpu.cmd_pages_n) return -1;
+
+    // IRQ-safe: buffer pre-alokasi dipakai ulang, dilindungi lock.
+    uint64_t lock_flags = spinlock_lock_irqsave(&g_vgpu.cmd_lock);
+
+    // Halaman command TIDAK contiguous — copy per halaman, jangan sekali memcpy
+    // (memcpy cmd_len ke cmd_pages[0] akan meluber ke memori lain).
+    {
+        const uint8_t* src = (const uint8_t*)cmd;
+        uint32_t left = cmd_len;
+        for (uint32_t i = 0; i < cmd_pages; i++) {
+            uint32_t chunk = left > 4096 ? 4096 : left;
+            memcpy(g_vgpu.cmd_pages[i].virt, src, chunk);
+            src  += chunk;
+            left -= chunk;
         }
     }
-    memcpy(cmd_pg[0].virt, cmd, cmd_len);
+    if (out && out_len) memset(g_vgpu.resp_page.virt, 0, 4096);
 
-    gpu_page_t resp_pg = {0,0};
-    if (out && out_len) {
-        if (gpu_alloc_page(&resp_pg) != 0) { gpu_free_pages(cmd_pg, cmd_pages); return -1; }
-        memset(resp_pg.virt, 0, 4096);
-    }
-
-    // Bangun descriptor chain: tiap halaman command + 1 halaman response.
-    uint64_t addrs[17];
-    uint32_t lens[17];
-    uint16_t flags[17];
+    uint64_t addrs[VGPU_CMD_MAX_PAGES + 1];
+    uint32_t lens[VGPU_CMD_MAX_PAGES + 1];
+    uint16_t flags[VGPU_CMD_MAX_PAGES + 1];
     int nb = 0;
     for (uint32_t i = 0; i < cmd_pages; i++) {
-        addrs[nb] = cmd_pg[i].phys;
+        addrs[nb] = g_vgpu.cmd_pages[i].phys;
         lens[nb]  = (i == cmd_pages - 1) ? (cmd_len - i * 4096) : 4096;
         flags[nb] = 0;
         nb++;
     }
     if (out && out_len) {
-        addrs[nb] = resp_pg.phys;
-        lens[nb]  = out_len;
+        addrs[nb] = g_vgpu.resp_page.phys;
+        lens[nb]  = out_len > 4096 ? 4096 : out_len;
         flags[nb] = VIRTQ_DESC_F_WRITE;
         nb++;
     }
 
     int head = virtq_submit(&g_vgpu.controlq, addrs, lens, flags, nb);
     if (head < 0) {
-        gpu_free_pages(cmd_pg, cmd_pages); if (resp_pg.phys) gpu_free_pages(&resp_pg, 1); return -1;
+        spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
+        return -1;
     }
     virtq_notify(&g_vgpu.controlq);
     uint32_t written = 0;
     int r = virtq_wait(&g_vgpu.controlq, head, &written);
     if (r != 0) {
-        gpu_free_pages(cmd_pg, cmd_pages);
-        if (resp_pg.phys) gpu_free_pages(&resp_pg, 1);
+        spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
         return -1;
     }
 
-    if (out && out_len && resp_pg.phys) {
-        uint32_t copy = written < out_len ? written : out_len;
-        memcpy(out, resp_pg.virt, copy);
+    if (out && out_len) {
+        uint32_t copy = out_len;
+        if (copy > 4096) copy = 4096;
+        memcpy(out, g_vgpu.resp_page.virt, copy);
     }
 
-    gpu_free_pages(cmd_pg, cmd_pages);
-    if (resp_pg.phys) gpu_free_pages(&resp_pg, 1);
+    spinlock_unlock_irqrestore(&g_vgpu.cmd_lock, lock_flags);
     return 0;
 }

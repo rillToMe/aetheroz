@@ -154,6 +154,26 @@ void kernel_main(void) {
     pci_probe();
 
     init_timer(TIMER_HZ);      // Inisialisasi PIT pada frekuensi dari timer.h
+
+    // Phase 2B: inisialisasi Graphics HAL SEBELUM timer_callbacks_init, supaya
+    // compositor_flush (cb_flush) langsung punya backend + main surface.
+    // Software backend butuh tahu framebuffer hardware untuk present.
+    // compositor_ghal_init() membuat main surface DI SINI (konteks task),
+    // bukan lazy di dalam IRQ — surface_create memakai kmalloc + virtqueue.
+    {
+        extern void ghal_set_framebuffer(uint32_t*, uint32_t, uint32_t, uint32_t);
+        extern int  ghal_init(void);
+        extern const char* ghal_active_backend_name(void);
+        extern void compositor_ghal_init(void);
+        ghal_set_framebuffer(fb_ptr, fb_width, fb_height, fb_pitch);
+        if (ghal_init() == 0) {
+            kprint("[GHAL] backend="); kprint(ghal_active_backend_name()); kprint("\n");
+            compositor_ghal_init();
+        } else {
+            kprint("[GHAL] init failed — compositor fallback ke jalur langsung\n");
+        }
+    }
+
     timer_callbacks_init();    // Daftarkan subscriber default (visual, cursor, flush)
     tasking_init();            // Daftarkan kmain sebagai task awal scheduler
 
@@ -244,36 +264,28 @@ void kernel_main(void) {
     __asm__ volatile("sti");
 
 #ifdef GFX_SELFTEST
-    // Phase 2A: validasi Graphics HAL + backend selection, lalu test present.
-    // Dipanggil SEBELUM net_init supaya tidak bergantung pada network stack.
-    // Output via serial (host-capturable).
+    // Phase 2A/2B: laporkan backend aktif + ukuran scanout ke serial.
+    // ghal_init() sudah dipanggil di atas (sebelum timer_callbacks_init).
     {
-        extern int ghal_init(void);
         extern const char* ghal_active_backend_name(void);
+        extern void ghal_scanout_size(uint32_t*, uint32_t*);
         extern void serial_print(const char* s);
-        extern ghal_surface_t* ghal_surface_create(uint32_t,uint32_t,ghal_format_t);
-        extern void ghal_fill_rect(ghal_surface_t*, ghal_rect_t, uint32_t);
-        extern void ghal_present(ghal_surface_t*, const ghal_rect_t*);
-        if (ghal_init() == 0) {
-            serial_print("[GFX SELFTEST] PASS (backend=");
-            serial_print(ghal_active_backend_name());
-            serial_print(")\n");
-
-            // Test present 2A: buat surface full-screen, isi solid, present.
-            ghal_surface_t* s = ghal_surface_create(1280, 800, GHAL_FMT_XRGB8888);
-            if (s) {
-                ghal_rect_t all = { 0, 0, 1280, 800 };
-                ghal_fill_rect(s, all, 0x0000FF);   // biru solid
-                ghal_present(s, &all);
-                serial_print("[GFX SELFTEST] present OK\n");
-                extern void ghal_surface_destroy(ghal_surface_t*);
-                ghal_surface_destroy(s);
-            } else {
-                serial_print("[GFX SELFTEST] surface_create failed\n");
-            }
-        } else {
-            serial_print("[GFX SELFTEST] FAIL: ghal_init failed\n");
+        uint32_t sw = 0, sh = 0;
+        ghal_scanout_size(&sw, &sh);
+        serial_print("[GFX SELFTEST] backend=");
+        serial_print(ghal_active_backend_name());
+        serial_print(" scanout=");
+        {
+            char tmp[8]; uint32_t v = sw; int idx = 0;
+            if (v == 0) tmp[idx++] = '0';
+            else { char r[8]; int n = 0; while (v) { r[n++] = (char)('0' + v % 10); v /= 10; } while (n) tmp[idx++] = r[--n]; }
+            tmp[idx] = '\0'; serial_print(tmp); serial_print("x");
+            v = sh; idx = 0;
+            if (v == 0) tmp[idx++] = '0';
+            else { char r[8]; int n = 0; while (v) { r[n++] = (char)('0' + v % 10); v /= 10; } while (n) tmp[idx++] = r[--n]; }
+            tmp[idx] = '\0'; serial_print(tmp);
         }
+        serial_print("\n");
     }
 #endif
 

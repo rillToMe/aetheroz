@@ -13,6 +13,14 @@
 #include <stdint.h>
 #include "virtio_gpu_regs.h"
 #include "virtqueue.h"
+#include "spinlock.h"
+#include "gpu_alloc.h"
+
+// Buffer command/response pre-alokasi (dipakai berulang).
+// PENTING: virtio_gpu_dev_command dipanggil dari compositor_flush yang berjalan
+// di TIMER IRQ. Alokasi halaman per-command (pmm_alloc_page) di IRQ tidak aman
+// dan lambat; karena itu buffer dialokasikan SEKALI saat probe dan dipakai ulang.
+#define VGPU_CMD_MAX_PAGES 16
 
 typedef struct {
     // PCI identity
@@ -35,6 +43,12 @@ typedef struct {
     // Virtqueues
     virtq_t controlq;
     virtq_t cursorq;
+
+    // Buffer command/response pre-alokasi + lock (IRQ-safe).
+    gpu_page_t cmd_pages[VGPU_CMD_MAX_PAGES];
+    uint32_t   cmd_pages_n;
+    gpu_page_t resp_page;
+    spinlock_t cmd_lock;
 
     // Display info (dari GET_DISPLAY_INFO)
     uint32_t scanout_width;

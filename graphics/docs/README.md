@@ -11,6 +11,7 @@ Dokumentasi subsistem **Hardware Accelerated 2D Graphics** KyuzenOS.
 | [`BACKEND_GUIDE.md`](BACKEND_GUIDE.md) | Panduan menambah backend GPU baru (VirtIO, SVGA, Bochs, Intel, AMD, NVIDIA) |
 | [`PHASE1_5_REPORT.md`](PHASE1_5_REPORT.md) | Laporan selesai Phase 1.5 (fondasi software) |
 | [`PHASE2A_STATUS.md`](PHASE2A_STATUS.md) | Status Phase 2A: VirtIO-GPU bring-up (PCI→MMIO→virtqueue→scanout→present) |
+| [`PHASE2B_STATUS.md`](PHASE2B_STATUS.md) | Status Phase 2B: compositor present lewat HAL, desktop identik di 2 backend |
 
 ## Konvensi
 

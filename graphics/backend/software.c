@@ -21,6 +21,19 @@ struct ghal_surface {
     uint32_t*   pixels;      // width*height, tight-packed
 };
 
+// Framebuffer hardware (di-set lewat ghal_set_framebuffer sebelum init).
+static uint32_t* g_fb;
+static uint32_t  g_fb_w, g_fb_h, g_fb_pitch4;
+
+void software_backend_set_fb(uint32_t* fb, uint32_t w, uint32_t h, uint32_t pitch_bytes) {
+    g_fb = fb; g_fb_w = w; g_fb_h = h; g_fb_pitch4 = pitch_bytes / 4;
+}
+
+void software_backend_get_size(uint32_t* w, uint32_t* h) {
+    if (w) *w = g_fb_w;
+    if (h) *h = g_fb_h;
+}
+
 static struct ghal_surface* sw_surface_create(uint32_t w, uint32_t h, ghal_format_t fmt) {
     if (w == 0 || h == 0) return NULL;
     // Cek overflow width*height*4 (pola audit 5.6).
@@ -112,9 +125,27 @@ static void sw_blit(ghal_surface_t* dst, ghal_rect_t dst_rect,
 }
 
 static void sw_present(ghal_surface_t* s, const ghal_rect_t* rect) {
-    // Software backend: tidak ada scanout device — surface sudah di RAM.
-    // Present software ditangani compositor (menyalin ke fb_ptr). No-op.
-    (void)s; (void)rect;
+    // Software present: salin region damage dari surface ke framebuffer hardware.
+    if (!s || !s->pixels || !g_fb) return;
+    ghal_rect_t r;
+    if (rect) r = *rect;
+    else { r.x = 0; r.y = 0; r.w = s->width; r.h = s->height; }
+
+    // Clip ke surface & framebuffer.
+    if (r.x >= s->width || r.y >= s->height) return;
+    if (r.x >= g_fb_w || r.y >= g_fb_h) return;
+    uint32_t maxw = s->width - r.x, maxh = s->height - r.y;
+    if (r.w > maxw) r.w = maxw;
+    if (r.h > maxh) r.h = maxh;
+    maxw = g_fb_w - r.x; maxh = g_fb_h - r.y;
+    if (r.w > maxw) r.w = maxw;
+    if (r.h > maxh) r.h = maxh;
+
+    for (uint32_t y = 0; y < r.h; y++) {
+        const uint32_t* srow = s->pixels + (uint64_t)(r.y + y) * s->width + r.x;
+        uint32_t* drow = g_fb + (uint64_t)(r.y + y) * g_fb_pitch4 + r.x;
+        memcpy(drow, srow, r.w * 4);
+    }
 }
 
 static int software_init(void) { return 0; }

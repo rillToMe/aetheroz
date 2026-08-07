@@ -96,6 +96,24 @@ const char* ghal_last_error(void) {
     return g_last_error;
 }
 
+// --- framebuffer & scanout size ---
+extern void software_backend_set_fb(uint32_t* fb, uint32_t w, uint32_t h, uint32_t pitch_bytes);
+extern void software_backend_get_size(uint32_t* w, uint32_t* h);
+extern void virtio_backend_get_size(uint32_t* w, uint32_t* h);
+
+void ghal_set_framebuffer(uint32_t* fb, uint32_t width, uint32_t height,
+                          uint32_t pitch_bytes) {
+    software_backend_set_fb(fb, width, height, pitch_bytes);
+}
+
+void ghal_scanout_size(uint32_t* w, uint32_t* h) {
+    if (g_active == &virtio_gpu_backend_ops) {
+        virtio_backend_get_size(w, h);
+    } else {
+        software_backend_get_size(w, h);
+    }
+}
+
 // ------------------------------------------------------------
 // Dispatch ke backend aktif (NULL-safe).
 // ------------------------------------------------------------

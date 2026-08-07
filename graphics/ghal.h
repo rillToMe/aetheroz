@@ -82,6 +82,17 @@ void ghal_present(ghal_surface_t* s, const ghal_rect_t* rect);
 // Diagnostics: pesan error statis dari operasi terakhir yang gagal.
 const char* ghal_last_error(void);
 
+// Ukuran scanout yang dipilih backend aktif (resolusi output). Software backend
+// memakai ukuran framebuffer Limine; virtio-gpu memakai pmodes[0]. Compositor
+// memakai ini untuk menentukan ukuran main surface.
+void ghal_scanout_size(uint32_t* w, uint32_t* h);
+
+// Beri tahu HAL/backend software di mana framebuffer hardware berada.
+// WAJIB dipanggil sebelum ghal_init() supaya software backend bisa present.
+// (virtio-gpu backend mengabaikan ini — dia punya scanout sendiri.)
+void ghal_set_framebuffer(uint32_t* fb, uint32_t width, uint32_t height,
+                          uint32_t pitch_bytes);
+
 // Internal: daftarkan backend. Dipanggil dari graphics/select.c sebelum
 // ghal_init(). Backend pertama yang init sukses menjadi aktif.
 int ghal_register_backend(const ghal_backend_ops_t* ops);
