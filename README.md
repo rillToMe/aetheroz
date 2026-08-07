@@ -72,7 +72,7 @@ Everything on screen - every pixel, window, and keystroke - is produced by code 
 - ATA PIO storage, RTC, serial, PCI, PIT/LAPIC timer (60/100/144 Hz refresh)
 
 ### 🌐 Storage & Networking
-- **KyuzenFS** on a VFS layer + POSIX-ish fd API (`open/read/write/lseek/close`)
+- **KyuzenFS** on a VFS layer + POSIX-ish fd API (`open/read/write/lseek/close`) — **path-aware with real folders** (`mkdir`, nested paths; folder = flagged directory entry)
 - **lwIP TCP/IP** on an Intel e1000 NIC: DHCP, DNS, ICMP **ping**, TCP client sockets
 
 </td>
@@ -91,6 +91,8 @@ Everything on screen - every pixel, window, and keystroke - is produced by code 
 | `taskmgr` | Task / system monitor |
 | `notepad` | Text editor |
 | `badptr` | Ring-3 isolation self-test |
+
+App binaries ship as `.elf` files (plus optional `<name>.app` manifests) stored under **`/apps/`** on the KyuzenFS disk. The desktop launcher scans `/apps`, and the ELF loader resolves bare names — `clock`, `start calc` — to `/apps/<name>.elf` automatically. User data (`*.txt`, `*.png`, `users.sys`) stays at the root.
 
 <details>
 <summary><b>💬 Shell quick tour (click to expand)</b></summary>
@@ -169,7 +171,7 @@ On a fresh disk, Kyuzen runs a one-time setup asking you to **create the root pa
 | `drivers/` | ATA, keyboard, mouse, PCI, RTC, serial, timer, TTY |
 | `drivers/net/` | e1000 NIC driver + lwIP port |
 | `fs/` | VFS abstraction + fd layer |
-| `kernel/kyuzenfs.c` | KyuzenFS implementation |
+| `kernel/kyuzenfs.c` | KyuzenFS implementation (path-aware, folder support, `/apps/`) |
 | `apps/` | Kernel-side apps (shell, login) & userlib shims |
 | `user_apps/` | Ring-3 ELF applications (fileman, clock, calc, …) |
 | `include/` | Global headers |
@@ -191,6 +193,7 @@ On a fresh disk, Kyuzen runs a one-time setup asking you to **create the root pa
 | 4 | Input Subsystem (keyboard events + modifiers, mouse + wheel, interrupt-driven queue) | ✅ |
 | 5 | Window Manager - 5A concurrent spawn ✅ · routing/focus/decorations **in progress** | 🚧 |
 | 6+ | GUI framework, widgets, desktop environment | ⏳ |
+| FS 1–3 | KyuzenFS directories — path-aware FS, `mkdir`, apps migrated to `/apps/` | ✅ |
 
 ## 📄 License
 
