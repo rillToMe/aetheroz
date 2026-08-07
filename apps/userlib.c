@@ -57,8 +57,11 @@ void sys_draw_pixel(int x, int y, uint32_t color) {
 void sys_draw_image(int x, int y, int width, int height, uint32_t* buffer) {
     __asm__ volatile("int $0x80" : : "a"(23), "b"((uint64_t)x), "c"((uint64_t)y), "d"((uint64_t)width), "S"((uint64_t)height), "D"((uint64_t)buffer));
 }
-int sys_get_file_list(file_info_t* buffer, int max_entries) {
-    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(24), "b"((uint64_t)buffer), "c"((uint64_t)max_entries)); return (int)ret;
+int sys_get_file_list(char* path, file_info_t* buffer, int max_entries) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(24), "b"((uint64_t)path), "c"((uint64_t)buffer), "d"((uint64_t)max_entries)); return (int)ret;
+}
+int sys_mkdir(char* path) {
+    uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(64), "b"((uint64_t)path)); return (int)ret;
 }
 uint64_t sys_load_elf(char* filename) {
     uint64_t ret; __asm__ volatile("int $0x80" : "=a"(ret) : "a"(25), "b"((uint64_t)filename)); return ret;

@@ -77,7 +77,8 @@ typedef struct {
     uint8_t is_folder;
 } file_info_t;
 
-int sys_get_file_list(file_info_t* buffer, int max_entries);
+int sys_get_file_list(char* path, file_info_t* buffer, int max_entries);
+int sys_mkdir(char* path);
 
 uint64_t sys_load_elf(char* filename);
 

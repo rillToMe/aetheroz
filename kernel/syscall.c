@@ -32,7 +32,8 @@ extern int kfs_exists(char* filename);
 extern uint32_t kfs_get_file_size(char* filename);
 extern int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
 extern int kfs_create_file(char* filename, char* data, uint32_t size);
-extern int kfs_get_file_list(void* buffer, int max_entries);
+extern int kfs_get_file_list(char* path, void* buffer, int max_entries);
+extern int kfs_create_folder(char* path);
 
 extern void get_cpu_string(char* buffer);
 extern uint64_t pmm_get_used_ram(void);
@@ -282,22 +283,26 @@ void syscall_handler(registers_t *r) {
             }
         }
     }
-    else if (syscall_num == 24) { // sys_get_file_list
-        // Tahap 2: tulis ke bounce kernel, copy-out setelah fs_lock lepas.
-        int maxn = (int)r->rcx;
-        if (maxn > (int)UC_MAX_ENTRIES) maxn = (int)UC_MAX_ENTRIES;
-        uint64_t bytes = (uint64_t)maxn * sizeof(file_info_t);
-        if (maxn > 0 && user_range_ok(&uc, r->rbx, bytes)) {
-            file_info_t* bounce = (file_info_t*)kmalloc((uint32_t)bytes);
-            if (bounce) {
-                int count = kfs_get_file_list(bounce, maxn);
-                if (count > 0 &&
-                    copy_to_user(&uc, r->rbx, bounce,
-                                 (uint64_t)count * sizeof(file_info_t)) != 0) {
-                    count = 0;
+    else if (syscall_num == 24) { // sys_get_file_list(path, buffer, max_entries)
+        // Fase 2: argumen path user-space. RBX=path, RCX=buffer, RDX=maxn.
+        // Tulis ke bounce kernel, copy-out setelah fs_lock lepas.
+        char kpath[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kpath, r->rbx, sizeof(kpath)) >= 0) {
+            int maxn = (int)r->rdx;
+            if (maxn > (int)UC_MAX_ENTRIES) maxn = (int)UC_MAX_ENTRIES;
+            uint64_t bytes = (uint64_t)maxn * sizeof(file_info_t);
+            if (maxn > 0 && user_range_ok(&uc, r->rcx, bytes)) {
+                file_info_t* bounce = (file_info_t*)kmalloc((uint32_t)bytes);
+                if (bounce) {
+                    int count = kfs_get_file_list(kpath, bounce, maxn);
+                    if (count > 0 &&
+                        copy_to_user(&uc, r->rcx, bounce,
+                                     (uint64_t)count * sizeof(file_info_t)) != 0) {
+                        count = 0;
+                    }
+                    ret_val = (uint64_t)count;
+                    kfree(bounce);
                 }
-                ret_val = (uint64_t)count;
-                kfree(bounce);
             }
         }
     }
@@ -829,6 +834,12 @@ void syscall_handler(registers_t *r) {
         uint32_t w = fb_width, h = fb_height;
         ret_val = (copy_to_user(&uc, r->rbx, &w, 4) == 0 &&
                    copy_to_user(&uc, r->rcx, &h, 4) == 0) ? 0 : (uint64_t)-1;
+    }
+    else if (syscall_num == 64) { // sys_mkdir(path) — buat folder KyuzenFS
+        char kf[UC_MAX_FNAME];
+        if (strncpy_from_user(&uc, kf, r->rbx, sizeof(kf)) >= 0) {
+            ret_val = (uint64_t)kfs_create_folder(kf);
+        }
     }
 
     // SIMPAN RETURN VALUE KE RAX (Penting untuk aplikasi Ring 3!)

@@ -306,7 +306,14 @@ void user_shell() {
                                 elf_filename[i] = '\0';
                             }
 
-                            if (!sys_file_exists(elf_filename)) {
+                            // Fase 3: app di /apps/ — cek di sana, bukan root.
+                            char acheck[40];
+                            int ai = 0;
+                            const char* ap = "/apps/";
+                            while (ap[ai]) { acheck[ai] = ap[ai]; ai++; }
+                            for (int j = 0; elf_filename[j] && ai < 38; j++) acheck[ai++] = elf_filename[j];
+                            acheck[ai] = '\0';
+                            if (!sys_file_exists(acheck)) {
                                 print("File tidak ditemukan: ");
                                 print(elf_filename);
                                 print("\n");
@@ -484,7 +491,14 @@ void user_shell() {
                         // 2. Cek dulu file-nya ada — perintah salah TIDAK
                         //    boleh menghapus layar (clear_screen me-reset
                         //    ring history terminal, scrollback ikut hilang).
-                        if (!sys_file_exists(elf_filename)) {
+                        // Fase 3: app di /apps/ — cek di sana, bukan root.
+                        char acheck[40];
+                        int ai = 0;
+                        const char* ap = "/apps/";
+                        while (ap[ai]) { acheck[ai] = ap[ai]; ai++; }
+                        for (int j = 0; elf_filename[j] && ai < 38; j++) acheck[ai++] = elf_filename[j];
+                        acheck[ai] = '\0';
+                        if (!sys_file_exists(acheck)) {
                             print("Perintah tidak dikenali: ");
                             print(command);
                             print("\n");

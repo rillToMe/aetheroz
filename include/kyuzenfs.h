@@ -30,11 +30,18 @@ typedef struct {
 void kfs_init(void);
 void kfs_format(void);
 void kfs_list_files(void);
-int kfs_create_file(char* filename, char* data, uint32_t size);
+int kfs_create_file(char* path, char* data, uint32_t size);
 void kfs_read_file(char* filename);
-void kfs_delete_file(char* filename);
-int kfs_exists(char* filename);
-uint32_t kfs_get_file_size(char* filename);
-int kfs_read_to_buffer(char* filename, char* out_buffer, uint32_t buffer_capacity);
+void kfs_delete_file(char* path);
+int kfs_exists(char* path);
+uint32_t kfs_get_file_size(char* path);
+int kfs_read_to_buffer(char* path, char* out_buffer, uint32_t buffer_capacity);
+
+// Fase 1 direktori: path-aware. Semua fungsi di atas menerima path absolut
+// (mis. "/apps/test.elf"); komponen terakhir = nama file, sisanya parent dir.
+// Komponen path maksimal 22 char (limit entry). Tidak ada "." / ".." / cwd.
+int kfs_resolve_dir(char* path, uint32_t* out_dir_sector);
+int kfs_create_folder(char* path);
+int kfs_get_file_list(char* path, void* buffer, int max_entries);
 
 #endif

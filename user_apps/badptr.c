@@ -48,7 +48,7 @@ void main(void) {
     check("read_keyboard(NULL) == 0 (tidak block)", read_keyboard(NULL, 16) == 0);
     check("read_file_to_buffer(out NULL) == 0",
           sys_read_file_to_buffer("badptr.elf", NULL, 4096) == 0);
-    check("get_file_list(NULL) == 0",   sys_get_file_list(NULL, 16) == 0);
+    check("get_file_list(NULL) == 0",   sys_get_file_list("/", NULL, 16) == 0);
     check("write_fd(count liar) == -1",
           sys_write_fd(0, (void*)UNMAPPED_LOW, 0x7FFFFFFF) == -1);
     check("send(NULL) == -1",           sys_send(0, NULL, 16) == -1);
@@ -67,7 +67,7 @@ void main(void) {
     check("kwm_update_window(unmapped) tidak crash", 1);
 
     // --- Grup 5: kontrol positif — jalur normal harus tetap hidup ---
-    check("file_exists(badptr.elf) == 1", sys_file_exists("badptr.elf") == 1);
+    check("file_exists(badptr.elf) == 1", sys_file_exists("/apps/badptr.elf") == 1);
     uint32_t t[6];
     t[0] = 0;
     sys_get_time(t);

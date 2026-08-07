@@ -23,7 +23,23 @@ extern void kprint_num(uint32_t num);
 uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
                        phys_addr_t target_pml4) {
     if (out_stack_top)  *out_stack_top  = 0;
-    uint32_t file_size = kfs_get_file_size(filename);
+
+    // Fase 3: app pindah ke /apps/. Bare name (tanpa '/') di-resolve ke
+    // /apps/<name>; path absolut dipakai apa adanya. Semua caller (syscall
+    // 25/33/57, kernel_userlib) meng-copy filename ke buffer kernel dulu,
+    // jadi nama maksimal UC_MAX_FNAME dan buffer path[72] aman.
+    char path[72];
+    const char* load = filename;
+    if (filename[0] != '/') {
+        int k = 0;
+        const char* ap = "/apps/";
+        while (ap[k]) { path[k] = ap[k]; k++; }
+        for (int i = 0; filename[i] && k < (int)sizeof(path) - 1; i++) path[k++] = filename[i];
+        path[k] = '\0';
+        load = path;
+    }
+
+    uint32_t file_size = kfs_get_file_size((char*)load);
     if (file_size == 0) {
         kprint("[ELF] Error: File kosong atau tidak ditemukan!\n");
         return 0;
@@ -34,7 +50,7 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
         kprint("[ELF] Error: Heap habis!\n");
         return 0;
     }
-    kfs_read_to_buffer(filename, (char*)file_buffer, file_size);
+    kfs_read_to_buffer((char*)load, (char*)file_buffer, file_size);
 
     // Validasi ELF Magic Number
     if (file_buffer[0] != 0x7F || file_buffer[1] != 'E' ||

@@ -26,7 +26,7 @@ static int is_png(const char* name) {
 
 static void scan_pngs(void) {
     file_info_t fi[32];
-    int total = sys_get_file_list(fi, 32);
+    int total = sys_get_file_list("/", fi, 32);
     g_npng = 0;
     for (int i = 0; i < total && g_npng < MAX_PNG; i++) {
         if (fi[i].is_folder || !is_png(fi[i].filename)) continue;

@@ -183,6 +183,12 @@ void kernel_main(void) {
         kprint("Status: Limine mengirim modul!\n");
         kprint("Jumlah Modul: "); kprint_num(module_request.response->module_count); kprint("\n");
 
+        // Fase 3: pastikan folder /apps ada — app .elf/.app tinggal di sini.
+        if (!kfs_exists("/apps")) {
+            kprint(" -> Membuat folder /apps...\n");
+            kfs_create_folder("/apps");
+        }
+
         for (uint64_t i = 0; i < module_request.response->module_count; i++) {
             struct limine_file *mod = module_request.response->modules[i];
             uint64_t size = mod->size;
@@ -208,11 +214,22 @@ void kernel_main(void) {
 
             if (k == 0) continue;
 
-            if (kfs_exists(clean_name)) {
-                kfs_delete_file(clean_name);
+            // Fase 3: .elf / .app → /apps/, yang lain (png, dll) tetap root.
+            int nlen = 0; while (clean_name[nlen]) nlen++;
+            int is_app = nlen > 4 &&
+                         ((clean_name[nlen-3] == 'e' && clean_name[nlen-2] == 'l' && clean_name[nlen-1] == 'f') ||
+                          (clean_name[nlen-3] == 'a' && clean_name[nlen-2] == 'p' && clean_name[nlen-1] == 'p'));
+            char dest[32];
+            int d = 0;
+            if (is_app) { const char* ap = "/apps/"; for (int j = 0; ap[j] && d < 31; j++) dest[d++] = ap[j]; }
+            for (int j = 0; clean_name[j] && d < 31; j++) dest[d++] = clean_name[j];
+            dest[d] = '\0';
+
+            if (kfs_exists(dest)) {
+                kfs_delete_file(dest);
             }
 
-            int res = kfs_create_file(clean_name, (char*)mod->address, size);
+            int res = kfs_create_file(dest, (char*)mod->address, size);
             if(res) kprint(" -> [SUKSES DITULIS KE DISK]\n");
             else kprint(" -> [GAGAL DITULIS]\n");
         }

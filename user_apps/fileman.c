@@ -25,7 +25,7 @@ static void itoa(uint32_t n, char* b) {
 
 static void fill_table(void) {
     ui_table_clear(g_table);
-    g_nfiles = sys_get_file_list(g_files, MAX_FILES);
+    g_nfiles = sys_get_file_list("/", g_files, MAX_FILES);
     for (int i = 0; i < g_nfiles; i++) {
         char sz[16]; itoa(g_files[i].size, sz);
         const char* cells[2] = { g_files[i].filename, sz };

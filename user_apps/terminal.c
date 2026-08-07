@@ -39,8 +39,8 @@ static void outnum(const char* label, uint32_t v, const char* suffix) {
 // --- perintah ---
 static void cmd_help(void) {
     outln("Perintah: help, clear, echo <teks>, ls, baca <file>,");
-    outln("hapus <file>, fetch, sched, start <app>, time,");
-    outln("ping <host>, shutdown, restart");
+    outln("hapus <file>, mkdir <path>, fetch, sched, start <app>,");
+    outln("time, ping <host>, shutdown, restart");
 }
 static void cmd_echo(const char* arg) {
     if (!arg || !arg[0]) { outln("Penggunaan: echo [teks]"); return; }
@@ -48,7 +48,7 @@ static void cmd_echo(const char* arg) {
 }
 static void cmd_ls(void) {
     file_info_t fi[32];
-    int n = sys_get_file_list(fi, 32);
+    int n = sys_get_file_list("/", fi, 32);
     if (n < 0) { outln("ls: gagal"); return; }
     if (n == 0) { outln("(kosong)"); return; }
     for (int i = 0; i < n; i++) {
@@ -79,6 +79,11 @@ static void cmd_hapus(const char* arg) {
     if (!arg || !arg[0]) { outln("Penggunaan: hapus [file]"); return; }
     fs_delete((char*)arg);
     outln("dihapus");
+}
+static void cmd_mkdir(const char* arg) {
+    if (!arg || !arg[0]) { outln("Penggunaan: mkdir [path]"); return; }
+    if (sys_mkdir((char*)arg) == 1) outln("folder dibuat");
+    else outln("mkdir: gagal (path tak valid / sudah ada)");
 }
 static void cmd_fetch(void) {
     char cpu[49]; get_cpu_string(cpu);
@@ -136,7 +141,14 @@ static void cmd_start(const char* arg) {
     int has_ext = (i >= 4 && elf[i-4]=='.' && elf[i-3]=='e' &&
                    elf[i-2]=='l' && elf[i-1]=='f');
     if (!has_ext && i < 28) { elf[i++]='.'; elf[i++]='e'; elf[i++]='l'; elf[i++]='f'; elf[i]='\0'; }
-    if (!sys_file_exists(elf)) { outln("start: file tidak ada"); return; }
+    // Fase 3: app di /apps/ — cek di sana, bukan root.
+    char app[40];
+    int k = 0;
+    const char* ap = "/apps/";
+    while (ap[k]) { app[k] = ap[k]; k++; }
+    for (int j = 0; elf[j] && k < 38; j++) app[k++] = elf[j];
+    app[k] = '\0';
+    if (!sys_file_exists(app)) { outln("start: file tidak ada"); return; }
     int tid = sys_spawn(elf);
     if (tid < 0) outln("start: gagal (slot task penuh / OOM)");
     else {
@@ -177,6 +189,7 @@ static void on_enter(void* userdata) {
         else if (strcmp(c, "ls") == 0)        cmd_ls();
         else if (strcmp(c, "baca") == 0)      cmd_baca(arg);
         else if (strcmp(c, "hapus") == 0)     cmd_hapus(arg);
+        else if (strcmp(c, "mkdir") == 0)     cmd_mkdir(arg);
         else if (strcmp(c, "fetch") == 0)     cmd_fetch();
         else if (strcmp(c, "sched") == 0)     cmd_sched();
         else if (strcmp(c, "time") == 0)      cmd_time();
