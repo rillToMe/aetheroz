@@ -42,20 +42,26 @@ static void do_open(void* userdata) {
 
     if (len > 4 && fname[len-4]=='.' && fname[len-3]=='e' &&
         fname[len-2]=='l' && fname[len-1]=='f') {
+        char p[32];
+        build_app_path(p, sizeof(p), fname);
         ui_window_destroy(g_win);
-        sys_exec(fname);            // tak pernah kembali
+        sys_exec(p);            // tak pernah kembali
     } else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='p' &&
                fname[len-2]=='n' && fname[len-1]=='g') {
         if (sys_file_exists("view.tmp")) fs_delete("view.tmp");
         sys_create_file("view.tmp", fname, len);   // arg ke viewer
+        char vp[32];
+        build_app_path(vp, sizeof(vp), "viewer.elf");
         ui_window_destroy(g_win);
-        sys_exec("viewer.elf");
+        sys_exec(vp);
     } else if (len > 4 && fname[len-4]=='.' && fname[len-3]=='t' &&
                fname[len-2]=='x' && fname[len-1]=='t') {
         if (sys_file_exists("edit.tmp")) fs_delete("edit.tmp");
         sys_create_file("edit.tmp", fname, len);   // arg ke notepad
+        char np[32];
+        build_app_path(np, sizeof(np), "notepad.elf");
         ui_window_destroy(g_win);
-        sys_exec("notepad.elf");
+        sys_exec(np);
     }
 }
 

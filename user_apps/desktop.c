@@ -11,10 +11,9 @@
 // (key=value) untuk name/color/hidden. Tanpa manifest → label = nama file
 // tanpa ekstensi, warna netral.
 //
-// KyuzenFS FLAT — tidak ada direktori (kfs_get_file_list hanya membaca root,
-// is_folder selalu 0), jadi TIDAK ada "/apps/": konvensi = manifest berdampingan
-// dengan binary di root FS. Kalau nanti FS punya direktori, cukup ganti scan di
-// discover_apps().
+// KyuzenFS direktori (Fase 3): app binary + manifest pindah ke /apps/. Scan
+// /apps, baca manifest "/apps/<base>.app". e->elf menyimpan path lengkap
+// "/apps/<nama>" (build_app_path) — spawn langsung, tanpa resolve ulang.
 //
 // Build: desktop.o + userlib.o + libgui.o
 
@@ -48,7 +47,7 @@
 #define MANIFEST_MAX 512
 typedef struct {
     char     label[32];
-    char     elf[24];     // KyuzenFS: nama file maks 22 char + NUL
+    char     elf[32];     // path lengkap "/apps/<nama>" (maks 6+22+1)
     uint32_t color;
 } AppEntry;
 static AppEntry g_apps[MAX_APPS];
@@ -135,7 +134,7 @@ static int discover_apps(void) {
         int base = L - 4;                       // nama tanpa ".elf"
         for (int j = 0; j < base; j++) e->label[j] = fn[j];
         e->label[base] = '\0';
-        for (int j = 0; j <= L; j++) e->elf[j] = fn[j];
+        build_app_path(e->elf, sizeof(e->elf), fn);
         e->color = APP_DEFAULT;
 
         char man[32];                           // "/apps/<base>.app" (Fase 3)

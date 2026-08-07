@@ -141,15 +141,11 @@ static void cmd_start(const char* arg) {
     int has_ext = (i >= 4 && elf[i-4]=='.' && elf[i-3]=='e' &&
                    elf[i-2]=='l' && elf[i-1]=='f');
     if (!has_ext && i < 28) { elf[i++]='.'; elf[i++]='e'; elf[i++]='l'; elf[i++]='f'; elf[i]='\0'; }
-    // Fase 3: app di /apps/ — cek di sana, bukan root.
+    // Fase 3: app di /apps/ — cek + spawn di sana, bukan root.
     char app[40];
-    int k = 0;
-    const char* ap = "/apps/";
-    while (ap[k]) { app[k] = ap[k]; k++; }
-    for (int j = 0; elf[j] && k < 38; j++) app[k++] = elf[j];
-    app[k] = '\0';
+    build_app_path(app, sizeof(app), elf);
     if (!sys_file_exists(app)) { outln("start: file tidak ada"); return; }
-    int tid = sys_spawn(elf);
+    int tid = sys_spawn(app);
     if (tid < 0) outln("start: gagal (slot task penuh / OOM)");
     else {
         char b[64];

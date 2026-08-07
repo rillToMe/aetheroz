@@ -151,7 +151,9 @@ void user_login() {
 
             // Phase 10: spawn desktop shell (task sendiri, jalan konkuren).
             // Gagal (file tak ada) → fallback natural ke shell CLI.
-            sys_spawn("desktop.elf");
+            char dpath[32];
+            build_app_path(dpath, sizeof(dpath), "desktop.elf");
+            sys_spawn(dpath);
 
             clear_screen();
             user_shell();

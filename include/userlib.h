@@ -77,6 +77,19 @@ typedef struct {
     uint8_t is_folder;
 } file_info_t;
 
+// App binary (.elf) pindah ke /apps/ (Fase 3 KyuzenFS). Bangun path lengkap
+// "/apps/<nama>" dengan bound-check; pakai INI untuk semua launch app, jangan
+// concat manual. Static inline → tersedia di semua app tanpa link dependency.
+#define KYUZEN_APPS_DIR "/apps/"
+
+static inline void build_app_path(char* out, int out_cap, const char* elf_name) {
+    int k = 0;
+    const char* d = KYUZEN_APPS_DIR;
+    while (d[k] && k < out_cap - 1) { out[k] = d[k]; k++; }
+    for (int i = 0; elf_name[i] && k < out_cap - 1; i++) out[k++] = elf_name[i];
+    out[k] = '\0';
+}
+
 int sys_get_file_list(char* path, file_info_t* buffer, int max_entries);
 int sys_mkdir(char* path);
 

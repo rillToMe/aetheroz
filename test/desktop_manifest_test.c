@@ -87,14 +87,14 @@ int main(void) {
     assert(g_napps == 3);
 
     assert(!strcmp(g_apps[0].label, "Explorer"));      // dari manifest
-    assert(!strcmp(g_apps[0].elf, "fileman.elf"));
+    assert(!strcmp(g_apps[0].elf, "/apps/fileman.elf"));
     assert(g_apps[0].color == 0x1565C0);
 
     assert(!strcmp(g_apps[1].label, "Kalkulator"));    // CRLF ikut ter-trim
     assert(g_apps[1].color == 0x2E7D32);
 
     assert(!strcmp(g_apps[2].label, "badptr"));        // fallback tanpa manifest
-    assert(!strcmp(g_apps[2].elf, "badptr.elf"));
+    assert(!strcmp(g_apps[2].elf, "/apps/badptr.elf"));
     assert(g_apps[2].color == APP_DEFAULT);
 
     assert(discover_apps() == 0);          // scan ulang tanpa perubahan FS

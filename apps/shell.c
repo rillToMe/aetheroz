@@ -306,19 +306,15 @@ void user_shell() {
                                 elf_filename[i] = '\0';
                             }
 
-                            // Fase 3: app di /apps/ — cek di sana, bukan root.
+                            // Fase 3: app di /apps/ — cek + spawn di sana, bukan root.
                             char acheck[40];
-                            int ai = 0;
-                            const char* ap = "/apps/";
-                            while (ap[ai]) { acheck[ai] = ap[ai]; ai++; }
-                            for (int j = 0; elf_filename[j] && ai < 38; j++) acheck[ai++] = elf_filename[j];
-                            acheck[ai] = '\0';
+                            build_app_path(acheck, sizeof(acheck), elf_filename);
                             if (!sys_file_exists(acheck)) {
                                 print("File tidak ditemukan: ");
                                 print(elf_filename);
                                 print("\n");
                             } else {
-                                int tid = sys_spawn(elf_filename);
+                                int tid = sys_spawn(acheck);
                                 if (tid < 0) {
                                     print("Gagal menjalankan: ");
                                     print(elf_filename);
@@ -491,13 +487,9 @@ void user_shell() {
                         // 2. Cek dulu file-nya ada — perintah salah TIDAK
                         //    boleh menghapus layar (clear_screen me-reset
                         //    ring history terminal, scrollback ikut hilang).
-                        // Fase 3: app di /apps/ — cek di sana, bukan root.
+                        // Fase 3: app di /apps/ — cek + exec di sana, bukan root.
                         char acheck[40];
-                        int ai = 0;
-                        const char* ap = "/apps/";
-                        while (ap[ai]) { acheck[ai] = ap[ai]; ai++; }
-                        for (int j = 0; elf_filename[j] && ai < 38; j++) acheck[ai++] = elf_filename[j];
-                        acheck[ai] = '\0';
+                        build_app_path(acheck, sizeof(acheck), elf_filename);
                         if (!sys_file_exists(acheck)) {
                             print("Perintah tidak dikenali: ");
                             print(command);
@@ -509,7 +501,7 @@ void user_shell() {
                             //    app akan longjmp ke user_shell di stack ini.
                             __asm__ volatile("mov %%rsp, %0" : "=m"(g_shell_return_rsp) :: "memory");
                             clear_screen();
-                            sys_exec(elf_filename);
+                            sys_exec(acheck);
 
                             // sys_exec TIDAK kembali saat sukses (app jalan di
                             // ring 3; exit → longjmp ke user_shell). Sampai di

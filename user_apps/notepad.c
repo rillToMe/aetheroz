@@ -78,6 +78,11 @@ void main(void) {
 
     ui_window_run(g_win);   // blocking; keluar via X / ESC
     ui_window_destroy(g_win);
-    if (g_from_fileman) sys_exec("fileman.elf");
-    else sys_exit();
+    if (g_from_fileman) {
+        char p[32];
+        build_app_path(p, sizeof(p), "fileman.elf");
+        sys_exec(p);
+    } else {
+        sys_exit();
+    }
 }
