@@ -139,6 +139,17 @@ static heap_block_t* expand_heap(size_t required_size) {
         // FIX_005 Tahap 3: US=0 (flags 3, dulu 7) — heap kernel tidak lagi
         // terlihat ring 3; app yang menyentuh 0xFFFF9000... langsung #PF.
         if (!vmm_alloc_page_kernel(current_heap_end, 3)) {
+            // Bug 3.1: RAM fisik habis di tengah ekspansi. Roll back halaman
+            // yang sudah ter-map agar tidak bocor (unmap + free frame), dan
+            // kembalikan current_heap_end ke posisi semula supaya ekspansi
+            // berikutnya konsisten.
+            uint64_t mapped = current_heap_end - start_expansion_addr;
+            for (uint64_t j = 0; j < mapped; j += 4096) {
+                phys_addr_t pa = vmm_unmap_page_from(
+                    start_expansion_addr + j, vmm_get_kernel_pml4_phys());
+                if (pa != PHYS_NULL) pmm_free_page(pa);
+            }
+            current_heap_end = start_expansion_addr;
             return NULL; // RAM fisik habis
         }
         current_heap_end += 4096;

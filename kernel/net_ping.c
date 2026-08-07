@@ -32,6 +32,7 @@
 #include "lwip/netif.h"
 #include "lwip/inet.h"
 #include "kyuzen_netif.h"   /* g_kyuzen_netif */
+#include "net_socket.h"     /* net_lock_acquire / net_lock_release — serialisasi lwIP */
 
 #ifndef IP_PROTO_ICMP
 #define IP_PROTO_ICMP 1
@@ -79,6 +80,30 @@ static volatile int       dns_done      = 0;
 static volatile uint32_t  dns_result    = 0;
 
 /* =========================================================================
+ * LOCKING
+ *
+ * lwIP tidak SMP-safe. Semua mutasi lwIP di file ini (raw_new, raw_bind,
+ * raw_recv, raw_sendto*, raw_remove, dns_gethostbyname, dan baca netif)
+ * WAJIB berjalan di bawah net_lock — sama seperti net_socket.c dan cb_network.
+ * Callback ping/dns fire dari dalam cb_network yang SUDAH memegang net_lock,
+ * jadi callback TIDAK boleh mengakuisisi lock lagi.
+ *
+ * Aturan ketat: net_lock tidak pernah ditahan melintasi sti_hlt (deadlock).
+ * Setiap blok lwIP pendek: acquire → mutasi → release; wait loop di luar lock.
+ *
+ * ping_busy: men-serialkan seluruh kernel_ping sehingga dua ping bersamaan
+ * (dua task/CPU) tidak saling menimpa global ping_pcb/ping_done/dll (bug 1.3).
+ * =========================================================================*/
+
+#include "spinlock.h"
+static spinlock_t ping_busy = SPINLOCK_INIT;
+
+/* Pakai API publik net_lock_acquire/net_lock_release (net_lock itu static di
+ * net_socket.c). Keduanya mengunci IRQ (spinlock_lock_irqsave) sehingga aman. */
+static void ping_lock(uint64_t *saved)  { net_lock_acquire(saved); }
+static void ping_unlock(uint64_t saved) { net_lock_release(saved); }
+
+/* =========================================================================
  * DNS CALLBACK
  * =========================================================================*/
 
@@ -96,7 +121,12 @@ static uint8_t ping_recv_cb(void *arg, struct raw_pcb *pcb,
                              struct pbuf *p, const ip_addr_t *addr) {
     (void)arg; (void)pcb; (void)addr;
 
-    if (p->len < 20 + sizeof(struct icmp_echo_hdr)) {
+    /* Bug 1.4: validasi memakai p->tot_len (total seluruh chain), bukan p->len
+     * (hanya segmen pertama). Header IP+ICMP harus ada di segmen pertama agar
+     * deref langsung aman; jika pbuf ter-chain, segmen pertama mungkin lebih
+     * pendek dan header menyebrang batas segmen. */
+    if (p->tot_len < 20 + sizeof(struct icmp_echo_hdr) ||
+        p->len < 20 + sizeof(struct icmp_echo_hdr)) {
         pbuf_free(p);
         return 0;
     }
@@ -104,7 +134,9 @@ static uint8_t ping_recv_cb(void *arg, struct raw_pcb *pcb,
     struct ip_hdr *iph = (struct ip_hdr *)p->payload;
     uint8_t ip_hdr_len = (uint8_t)(IPH_HL(iph) * 4);
 
-    if (p->len < ip_hdr_len + sizeof(struct icmp_echo_hdr)) {
+    if (ip_hdr_len < 20 ||
+        p->tot_len < ip_hdr_len + sizeof(struct icmp_echo_hdr) ||
+        p->len < ip_hdr_len + sizeof(struct icmp_echo_hdr)) {
         pbuf_free(p);
         return 0;
     }
@@ -192,9 +224,13 @@ static void net_print_ip(uint32_t addr) {
 
 static int net_ping_once(const ip_addr_t *dest, const ip_addr_t *src,
                          uint32_t timeout_ms) {
-    /* Buka raw ICMP PCB */
+    uint64_t lf;
+
+    /* Buka raw ICMP PCB — di bawah net_lock (bug 1.1) */
+    ping_lock(&lf);
     ping_pcb = raw_new(IP_PROTO_ICMP);
     if (ping_pcb == NULL) {
+        ping_unlock(lf);
         kprint("[ping] ERROR: raw_new() failed\n");
         return -1;
     }
@@ -208,20 +244,27 @@ static int net_ping_once(const ip_addr_t *dest, const ip_addr_t *src,
     ping_rtt_ms    = 0;
     ping_send_time = timer_get_ms();
 
-    if (ping_send(ping_pcb, dest, src, ping_seq) != 0) {
+    int send_ok = (ping_send(ping_pcb, dest, src, ping_seq) == 0);
+    ping_unlock(lf);
+
+    if (!send_ok) {
+        ping_lock(&lf);
         raw_remove(ping_pcb);
         ping_pcb = NULL;
+        ping_unlock(lf);
         return -1;
     }
 
-    /* Tunggu Echo Reply — GUNAKAN sti_hlt(), BUKAN hlt biasa */
+    /* Tunggu Echo Reply — lock DILEPAS (BSP poll harus berjalan). sti_hlt. */
     uint64_t deadline = timer_get_ms() + timeout_ms;
     while (!ping_done && timer_get_ms() < deadline) {
         sti_hlt();
     }
 
+    ping_lock(&lf);
     raw_remove(ping_pcb);
     ping_pcb = NULL;
+    ping_unlock(lf);
 
     return ping_done ? (int)ping_rtt_ms : -1;
 }
@@ -237,6 +280,13 @@ int kernel_ping(const char *host) {
     if (host == NULL || host[0] == '\0') return -1;
 
     /*
+     * Serialisasi seluruh ping (bug 1.3): dua kernel_ping bersamaan tidak boleh
+     * berbagi global ping_pcb/dns_*. Lock ini dipegang sepanjang fungsi dan
+     * dilepas di setiap jalur return.
+     */
+    uint64_t bf = spinlock_lock_irqsave(&ping_busy);
+
+    /*
      * RE-ENABLE INTERRUPTS — WAJIB!
      * INT 0x80 handler masuk dengan IF=0.
      * Kita perlu IF=1 agar:
@@ -249,10 +299,16 @@ int kernel_ping(const char *host) {
     /* -----------------------------------------------------------------------
      * 1. Cek apakah netif sudah punya IP (DHCP complete)
      * ----------------------------------------------------------------------- */
-    if (ip4_addr_isany_val(g_kyuzen_netif.ip_addr)) {
+    uint64_t lf;
+    ping_lock(&lf);
+    int has_ip = !ip4_addr_isany_val(g_kyuzen_netif.ip_addr);
+    ping_unlock(lf);
+
+    if (!has_ip) {
         kprint("[ping] ERROR: No IP address assigned yet.\n");
         kprint("[ping]        DHCP belum selesai. Tunggu beberapa detik lalu coba lagi.\n");
         kprint("[ping]        Tip: Pastikan QEMU dijalankan dengan -nic user,model=e1000\n");
+        spinlock_unlock_irqrestore(&ping_busy, bf);
         return -1;
     }
 
@@ -266,11 +322,19 @@ int kernel_ping(const char *host) {
     dns_done   = 0;
     dns_result = 0;
 
-    err_t dns_err = dns_gethostbyname(host, &dest_ip, dns_found_cb, NULL);
+    /* dns_gethostbyname memutasi state lwIP → di bawah net_lock (bug 1.1).
+     * Callback dns_found_cb fire dari BSP poll (yang memegang net_lock), jadi
+     * lock WAJIB dilepas sebelum menunggu dns_done. */
+    err_t dns_err;
+    ping_lock(&lf);
+    dns_err = dns_gethostbyname(host, &dest_ip, dns_found_cb, NULL);
     if (dns_err == ERR_OK) {
         dns_result = dest_ip.addr;
         dns_done   = 1;
-    } else if (dns_err == ERR_INPROGRESS) {
+    }
+    ping_unlock(lf);
+
+    if (dns_err == ERR_INPROGRESS) {
         uint64_t deadline = timer_get_ms() + 5000;
         while (!dns_done && timer_get_ms() < deadline) {
             sti_hlt();
@@ -280,6 +344,7 @@ int kernel_ping(const char *host) {
     if (!dns_done || dns_result == 0) {
         kprint("[ping] Host not found: ");
         kprint(host); kprint("\n");
+        spinlock_unlock_irqrestore(&ping_busy, bf);
         return -1;
     }
 
@@ -288,8 +353,10 @@ int kernel_ping(const char *host) {
     /* -----------------------------------------------------------------------
      * 3. Print info dan kirim 4 ping
      * ----------------------------------------------------------------------- */
+    ping_lock(&lf);
     ip_addr_t src_ip;
     src_ip.addr = g_kyuzen_netif.ip_addr.addr;
+    ping_unlock(lf);
 
     kprint("[ping] Pinging ");
     net_print_ip(dns_result);
@@ -336,12 +403,16 @@ int kernel_ping(const char *host) {
     kprint_num((uint64_t)(4 - success) * 25);
     kprint("% loss)\n");
 
+    int ret;
     if (success > 0) {
         kprint("Approximate round trip times:\n  Average = ");
         kprint_num((uint64_t)(total_rtt / success));
         kprint("ms\n");
-        return total_rtt / success;
+        ret = total_rtt / success;
+    } else {
+        ret = -1;
     }
 
-    return -1;
+    spinlock_unlock_irqrestore(&ping_busy, bf);
+    return ret;
 }

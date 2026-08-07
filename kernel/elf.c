@@ -67,14 +67,45 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
         // ===========================
         //  LOAD ELF64 (x86_64)
         // ===========================
+        // Bug 3.3: tanpa AS per-proses, memetakan vaddr user ke kernel PML4
+        // mencemari tabel halaman kernel. Tolak di awal.
+        if (target_pml4 == PHYS_NULL) {
+            kprint("[ELF64] Error: butuh AS per-proses (target_pml4 null)!\n");
+            kfree(file_buffer);
+            return 0;
+        }
+
         elf64_ehdr_t* hdr  = (elf64_ehdr_t*)file_buffer;
+
+        // Bug 3.2: validasi header sebelum membaca program headers — offset &
+        // jumlahnya harus berada di dalam file, dan e_phnum dibatasi.
+        if (hdr->e_phoff > file_size ||
+            (uint64_t)hdr->e_phnum * sizeof(elf64_phdr_t) > file_size - hdr->e_phoff) {
+            kprint("[ELF64] Error: e_phoff/e_phnum out of range!\n");
+            kfree(file_buffer);
+            return 0;
+        }
         elf64_phdr_t* phdr = (elf64_phdr_t*)(file_buffer + hdr->e_phoff);
 
         for (int i = 0; i < hdr->e_phnum; i++) {
             if (phdr[i].p_type != 1) continue; // Hanya PT_LOAD
 
             uint64_t seg_vaddr = phdr[i].p_vaddr;
-            uint64_t seg_end   = seg_vaddr + phdr[i].p_memsz;
+            // Bug 3.2: cegah overflow vaddr+memsz (seg_end harus >= seg_vaddr).
+            if (phdr[i].p_memsz > UINT64_MAX - seg_vaddr) {
+                kprint("[ELF64] Error: segmen vaddr overflow!\n");
+                kfree(file_buffer);
+                return 0;
+            }
+            uint64_t seg_end = seg_vaddr + phdr[i].p_memsz;
+
+            // Bug 3.2: data segmen harus berada di dalam file (p_offset+p_filesz).
+            if (phdr[i].p_offset > file_size ||
+                (uint64_t)phdr[i].p_filesz > file_size - phdr[i].p_offset) {
+                kprint("[ELF64] Error: segmen melebihi ukuran file!\n");
+                kfree(file_buffer);
+                return 0;
+            }
 
             // PRE-MAP: map semua 4KB pages yang dicakup segmen
             for (uint64_t page = seg_vaddr & ~0xFFFULL; page < seg_end; page += 4096) {
@@ -141,7 +172,22 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
         // ===========================
         //  LOAD ELF32 (i386) — legacy
         // ===========================
+        // Bug 3.3: sama seperti ELF64 — mapping user ke kernel PML4 salah.
+        if (target_pml4 == PHYS_NULL) {
+            kprint("[ELF32] Error: butuh AS per-proses (target_pml4 null)!\n");
+            kfree(file_buffer);
+            return 0;
+        }
+
         elf32_ehdr_t* hdr  = (elf32_ehdr_t*)file_buffer;
+
+        // Bug 3.2: validasi program header berada dalam file.
+        if (hdr->e_phoff > file_size ||
+            (uint64_t)hdr->e_phnum * sizeof(elf32_phdr_t) > file_size - hdr->e_phoff) {
+            kprint("[ELF32] Error: e_phoff/e_phnum out of range!\n");
+            kfree(file_buffer);
+            return 0;
+        }
         elf32_phdr_t* phdr = (elf32_phdr_t*)(file_buffer + hdr->e_phoff);
 
         for (int i = 0; i < hdr->e_phnum; i++) {
@@ -149,6 +195,14 @@ uint64_t elf_load_file(char* filename, uint64_t* out_stack_top,
 
             uint32_t seg_vaddr = phdr[i].p_vaddr;
             uint32_t seg_end   = seg_vaddr + phdr[i].p_memsz;
+
+            // Bug 3.2: data segmen harus berada di dalam file.
+            if (phdr[i].p_offset > file_size ||
+                (uint32_t)phdr[i].p_filesz > file_size - phdr[i].p_offset) {
+                kprint("[ELF32] Error: segmen melebihi ukuran file!\n");
+                kfree(file_buffer);
+                return 0;
+            }
 
             uint32_t block = seg_vaddr & 0xFFC00000;
             while (block < seg_end) {

@@ -24,6 +24,7 @@ enum { S_FREE = 0, S_ALLOC, S_CONNECTING, S_CONNECTED, S_CLOSED, S_ERR };
 
 typedef struct {
     int              state;
+    int              gen;         // generation — dibump saat close; deteksi slot reuse (bug 1.5)
     struct tcp_pcb  *pcb;
     uint8_t          rx[KSOCK_RXBUF];
     uint32_t         rx_head;    // read position
@@ -39,7 +40,7 @@ void net_lock_release(uint64_t saved)  { spinlock_unlock_irqrestore(&net_lock, s
 
 void ksock_init(void) {
     uint64_t f = spinlock_lock_irqsave(&net_lock);
-    for (int i = 0; i < KSOCK_MAX; i++) { socks[i].state = S_FREE; socks[i].pcb = NULL; }
+    for (int i = 0; i < KSOCK_MAX; i++) { socks[i].state = S_FREE; socks[i].pcb = NULL; socks[i].gen = 0; }
     spinlock_unlock_irqrestore(&net_lock, f);
 }
 
@@ -99,6 +100,7 @@ int ksock_socket(void) {
     ksock_t *s = &socks[fd];
     s->state = S_ALLOC; s->pcb = pcb;
     s->rx_head = 0; s->rx_len = 0; s->peer_closed = 0;
+    s->gen = s->gen + 1;                       // tiap alokasi slot = generasi baru
     tcp_arg(pcb, s);
     tcp_recv(pcb, cb_recv);
     tcp_err(pcb, cb_err);
@@ -117,6 +119,7 @@ int ksock_connect(int fd, uint32_t ip_be, uint16_t port) {
     uint64_t f = spinlock_lock_irqsave(&net_lock);
     ksock_t *s = get(fd);
     if (!s || s->state != S_ALLOC || !s->pcb) { spinlock_unlock_irqrestore(&net_lock, f); return -1; }
+    int gen = s->gen;                            // deteksi slot reuse saat polling (bug 1.5)
     ip_addr_t dst; dst.addr = ip_be;
     s->state = S_CONNECTING;
     err_t err = tcp_connect(s->pcb, &dst, port, cb_connected);
@@ -127,7 +130,8 @@ int ksock_connect(int fd, uint32_t ip_be, uint16_t port) {
     uint64_t deadline = timer_get_ms() + 5000;
     for (;;) {
         f = spinlock_lock_irqsave(&net_lock);
-        int st = s->state;
+        ksock_t *s2 = get(fd);
+        int st  = (s2 && s2->gen == gen) ? s2->state : S_ERR;
         spinlock_unlock_irqrestore(&net_lock, f);
         if (st == S_CONNECTED) return 0;
         if (st == S_ERR)       return -1;
@@ -143,16 +147,22 @@ int ksock_send(int fd, const void *buf, uint32_t len) {
     const uint8_t *p = (const uint8_t *)buf;
     uint32_t sent = 0;
     uint64_t deadline = timer_get_ms() + 5000;
+    int gen = -1;
 
     while (sent < len) {
         uint64_t f = spinlock_lock_irqsave(&net_lock);
         ksock_t *s = get(fd);
-        if (!s || s->state != S_CONNECTED || !s->pcb) { spinlock_unlock_irqrestore(&net_lock, f); return (sent > 0) ? (int)sent : -1; }
+        if (s && gen < 0) gen = s->gen;          // tangkap generasi pertama kali
+        if (!s || s->gen != gen || s->state != S_CONNECTED || !s->pcb) {
+            spinlock_unlock_irqrestore(&net_lock, f);
+            return (sent > 0) ? (int)sent : -1;
+        }
 
         uint32_t space = tcp_sndbuf(s->pcb);
         if (space > 0) {
             uint32_t chunk = len - sent;
             if (chunk > space) chunk = space;
+            if (chunk > 65535) chunk = 65535;    // tcp_write len adalah u16_t (bug 1.7)
             err_t err = tcp_write(s->pcb, p + sent, (uint16_t)chunk, TCP_WRITE_FLAG_COPY);
             if (err == ERR_OK) { tcp_output(s->pcb); sent += chunk; deadline = timer_get_ms() + 5000; }
             else if (err != ERR_MEM) { spinlock_unlock_irqrestore(&net_lock, f); return (sent > 0) ? (int)sent : -1; }
@@ -172,10 +182,15 @@ int ksock_recv(int fd, void *buf, uint32_t len) {
     __asm__ volatile("sti" ::: "memory");
 
     uint64_t deadline = timer_get_ms() + 10000;
+    int gen = -1;
     for (;;) {
         uint64_t f = spinlock_lock_irqsave(&net_lock);
         ksock_t *s = get(fd);
-        if (!s || (s->state != S_CONNECTED && s->state != S_CLOSED)) { spinlock_unlock_irqrestore(&net_lock, f); return -1; }
+        if (s && gen < 0) gen = s->gen;
+        if (!s || s->gen != gen || (s->state != S_CONNECTED && s->state != S_CLOSED)) {
+            spinlock_unlock_irqrestore(&net_lock, f);
+            return -1;
+        }
         if (s->rx_len > 0) {
             int n = (int)rx_pop(s, (uint8_t *)buf, len);
             spinlock_unlock_irqrestore(&net_lock, f);
@@ -201,6 +216,7 @@ int ksock_close(int fd) {
         s->pcb = NULL;
     }
     s->state = S_FREE;
+    s->gen++;   // tandai generasi baru — pemblokir lama (bug 1.5) mendeteksi reuse
     spinlock_unlock_irqrestore(&net_lock, f);
     return 0;
 }

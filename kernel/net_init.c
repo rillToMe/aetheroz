@@ -158,8 +158,11 @@ void net_init(void) {
                 kprint("[net] DHCP complete!\n");
                 break;
             }
-            /* Hemat CPU: tidur hingga interrupt berikutnya */
-            __asm__ volatile("hlt");
+            /* Hemat CPU: tidur hingga interrupt berikutnya.
+             * sti WAJIB sebelum hlt — loop ini dipanggil dari kernel_main
+             * (IF sudah enabled), tapi kita jaga konsisten dengan pola di
+             * net_ping.c: tanpa sti, jika IF sempat 0 loop bisa deadlock. */
+            __asm__ volatile("sti\n\t hlt" ::: "memory");
         }
 
         if (ip4_addr_isany_val(g_kyuzen_netif.ip_addr)) {
