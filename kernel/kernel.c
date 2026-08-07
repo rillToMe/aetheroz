@@ -16,6 +16,7 @@
 #include "lapic.h"
 #include "smp.h"
 #include "gfx.h"
+#include "ghal.h"   // tipe ghal_* (dipakai GFX_SELFTEST)
 
 #ifdef STRESS_TEST
 #include "pmm_stress.h"
@@ -241,6 +242,40 @@ void kernel_main(void) {
     // Aktifkan interrupts SEBELUM masuk ke user code
     // Tanpa sti: timer IRQ tidak pernah fire, keyboard beku, OS freeze!
     __asm__ volatile("sti");
+
+#ifdef GFX_SELFTEST
+    // Phase 2A: validasi Graphics HAL + backend selection, lalu test present.
+    // Dipanggil SEBELUM net_init supaya tidak bergantung pada network stack.
+    // Output via serial (host-capturable).
+    {
+        extern int ghal_init(void);
+        extern const char* ghal_active_backend_name(void);
+        extern void serial_print(const char* s);
+        extern ghal_surface_t* ghal_surface_create(uint32_t,uint32_t,ghal_format_t);
+        extern void ghal_fill_rect(ghal_surface_t*, ghal_rect_t, uint32_t);
+        extern void ghal_present(ghal_surface_t*, const ghal_rect_t*);
+        if (ghal_init() == 0) {
+            serial_print("[GFX SELFTEST] PASS (backend=");
+            serial_print(ghal_active_backend_name());
+            serial_print(")\n");
+
+            // Test present 2A: buat surface full-screen, isi solid, present.
+            ghal_surface_t* s = ghal_surface_create(1280, 800, GHAL_FMT_XRGB8888);
+            if (s) {
+                ghal_rect_t all = { 0, 0, 1280, 800 };
+                ghal_fill_rect(s, all, 0x0000FF);   // biru solid
+                ghal_present(s, &all);
+                serial_print("[GFX SELFTEST] present OK\n");
+                extern void ghal_surface_destroy(ghal_surface_t*);
+                ghal_surface_destroy(s);
+            } else {
+                serial_print("[GFX SELFTEST] surface_create failed\n");
+            }
+        } else {
+            serial_print("[GFX SELFTEST] FAIL: ghal_init failed\n");
+        }
+    }
+#endif
 
     // Inisialisasi network stack (lwIP + e1000 + DHCP).
     // WAJIB setelah sti karena DHCP wait loop menggunakan hlt

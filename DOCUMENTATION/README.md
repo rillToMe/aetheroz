@@ -28,6 +28,17 @@ Linux), menggantikan satu file raksasa secara bertahap.
 |---------|-----------|
 | [`2026-07-26-heap-corruption-bosd.md`](troubleshooting/2026-07-26-heap-corruption-bosd.md) | BOSD "heap_block_t magic mismatch" saat buka PNG — ternyata bukan corruptor, melainkan halaman heap terpetakan ke ROM BIOS karena free list PMM tercemar mapping Limine |
 
+### graphics/ — Hardware Accelerated 2D Graphics
+
+Subsistem 2D Graphics berada di [`../graphics/docs/`](../graphics/docs/),
+mendokumentasikan HAL GPU, surface, dan panduan backend:
+
+| Dokumen | Ringkasan |
+|---------|-----------|
+| [`../graphics/docs/ARCHITECTURE.md`](../graphics/docs/ARCHITECTURE.md) | Arsitektur layer, source tree, HAL, surface, double buffering, konvensi |
+| [`../graphics/docs/API.md`](../graphics/docs/API.md) | Referensi lengkap API HAL / surface / surface manager / renderer + contoh |
+| [`../graphics/docs/BACKEND_GUIDE.md`](../graphics/docs/BACKEND_GUIDE.md) | Panduan menambah backend GPU baru (VirtIO, SVGA, Bochs, Intel, AMD, NVIDIA) |
+
 ---
 
 ## Konvensi

@@ -18,7 +18,8 @@ LD = ld.lld
 QEMU = qemu-system-x86_64.exe
 
 # Direktori sumber kernel (Ring 0)
-SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs apps
+SRC_DIRS = arch/x86 drivers kernel kernel/smp kernel/gfx kernel/sched fs apps \
+           graphics graphics/backend graphics/memory drivers/graphics/hw
 
 # ==========================================
 # lwIP Network Stack
@@ -73,7 +74,7 @@ INCLUDE_DIR = include
 # header (mis. task.h) memicu rebuild semua .c yang meng-includenya. Tanpa
 # ini, object basi membaca struct dengan layout lama (pernah menggigit:
 # task_t tambah field, scheduler membaca tasks[] dengan stride basi).
-CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR)
+CFLAGS = --target=x86_64-pc-none-elf -ffreestanding -O2 -nostdlib -mcmodel=kernel -mno-red-zone -mno-sse -mno-sse2 -mno-mmx -msoft-float -MMD -MP -I$(INCLUDE_DIR) -Igraphics -Igraphics/memory -Idrivers/graphics/hw
 
 # Flags compiler untuk unit lwIP:
 #   - Mewarisi semua flag kernel (freestanding, mcmodel, mno-red-zone, dll.)
