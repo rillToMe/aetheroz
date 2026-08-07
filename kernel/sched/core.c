@@ -1,4 +1,5 @@
-// ============================================================
+
+
 // kernel/sched/core.c — Preemptive Scheduler Core, Kyuzen OS
 //
 // ARSITEKTUR: Semua context switch via Full ISR Frame.
@@ -10,7 +11,7 @@
 // FLOW:
 //   Timer ISR → timer_handler/lapic_timer_handler(rsp) → schedule*(r)
 //        → mov rsp, rax → POPA64 → IRETQ → task baru berjalan
-// ============================================================
+
 
 #include "task.h"
 #include "spinlock.h"
@@ -20,9 +21,9 @@
 #include "sched_internal.h"
 #include <stddef.h>
 
-// ============================================================
+
 // GLOBAL STATE
-// ============================================================
+
 task_t tasks[MAX_TASKS];
 int    current_task = 0;
 int    task_count   = 0;
@@ -51,18 +52,20 @@ void scheduler_idle_loop(void) {
     for (;;) {
         uint32_t cpu_id = smp_current_cpu_index();
 
-        uint64_t flags = spinlock_lock_irqsave(&scheduler_lock);
+        // Bug 4.5: cpu_current_task[] ditulis HANYA oleh CPU-nya sendiri
+        // (lihat catatan di deklarasi: "each entry is written only by its own
+        // CPU") — tidak butuh scheduler_lock. Menghapus lock menghindari
+        // kontensi lock pada jalur idle.
         if (cpu_id < SMP_MAX_CPUS) {
             cpu_current_task[cpu_id] = -1;
         }
-        spinlock_unlock_irqrestore(&scheduler_lock, flags);
 
         smp_note_idle_tick(cpu_id);
         __asm__ volatile("sti; hlt");
     }
 }
 
-// ============================================================
+
 // schedule_on_cpu — Per-CPU Run Queue Scheduler with Work-Stealing
 //
 // Dipanggil dari PIT (BSP) atau LAPIC timer (AP) setiap ~20ms, dan dari
@@ -80,7 +83,7 @@ void scheduler_idle_loop(void) {
 //
 // Input : registers_t* = RSP task yang sedang di-interrupt (full ISR frame)
 // Output: registers_t* = RSP task berikutnya (akan di-load ke RSP di ASM)
-// ============================================================
+
 registers_t* schedule_on_cpu(uint32_t cpu_id, registers_t* current_regs) {
     if (cpu_id >= SMP_MAX_CPUS || current_regs == NULL) return current_regs;
 
@@ -206,27 +209,27 @@ registers_t* schedule(registers_t* current_regs) {
     return schedule_on_cpu(0, current_regs);
 }
 
-// ============================================================
+
 // smp_current_task_id — Per-CPU current task ID
 //
 // Returns the task ID running on the CURRENT CPU.
 // Returns -1 if the CPU is idle (no task scheduled).
 // SMP-safe: reads per-CPU state, not the global current_task.
-// ============================================================
+
 int smp_current_task_id(void) {
     uint32_t cpu_id = smp_current_cpu_index();
     if (cpu_id >= SMP_MAX_CPUS) return -1;
     return cpu_current_task[cpu_id];
 }
 
-// ============================================================
+
 // yield — Hint bahwa task sedang idle
 //
 // Sejak beralih ke Preemptive, yield() tidak lagi melakukan switch
 // secara langsung. Context switch terjadi via timer interrupt.
 // Fungsi ini sekarang hanya mem-block CPU sampai interrupt berikutnya,
 // membantu cpu_idle_tracker mendeteksi bahwa task sedang menunggu.
-// ============================================================
+
 void yield(void) {
     // hlt: tidurkan CPU sampai interrupt berikutnya (timer/keyboard/mouse)
     // sti: pastikan interrupt enabled dulu sebelum hlt

@@ -24,6 +24,35 @@ kwm_window_t kwm_windows[MAX_WINDOWS];
 uint32_t next_z_index = 1;
 spinlock_t kwm_lock = SPINLOCK_INIT;
 
+// Re-normalisasi z-index (dipanggil dengan kwm_lock DIpegang). Bug 5.3/5.4:
+// next_z_index naik monoton tak terbatas → scan compositor O(next_z_index)
+// makin lambat, dan bisa wrap (uint32) bentrok dengan desktop z=0. Compact
+// z semua window aktif ke 0..N-1 (desktop tetap 0) sambil MEMPERTAHANKAN urutan
+// z yang ada (window ber-z terbesar tetap paling atas), lalu reset next_z_index.
+static void kwm_normalize_zindex_locked(void) {
+    // Urutkan window aktif non-desktop berdasarkan z_index naik (insertion sort
+    // — MAX_WINDOWS kecil, O(N²) aman).
+    int order[MAX_WINDOWS];
+    int n = 0;
+    for (int w = 0; w < MAX_WINDOWS; w++) {
+        if (kwm_windows[w].active && !(kwm_windows[w].flags & KWM_WIN_DESKTOP))
+            order[n++] = w;
+    }
+    for (int i = 1; i < n; i++) {
+        int w = order[i];
+        uint32_t z = kwm_windows[w].z_index;
+        int j = i - 1;
+        while (j >= 0 && kwm_windows[order[j]].z_index > z) {
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = w;
+    }
+    for (int i = 0; i < n; i++)
+        kwm_windows[order[i]].z_index = (uint32_t)(i + 1);
+    next_z_index = (uint32_t)(n + 1);
+}
+
 // State global untuk drag session yang sedang aktif
 static int     dragged_win_id = -1;  // -1 = tidak ada drag
 static int32_t drag_offset_x  = 0;   // Offset klik dalam window (mencegah window "loncat")
@@ -41,16 +70,26 @@ static void frame_dirty_area(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     screen_mark_dirty(x - m, y - m, w + 2 * (uint32_t)m, h + 2 * (uint32_t)m);
 }
 
-// Caller MUST TIDAK memegang kwm_lock. Menandai area layar yang ditempati
-// frame window (konten + titlebar) sebagai dirty. Dipanggil setiap kali
-// penampilan window berubah di layar (create/move/destroy/fokus).
+// Caller MUST TIDAK memegang kwm_lock (dipanggil setelah unlock). Menandai area
+// layar yang ditempati frame window (konten + titlebar) sebagai dirty.
+// Dipanggil setiap kali penampilan window berubah di layar (create/move/destroy/fokus).
+// Bug 5.2: field window dimutasi di bawah kwm_lock, jadi baca di sini juga harus
+// di bawah kwm_lock — menghilangkan data race pada dirty-rect.
 static void kwm_frame_dirty(int i) {
     if (i < 0 || i >= MAX_WINDOWS) return;
-    if (!kwm_windows[i].active) return;
+    uint64_t flags = spinlock_lock_irqsave(&kwm_lock);
+    if (!kwm_windows[i].active) {
+        spinlock_unlock_irqrestore(&kwm_lock, flags);
+        return;
+    }
     // Phase 10: desktop frameless — frame = konten saja (tanpa titlebar).
     uint32_t tb = (kwm_windows[i].flags & KWM_WIN_DESKTOP) ? 0 : KWM_TITLEBAR_H;
-    frame_dirty_area(kwm_windows[i].x, kwm_windows[i].y,
-                     kwm_windows[i].width, kwm_windows[i].height + tb);
+    int32_t  x  = kwm_windows[i].x;
+    int32_t  y  = kwm_windows[i].y;
+    uint32_t w  = kwm_windows[i].width;
+    uint32_t h  = kwm_windows[i].height + tb;
+    spinlock_unlock_irqrestore(&kwm_lock, flags);
+    frame_dirty_area(x, y, w, h);
 }
 
 // Caller MUST hold kwm_lock. Window aktif teratas (z tertinggi) di titik
@@ -137,6 +176,7 @@ int kwm_create_window(int x, int y, uint32_t width, uint32_t height) {
             kwm_windows[i].canvas = canvas;
             kwm_windows[i].owner_task = owner;
             kwm_windows[i].z_index = next_z_index++;
+            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
             kwm_windows[i].flags = 0;
             kwm_windows[i].title[0] = '\0';
             kwm_windows[i].active = 1;
@@ -256,7 +296,9 @@ int kwm_activate_window(int win_id) {
         return -1;
     }
     int old_focus = focused_win_id;
-    kwm_windows[win_id].z_index = next_z_index++;   // bring-to-front
+            kwm_windows[win_id].z_index = next_z_index++;
+            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();   // bring-to-front
+            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
     focused_win_id = win_id;
     spinlock_unlock_irqrestore(&kwm_lock, flags);
     kwm_frame_dirty(win_id);
@@ -406,14 +448,20 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
     }
 
     // 2. Sedang dalam Drag — update posisi window mengikuti kursor
-    if (dragged_win_id != -1) {
-        spinlock_lock(&kwm_lock);
+    // Bug 5.1: cek `dragged_win_id != -1` HARUS dilakukan di dalam kwm_lock.
+    // CPU lain (destroy) bisa men-set dragged_win_id = -1 di antara cek di luar
+    // lock dan deref di dalam lock → kwm_windows[-1] OOB. Baca + validasi ulang
+    // nilai di dalam lock, dan cek window masih active.
+    spinlock_lock(&kwm_lock);
+    int drag_win = dragged_win_id;
+    if (drag_win >= 0 && drag_win < MAX_WINDOWS &&
+        kwm_windows[drag_win].active) {
         int32_t new_x = mouse_px - drag_offset_x;
         int32_t new_y = mouse_py - drag_offset_y;
 
         // Phase 5C: clamp terhadap FRAME (konten + titlebar).
-        uint32_t fw = kwm_windows[dragged_win_id].width;
-        uint32_t fh = kwm_windows[dragged_win_id].height + KWM_TITLEBAR_H;
+        uint32_t fw = kwm_windows[drag_win].width;
+        uint32_t fh = kwm_windows[drag_win].height + KWM_TITLEBAR_H;
 
         if (new_x < 0) new_x = 0;
         if (new_y < 0) new_y = 0;
@@ -422,15 +470,16 @@ int kwm_process_mouse(int32_t mouse_px, int32_t mouse_py,
         if (new_y + (int32_t)fh > (int32_t)fb_height)
             new_y = (int32_t)fb_height - (int32_t)fh;
 
-        int32_t old_x = kwm_windows[dragged_win_id].x;
-        int32_t old_y = kwm_windows[dragged_win_id].y;
-        kwm_windows[dragged_win_id].x = new_x;
-        kwm_windows[dragged_win_id].y = new_y;
+        int32_t old_x = kwm_windows[drag_win].x;
+        int32_t old_y = kwm_windows[drag_win].y;
+        kwm_windows[drag_win].x = new_x;
+        kwm_windows[drag_win].y = new_y;
         spinlock_unlock(&kwm_lock);
         frame_dirty_area(old_x, old_y, fw, fh);
         frame_dirty_area(new_x, new_y, fw, fh);
         return 1; // Konsumsi event — jangan sampai app salah deteksi klik
     }
+    spinlock_unlock(&kwm_lock);
 
     // 3. Mouse Down — hit-test, click-to-focus, Z-bring-to-front, dekorasi WM
     if (left_down) {
@@ -587,7 +636,8 @@ static void kwm_cycle_focus_locked(void) {
     }
 
     if (target >= 0) {
-        kwm_windows[target].z_index = next_z_index++;   // bring-to-front
+            kwm_windows[target].z_index = next_z_index++;   // bring-to-front
+            if (next_z_index > MAX_WINDOWS) kwm_normalize_zindex_locked();
         focused_win_id = target;
     } else {
         focused_win_id = -1;

@@ -90,8 +90,16 @@ int timer_is_supported_refresh_rate(uint32_t hz) {
 
 void timer_sleep_ticks(uint32_t ticks) {
     uint64_t target = timer_ticks + ticks;
-    while (timer_ticks < target) {
-        __asm__ volatile("sti; hlt");
+    // Bug 4.2: `sti;hlt` naif bisa over-sleep bila IRQ lepas di antara sti dan
+    // hlt. Pola aman: cli, cek kondisi, lalu sti+hlt sebagai satu unit —
+    // interrupt yang sudah pending akan membangunkan hlt seketika.
+    for (;;) {
+        __asm__ volatile("cli" ::: "memory");
+        if (timer_ticks >= target) {
+            __asm__ volatile("sti" ::: "memory");
+            break;
+        }
+        __asm__ volatile("sti\n\t hlt" ::: "memory");
     }
 }
 
@@ -99,20 +107,32 @@ void timer_sleep_ticks(uint32_t ticks) {
 // CALLBACK REGISTRY
 // ============================================================
 
+// Forward decls (definisi di bawah — dipakai timer_register/unregister).
+static uint64_t timer_irq_save(void);
+static void     timer_irq_restore(uint64_t flags);
+
+// Mutasi array timer_callbacks[] WAJIB IRQ-safe (bug 4.4): timer_handler
+// (IRQ context) membaca array yang sama; tanpa lock/IRQ-disable, fungsi bisa
+// berubah saat IRQ hendak menjalankannya.
 int timer_register(timer_callback_t cb) {
+    uint64_t flags = timer_irq_save();
     for (int i = 0; i < TIMER_MAX_CALLBACKS; i++) {
         if (timer_callbacks[i] == 0) {
             timer_callbacks[i] = cb;
+            timer_irq_restore(flags);
             return i;
         }
     }
+    timer_irq_restore(flags);
     return -1;
 }
 
 void timer_unregister(timer_callback_t cb) {
+    uint64_t flags = timer_irq_save();
     for (int i = 0; i < TIMER_MAX_CALLBACKS; i++) {
         if (timer_callbacks[i] == cb) timer_callbacks[i] = 0;
     }
+    timer_irq_restore(flags);
 }
 
 // ============================================================

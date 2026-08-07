@@ -128,5 +128,12 @@ void wait_wake_all(wait_queue_t *wq) {
 void wait_abort(wait_queue_t *wq, int task_id) {
     uint64_t flags = wait_queue_lock(wq);
     wait_remove(wq, task_id);
+    // Bug 4.1: tanpa unblock, task yang dibatalkan bisa tidur selamanya.
+    // Jika task masih di antara block_prepare (state BLOCKED) dan block_park
+    // (belum enqueue / belum park), unblock ini mengembalikannya ke RUNNING;
+    // jika sudah park di block_park, unblock ini membangunkannya. Idempotent:
+    // unblock_task adalah no-op bila state bukan SLEEPING/BLOCKED. Dipanggil
+    // sambil memegang wq->lock (urutan lock wq->lock → scheduler_lock).
+    unblock_task(task_id);
     wait_queue_unlock(wq, flags);
 }

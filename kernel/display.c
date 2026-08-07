@@ -28,7 +28,18 @@ DisplayBuffer* display_buffer_create(uint32_t width, uint32_t height, ColorForma
     DisplayBuffer* buffer = (DisplayBuffer*)kmalloc(sizeof(DisplayBuffer));
     if (!buffer) return NULL;
 
-    buffer->pixels = (uint32_t*)kmalloc((size_t)width * height * sizeof(uint32_t));
+    // Bug 5.6: width*height*4 bisa overflow walau dihitung 64-bit. Hitung di
+    // uint64_t dan tolak hasil yang melewati SIZE_MAX (dipakai kmalloc).
+    uint64_t bytes = (uint64_t)width * (uint64_t)height * sizeof(uint32_t);
+    if (width != 0 && bytes / width / sizeof(uint32_t) != height) {
+        kfree(buffer);
+        return NULL;   // overflow — tolak
+    }
+    if (bytes > (uint64_t)SIZE_MAX) {
+        kfree(buffer);
+        return NULL;
+    }
+    buffer->pixels = (uint32_t*)kmalloc((size_t)bytes);
     if (!buffer->pixels) {
         kfree(buffer);
         return NULL;

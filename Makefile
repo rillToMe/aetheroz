@@ -97,7 +97,13 @@ ASM_SOURCES = $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.asm))
 # BUKAN bagian dari kernel Ring 0 (myos.bin).
 #   apps/userlib.c  → berisi int $0x80 syscall wrappers
 #   apps/libgui.c   → GUI framework (mendefinisikan font8x16, dll)
-C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c,$(C_SOURCES_RAW))
+# Juga exlude test host-side (punya main()/assert.h/stdio.h) yang dijalankan di
+# host, bukan sebagai task QEMU — dikompilasi freestanding akan fatal (assert.h
+# tidak ada). aa_math_test / desktop_manifest_test / kyuzenfs_dir_test ada di
+# test/ yang ikut SRC_DIRS saat `make conc`/`make heap-stress`.
+C_SOURCES = $(filter-out apps/userlib.c apps/libgui.c \
+                        test/aa_math_test.c test/desktop_manifest_test.c test/kyuzenfs_dir_test.c,\
+                        $(C_SOURCES_RAW))
 
 # Ubah ekstensi sumber menjadi target object (.o)
 # Kernel + arch + drivers object files

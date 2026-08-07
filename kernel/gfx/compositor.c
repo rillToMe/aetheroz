@@ -334,7 +334,10 @@ void compositor_flush() {
                              : g_hand_bitmap;
     for (int y = 0; y < CURSOR_HEIGHT; y++) {
         for (int x = 0; x < CURSOR_WIDTH; x++) {
-            if (cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
+            // Bug 5.5: cek batas BAWAH juga — koordinat negatif membuat offset
+            // bernilai negatif → write sebelum backbuffer.
+            if (cy + y < 0 || cx + x < 0 ||
+                cy + y >= (int32_t)fb_height || cx + x >= (int32_t)fb_width) continue;
             uint32_t offset = ((cy + y) * pitch4) + (cx + x);
             if (cbm[y][x] == 1) backbuffer[offset] = 0xFFFFFF;
             else if (cbm[y][x] == 2) backbuffer[offset] = 0x000000;
