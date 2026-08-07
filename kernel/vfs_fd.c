@@ -131,10 +131,19 @@ int vfs_read(int fd, void* buf, uint32_t count) {
 }
 
 // Grow the buffer to hold at least `need` bytes. Caller holds vfs_lock.
-static int ensure_cap(vfs_file_t* vf, uint32_t need) {
+// `need` is 64-bit: the caller computes pos+count in 64-bit so a 32-bit wrap
+// can't hide an oversized write (bug 2.1). Reject any need beyond UINT32_MAX —
+// kmalloc/krealloc sizes are uint32_t, and doubling past that wraps to 0,
+// turning the growth loop into an infinite loop.
+static int ensure_cap(vfs_file_t* vf, uint64_t need) {
     if (need <= vf->cap) return 0;
+    if (need > UINT32_MAX) return -1;   // size can't be represented by kmalloc/krealloc
     uint32_t newcap = vf->cap ? vf->cap : 64;
-    while (newcap < need) newcap *= 2;
+    while (newcap < need) {
+        uint32_t next = newcap * 2;
+        if (next <= newcap) return -1;  // would overflow past UINT32_MAX → bail
+        newcap = next;
+    }
     uint8_t* nb = (uint8_t*)krealloc(vf->buf, vf->cap, newcap);
     if (!nb) return -1;
     vf->buf = nb;
@@ -151,7 +160,10 @@ int vfs_write(int fd, const void* buf, uint32_t count) {
         return -1;
     }
     if (vf->flags & VFS_O_APPEND) vf->pos = vf->size;
-    if (ensure_cap(vf, vf->pos + count) != 0) {
+    // Compute end position in 64-bit so pos+count can't wrap to a small value
+    // that fools ensure_cap into thinking the buffer already fits (bug 2.1).
+    uint64_t end = (uint64_t)vf->pos + count;
+    if (ensure_cap(vf, end) != 0) {
         spinlock_unlock_irqrestore(&vfs_lock, f);
         return -1;
     }
@@ -172,7 +184,10 @@ int vfs_lseek(int fd, int32_t offset, int whence) {
                  : (whence == VFS_SEEK_END) ? (int64_t)vf->size
                  : 0;
     int64_t np = base + offset;
-    if (np < 0) { spinlock_unlock_irqrestore(&vfs_lock, f); return -1; }
+    if (np < 0 || np > UINT32_MAX) {   // pos is uint32_t; reject silent truncation (bug 2.2)
+        spinlock_unlock_irqrestore(&vfs_lock, f);
+        return -1;
+    }
     vf->pos = (uint32_t)np;
     spinlock_unlock_irqrestore(&vfs_lock, f);
     return (int)vf->pos;
