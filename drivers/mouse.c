@@ -101,8 +101,13 @@ void mouse_handler() {
     uint8_t packet_size = mouse_has_wheel ? 4 : 3;
     int8_t wheel_z = 0;
     if ((status & 0x01) && (status & 0x20)) {
+        // Guard index terlebih dahulu: jangan pernah menulis melewati
+        // mouse_byte[3] (bug 6.1 — OOB write di jalur IRQ). Reset pakai '>='
+        // supaya akumulator tak bisa meleset melewati packet_size (mis. paket
+        // yang hilang mengubah 4→3) dan mengaburkan batas array.
+        if (mouse_cycle >= (int)sizeof(mouse_byte)) mouse_cycle = 0;
         mouse_byte[mouse_cycle++] = inb(0x60);
-        if (mouse_cycle == packet_size) {
+        if (mouse_cycle >= packet_size) {
             mouse_cycle = 0;
             if ((mouse_byte[0] & 0x80) || (mouse_byte[0] & 0x40)) goto end_mouse_irq;
             if (mouse_has_wheel) wheel_z = mouse_byte[3];
